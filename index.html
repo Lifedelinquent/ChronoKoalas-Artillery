@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChronoKoala's Artillery</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Outfit:wght@400;600;700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <!-- Main Menu Screen -->
+    <div id="menu-screen" class="screen active">
+        <div class="menu-container">
+            <img src="assets/logo.png" alt="ChronoKoala's Artillery" class="game-logo">
+            <p class="tagline">Time Travel. Explosions. Gumleaves.</p>
+
+            <div class="menu-buttons">
+                <button id="btn-host" class="menu-btn primary">
+                    <span class="icon">🎮</span> Host Game
+                </button>
+                <button id="btn-join" class="menu-btn secondary">
+                    <span class="icon">🔗</span> Join Game
+                </button>
+                <button id="btn-practice" class="menu-btn tertiary">
+                    <span class="icon">🎯</span> Practice
+                </button>
+                <button id="btn-editor" class="menu-btn quaternary">
+                    <span class="icon">🗺️</span> Map Editor
+                </button>
+            </div>
+
+            <div id="join-panel" class="hidden">
+                <input type="text" id="room-code-input" placeholder="Enter Room Code" maxlength="6">
+                <button id="btn-connect" class="menu-btn primary small">Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Map Editor Screen -->
+    <div id="editor-screen" class="screen">
+        <canvas id="editor-canvas"></canvas>
+        <div id="editor-topbar">
+            <button id="btn-editor-back" class="editor-btn">⬅ Back</button>
+            <span class="editor-title">Map Editor</span>
+            <button id="btn-editor-import" class="editor-btn">🖼️ Import PNG</button>
+            <button id="btn-editor-save" class="editor-btn">💾 Save</button>
+            <button id="btn-editor-load" class="editor-btn">📂 Load</button>
+            <button id="btn-editor-test" class="editor-btn primary">▶ Test Play</button>
+        </div>
+    </div>
+
+    <!-- Lobby Screen -->
+    <div id="lobby-screen" class="screen">
+        <div class="lobby-container">
+            <div class="lobby-header">
+                <h2>Game Lobby</h2>
+                <div class="room-code">Room: <span id="room-code-display">------</span></div>
+            </div>
+
+            <div class="teams-container">
+                <div class="team team-red">
+                    <h3>🔴 Red Team</h3>
+                    <ul id="team-red-list"></ul>
+                </div>
+                <div class="team team-blue">
+                    <h3>🔵 Blue Team</h3>
+                    <ul id="team-blue-list"></ul>
+                </div>
+            </div>
+
+            <div class="lobby-controls">
+                <button id="btn-ready" class="menu-btn primary">Ready!</button>
+                <button id="btn-leave" class="menu-btn danger">Leave</button>
+            </div>
+
+            <div id="host-controls" class="hidden">
+                <button id="btn-start-game" class="menu-btn success" disabled>Start Game</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="screen">
+        <canvas id="game-canvas"></canvas>
+
+        <!-- HUD Overlay -->
+        <div id="hud">
+            <div id="turn-indicator">
+                <span id="current-team">Red Team</span>'s Turn
+            </div>
+            <div id="turn-timer">30</div>
+            <div id="wind-indicator">
+                <span class="wind-label">Wind:</span>
+                <div class="wind-bar">
+                    <div id="wind-arrow"></div>
+                </div>
+            </div>
+            <div id="zoom-indicator">Zoom: <span id="zoom-level">100%</span></div>
+            <button id="mute-toggle" class="hud-btn" title="Toggle Sound">🔊</button>
+        </div>
+
+        <!-- Weapon Selector -->
+        <div id="weapon-bar">
+            <div class="weapon" data-weapon="bazooka" title="Bazooka">
+                <img src="assets/weapon_bazooka.png" alt="Bazooka">
+            </div>
+            <div class="weapon" data-weapon="grenade" title="Grenade">
+                <img src="assets/weapon_grenade.png" alt="Grenade">
+            </div>
+            <div class="weapon" data-weapon="shotgun" title="Shotgun">
+                <img src="assets/weapon_shotgun.png" alt="Shotgun">
+            </div>
+            <div class="weapon" data-weapon="dynamite" title="Dynamite">
+                <img src="assets/weapon_dynamite.png" alt="Dynamite">
+            </div>
+            <div class="weapon" data-weapon="airstrike" title="Airstrike">
+                <img src="assets/weapon_airstrike.png" alt="Airstrike">
+            </div>
+            <div class="weapon" data-weapon="teleport" title="Teleport">
+                <img src="assets/weapon_teleport.png" alt="Teleport">
+            </div>
+            <div class="weapon" data-weapon="rope" title="Ninja Rope">
+                <img src="assets/weapon_rope.png" alt="Rope">
+            </div>
+            <div class="weapon" data-weapon="bat" title="Baseball Bat">
+                <img src="assets/weapon_bat.png" alt="Bat">
+            </div>
+            <div class="weapon" data-weapon="mine" title="Mine">
+                <img src="assets/weapon_mine.png" alt="Mine">
+            </div>
+            <div class="weapon" data-weapon="holygrenade" title="Holy Hand Grenade">
+                <img src="assets/weapon_holygrenade.png" alt="Holy Grenade">
+            </div>
+        </div>
+
+        <!-- Power Bar -->
+        <div id="power-bar-container" class="hidden">
+            <div id="power-bar">
+                <div id="power-fill"></div>
+            </div>
+        </div>
+
+        <!-- Team Health Bars -->
+        <div id="team-health">
+            <div class="team-hp team-red-hp">
+                <span class="team-name">Red</span>
+                <div class="hp-bar">
+                    <div id="red-hp-fill"></div>
+                </div>
+                <span id="red-hp-value">300</span>
+            </div>
+            <div class="team-hp team-blue-hp">
+                <span class="team-name">Blue</span>
+                <div class="hp-bar">
+                    <div id="blue-hp-fill"></div>
+                </div>
+                <span id="blue-hp-value">300</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="gameover-screen" class="screen">
+        <div class="gameover-container">
+            <h1 id="winner-text">🏆 Red Team Wins!</h1>
+            <div class="stats">
+                <p>Total Damage Dealt: <span id="stat-damage">0</span></p>
+                <p>Koalas Eliminated: <span id="stat-kills">0</span></p>
+            </div>
+            <button id="btn-rematch" class="menu-btn primary">Rematch</button>
+            <button id="btn-main-menu" class="menu-btn secondary">Main Menu</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module" src="js/main.js"></script>
+</body>
+
+</html>

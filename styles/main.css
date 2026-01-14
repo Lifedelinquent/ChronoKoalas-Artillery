@@ -1,0 +1,745 @@
+/* Koala Artillery - Main Styles */
+/* Worms Armageddon inspired visual design */
+
+:root {
+    /* Color Palette */
+    --bg-dark: #1a1a2e;
+    --bg-gradient: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    --accent-primary: #e94560;
+    --accent-secondary: #0f3460;
+    --accent-gold: #f1c40f;
+    --text-light: #eaeaea;
+    --text-muted: #a0a0a0;
+
+    /* Team Colors */
+    --team-red: #e74c3c;
+    --team-red-dark: #c0392b;
+    --team-blue: #3498db;
+    --team-blue-dark: #2980b9;
+
+    /* UI Elements */
+    --panel-bg: rgba(0, 0, 0, 0.7);
+    --panel-border: rgba(255, 255, 255, 0.1);
+    --button-glow: 0 0 20px rgba(233, 69, 96, 0.5);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Outfit', sans-serif;
+    background: var(--bg-gradient);
+    color: var(--text-light);
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+/* Screen Management */
+.screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: none;
+    justify-content: center;
+    align-items: center;
+}
+
+.screen.active {
+    display: flex;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* Menu Screen */
+#menu-screen {
+    background: url('../assets/title_bg.png') no-repeat center center fixed;
+    background-size: cover;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.menu-container {
+    background: rgba(20, 20, 30, 0.9);
+    padding: 3rem;
+    border-radius: 20px;
+    border: 4px solid #4a5568;
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.8),
+        inset 0 0 30px rgba(0, 0, 0, 0.9);
+    text-align: center;
+    max-width: 600px;
+    width: 90%;
+    backdrop-filter: blur(5px);
+    position: relative;
+    /* Metallic texture effect */
+    background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.03) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.03) 50%, rgba(255, 255, 255, 0.03) 75%, transparent 75%, transparent);
+    background-size: 40px 40px;
+}
+
+.game-logo {
+    max-width: 100%;
+    height: auto;
+    margin-bottom: 2rem;
+    filter: drop-shadow(0 0 20px rgba(241, 196, 15, 0.4));
+    animation: float 6s ease-in-out infinite;
+}
+
+@keyframes float {
+    0% {
+        transform: translateY(0px);
+    }
+
+    50% {
+        transform: translateY(-10px);
+    }
+
+    100% {
+        transform: translateY(0px);
+    }
+}
+
+.tagline {
+    font-size: 1.5rem;
+    color: #cbd5e0;
+    margin-bottom: 2.5rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+    font-weight: 700;
+}
+
+.menu-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.menu-btn {
+    padding: 1.2rem 2.5rem;
+    font-family: 'Bangers', cursive;
+    font-size: 1.8rem;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 15px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 6px 0 rgba(0, 0, 0, 0.4);
+}
+
+.menu-btn:active {
+    transform: translateY(4px);
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* Primary Button (Host) - Green/Military */
+.menu-btn.primary {
+    background: linear-gradient(to bottom, #4CAF50, #2E7D32);
+    color: #fff;
+    border: 2px solid #1B5E20;
+    text-shadow: 1px 1px 0 #1B5E20;
+}
+
+.menu-btn.primary:hover {
+    filter: brightness(1.2);
+}
+
+/* Secondary Button (Join) - Blue/Tech */
+.menu-btn.secondary {
+    background: linear-gradient(to bottom, #2196F3, #1565C0);
+    color: #fff;
+    border: 2px solid #0D47A1;
+    text-shadow: 1px 1px 0 #0D47A1;
+}
+
+.menu-btn.secondary:hover {
+    box-shadow: 0 0 25px rgba(52, 152, 219, 0.6);
+}
+
+.menu-btn.tertiary {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-light);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.menu-btn.tertiary:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-2px);
+}
+
+.menu-btn.success {
+    background: linear-gradient(135deg, #27ae60, #2ecc71);
+    color: white;
+}
+
+.menu-btn.danger {
+    background: linear-gradient(135deg, #c0392b, #e74c3c);
+    color: white;
+}
+
+.menu-btn.small {
+    padding: 12px 30px;
+    font-size: 1rem;
+}
+
+.menu-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+}
+
+#join-panel {
+    margin-top: 30px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+#room-code-input {
+    padding: 15px 20px;
+    font-size: 1.5rem;
+    font-family: 'Outfit', monospace;
+    text-align: center;
+    letter-spacing: 8px;
+    text-transform: uppercase;
+    background: rgba(0, 0, 0, 0.5);
+    border: 2px solid var(--panel-border);
+    border-radius: 10px;
+    color: var(--accent-gold);
+    width: 200px;
+}
+
+#room-code-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+/* ========== LOBBY ========== */
+.lobby-container {
+    background: var(--panel-bg);
+    border-radius: 20px;
+    padding: 40px;
+    min-width: 600px;
+    backdrop-filter: blur(10px);
+}
+
+.lobby-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.room-code {
+    font-size: 1.2rem;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 10px 20px;
+    border-radius: 8px;
+}
+
+.room-code span {
+    font-family: monospace;
+    font-size: 1.5rem;
+    color: var(--accent-gold);
+    letter-spacing: 3px;
+}
+
+.teams-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+    margin-bottom: 30px;
+}
+
+.team {
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 12px;
+    padding: 20px;
+    min-height: 200px;
+}
+
+.team h3 {
+    margin-bottom: 15px;
+    font-size: 1.3rem;
+}
+
+.team ul {
+    list-style: none;
+}
+
+.team li {
+    padding: 10px 15px;
+    margin: 8px 0;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.team li.ready::after {
+    content: '✓ Ready';
+    margin-left: auto;
+    color: #2ecc71;
+    font-weight: 600;
+}
+
+.lobby-controls {
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+}
+
+#host-controls {
+    margin-top: 20px;
+    text-align: center;
+}
+
+/* ========== GAME SCREEN ========== */
+#game-canvas {
+    display: block;
+    background: #87CEEB;
+}
+
+/* HUD */
+#hud {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    padding: 15px 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
+    pointer-events: none;
+}
+
+#turn-indicator {
+    font-size: 1.4rem;
+    font-weight: 700;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+#turn-timer {
+    font-family: 'Bangers', cursive;
+    font-size: 3rem;
+    color: var(--accent-gold);
+    text-shadow: 2px 2px 0 var(--accent-primary);
+    transition: all 0.3s ease;
+}
+
+#turn-timer.low-time {
+    color: #e74c3c;
+    animation: pulse-warning 0.5s infinite;
+}
+
+#turn-timer.retreat-mode {
+    color: #3498db;
+    font-size: 2.5rem;
+}
+
+.retreat-label {
+    color: #3498db;
+    font-weight: 700;
+    animation: pulse-retreat 0.5s infinite;
+}
+
+@keyframes pulse-warning {
+
+    0%,
+    100% {
+        transform: scale(1);
+        opacity: 1;
+    }
+
+    50% {
+        transform: scale(1.1);
+        opacity: 0.8;
+    }
+}
+
+@keyframes pulse-retreat {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
+#wind-indicator {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.wind-bar {
+    width: 120px;
+    height: 20px;
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 10px;
+    position: relative;
+    overflow: hidden;
+}
+
+#wind-arrow {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 0;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, #3498db, transparent);
+    transition: width 0.3s, margin-left 0.3s;
+}
+
+#zoom-indicator {
+    font-size: 1rem;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 8px 15px;
+    border-radius: 8px;
+    margin-left: 15px;
+}
+
+#zoom-level {
+    color: var(--accent-gold);
+    font-weight: 700;
+}
+
+/* HUD Buttons */
+.hud-btn {
+    pointer-events: auto;
+    width: 45px;
+    height: 45px;
+    border: none;
+    border-radius: 50%;
+    background: var(--panel-bg);
+    color: var(--text-light);
+    font-size: 1.4rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 2px solid var(--panel-border);
+}
+
+.hud-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: scale(1.1);
+}
+
+.hud-btn.muted {
+    background: rgba(231, 76, 60, 0.3);
+    border-color: var(--team-red);
+}
+
+/* Weapon Bar */
+#weapon-bar {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 10px;
+    border-radius: 12px;
+}
+
+.weapon {
+    width: 60px;
+    height: 60px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 8px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+.weapon:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+    transform: translateY(-5px);
+}
+
+.weapon.selected {
+    border-color: #f1c40f;
+    background-color: rgba(241, 196, 15, 0.2);
+    box-shadow: 0 0 10px rgba(241, 196, 15, 0.5);
+    transform: translateY(-5px);
+}
+
+.weapon img {
+    width: 48px;
+    height: 48px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    /* Keep pixel art crisp */
+}
+
+.ammo-count {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: var(--accent-primary);
+    color: white;
+    font-size: 0.8rem;
+    font-weight: 700;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--panel-bg);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+}
+
+.weapon.disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+/* Power Bar */
+#power-bar-container {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+#power-bar {
+    width: 250px;
+    height: 25px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 15px;
+    overflow: hidden;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+#power-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2ecc71, #f1c40f, #e74c3c);
+    transition: width 0.05s linear;
+}
+
+/* Team Health */
+#team-health {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.team-hp {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel-bg);
+    padding: 10px 15px;
+    border-radius: 10px;
+}
+
+.team-hp .team-name {
+    font-weight: 700;
+    width: 50px;
+}
+
+.hp-bar {
+    width: 100px;
+    height: 15px;
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.team-red-hp .hp-bar div {
+    height: 100%;
+    background: var(--team-red);
+    transition: width 0.5s ease;
+}
+
+.team-blue-hp .hp-bar div {
+    height: 100%;
+    background: var(--team-blue);
+    transition: width 0.5s ease;
+}
+
+/* ========== GAME OVER ========== */
+.gameover-container {
+    text-align: center;
+    background: var(--panel-bg);
+    padding: 50px 80px;
+    border-radius: 20px;
+    backdrop-filter: blur(10px);
+    animation: fadeInUp 0.5s ease-out;
+}
+
+.gameover-container h1 {
+    font-family: 'Bangers', cursive;
+    font-size: 3.5rem;
+    margin-bottom: 30px;
+    color: var(--accent-gold);
+}
+
+.stats {
+    margin-bottom: 40px;
+    font-size: 1.2rem;
+}
+
+.stats p {
+    margin: 10px 0;
+}
+
+.stats span {
+    color: var(--accent-gold);
+    font-weight: 700;
+}
+
+/* ========== RESPONSIVE ========== */
+@media (max-width: 768px) {
+    .game-title {
+        font-size: 2.5rem;
+    }
+
+    .menu-container {
+        padding: 25px;
+        margin: 20px;
+    }
+
+    #weapon-bar {
+        flex-wrap: wrap;
+        max-width: 90%;
+        justify-content: center;
+    }
+
+    .weapon {
+        width: 45px;
+        height: 45px;
+        font-size: 1.4rem;
+    }
+}
+
+/* ==================== MAP EDITOR ==================== */
+
+/* Quaternary Button (Map Editor) - Orange/Creative */
+.menu-btn.quaternary {
+    background: linear-gradient(to bottom, #FF9800, #E65100);
+    color: #fff;
+    border: 2px solid #BF360C;
+    text-shadow: 1px 1px 0 #BF360C;
+}
+
+.menu-btn.quaternary:hover {
+    filter: brightness(1.2);
+    box-shadow: 0 0 25px rgba(255, 152, 0, 0.6);
+}
+
+/* Editor Screen */
+#editor-screen {
+    background: #1a1a2e;
+    flex-direction: column;
+}
+
+#editor-screen.active {
+    display: flex;
+}
+
+#editor-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: crosshair;
+}
+
+/* Editor Top Bar */
+#editor-topbar {
+    position: absolute;
+    top: 0;
+    left: 200px;
+    /* Leave room for sidebar */
+    right: 0;
+    height: 50px;
+    background: rgba(0, 0, 0, 0.85);
+    border-bottom: 2px solid #333;
+    display: flex;
+    align-items: center;
+    padding: 0 15px;
+    gap: 10px;
+    z-index: 100;
+}
+
+.editor-title {
+    font-family: 'Bangers', cursive;
+    font-size: 1.5rem;
+    color: #f1c40f;
+    margin: 0 auto;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+.editor-btn {
+    padding: 8px 16px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: #444;
+    color: #fff;
+}
+
+.editor-btn:hover {
+    background: #555;
+    transform: translateY(-1px);
+}
+
+.editor-btn.primary {
+    background: linear-gradient(to bottom, #4CAF50, #2E7D32);
+    border: 1px solid #1B5E20;
+}
+
+.editor-btn.primary:hover {
+    filter: brightness(1.2);
+}
+
+/* Editor Sidebar (drawn on canvas, but these are for any HTML elements) */
+.editor-sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 200px;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.85);
+    border-right: 2px solid #333;
+    z-index: 99;
+}

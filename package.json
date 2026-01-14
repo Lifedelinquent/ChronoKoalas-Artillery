@@ -1,0 +1,12 @@
+{
+  "name": "koala-artillery",
+  "version": "1.0.0",
+  "description": "Koala Artillery Game",
+  "scripts": {
+    "start": "npx http-server -c-1 ."
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

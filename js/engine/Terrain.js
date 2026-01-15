@@ -574,6 +574,108 @@ export class Terrain {
     }
 
     /**
+     * Find the actual top boundary of the map (highest Y with any terrain).
+     * Useful for teleport and spawn systems to know where the "real" map starts.
+     * Returns Y coordinate of the highest terrain pixel, or 0 if map is empty.
+     */
+    getMapTopBoundary() {
+        if (!this.imageData) return 0;
+
+        const data = this.imageData.data;
+        const width = this.width;
+        const height = this.height;
+
+        // Sample columns across the map to find highest terrain
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x += 10) { // Sample every 10 pixels for speed
+                const idx = (y * width + x) * 4;
+                if (data[idx + 3] > 128) {
+                    // Found terrain at this Y level
+                    return y;
+                }
+            }
+        }
+
+        return 0; // No terrain found
+    }
+
+    /**
+     * Find the "sky" position above a specific ground point.
+     * This is the first air pixel when scanning upward from the ground.
+     * Used for Worms-style teleport (drop from above the ground).
+     * @param {number} x - X coordinate
+     * @param {number} groundY - Y coordinate of the ground surface
+     * @returns {number} Y coordinate of the sky position above the ground
+     */
+    getSkyAboveGround(x, groundY) {
+        if (!this.imageData) return Math.max(50, groundY - 100);
+
+        const data = this.imageData.data;
+        const width = this.width;
+        const minY = 5; // Never start above Y=5
+
+        // Scan upward from just above ground until we find air
+        let skyY = Math.max(minY, groundY - 100); // Default to a reasonable drop height
+
+        for (let y = groundY - 1; y > minY; y--) {
+            const idx = (y * width + Math.floor(x)) * 4;
+            if (data[idx + 3] <= 128) {
+                // Found air! This is the sky position
+                skyY = y;
+                break;
+            }
+        }
+
+        // IMPORTANT: Verify the found position is actually in open air
+        // If ground is detected at skyY, scan DOWNWARD until we find free space
+        let finalY = Math.max(minY, skyY);
+        const checkIdx = (finalY * width + Math.floor(x)) * 4;
+
+        if (data[checkIdx + 3] > 128) {
+            // We're inside ground! Scan downward to find open air
+            for (let y = finalY; y < groundY - 30; y++) {
+                const idx = (y * width + Math.floor(x)) * 4;
+                if (data[idx + 3] <= 128) {
+                    // Found air below the obstruction
+                    finalY = y;
+                    break;
+                }
+            }
+        }
+
+        // Final safety clamp: must be at least minY
+        return Math.max(minY, finalY);
+    }
+
+    /**
+     * Check if a given X coordinate is a valid teleport destination.
+     * Valid = within map bounds, has ground below, not in water.
+     * @param {number} x - X coordinate to check
+     * @returns {Object} { valid: boolean, groundY: number, reason: string }
+     */
+    isValidTeleportTarget(x) {
+        // Check X bounds (leave margin at edges)
+        if (x < 50 || x > this.width - 50) {
+            return { valid: false, groundY: this.height, reason: 'outside_bounds' };
+        }
+
+        const groundY = this.getGroundY(x);
+
+        // Check if ground is in water zone
+        const waterLevel = this.height - 60;
+        if (groundY >= waterLevel) {
+            return { valid: false, groundY: groundY, reason: 'water' };
+        }
+
+        // Check if there's actual terrain at this X (not just empty column)
+        if (groundY >= this.height - 10) {
+            return { valid: false, groundY: groundY, reason: 'no_ground' };
+        }
+
+        return { valid: true, groundY: groundY, reason: 'ok' };
+    }
+
+    /**
      * Pixel-scan grass application (renamed for clarity)
      */
     addGlobalGrass() {

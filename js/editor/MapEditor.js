@@ -70,6 +70,14 @@ export class MapEditor {
         this.showGrid = false;
         this.gridSize = 50;
 
+        // Map bounds (detected during import or recalculated)
+        // These define the "actual playable area" vs empty space
+        this.mapBounds = {
+            topY: 0,            // Highest Y with terrain (0 = very top)
+            bottomY: 1200,      // Lowest Y with terrain (before water)
+            waterLevel: 1140    // Water level (worldHeight - 60)
+        };
+
         // Background color (sky)
         this.backgroundColor = '#1a1a2e'; // Default dark blue
         this.backgroundColors = [
@@ -1051,15 +1059,20 @@ export class MapEditor {
         console.log('   Team 1 spawns:', JSON.stringify(spawnsCopy.team1));
         console.log('   Team 2 spawns:', JSON.stringify(spawnsCopy.team2));
 
+        // Recalculate map bounds before export to ensure accuracy
+        this.calculateMapBounds();
+        console.log('   Map bounds:', JSON.stringify(this.mapBounds));
+
         return {
             name: name,
-            version: 1,
+            version: 2, // Bumped version for new bounds feature
             width: this.worldWidth,
             height: this.worldHeight,
             backgroundColor: this.backgroundColor,
             terrain: this.terrainCanvas.toDataURL('image/png'),
             objects: [...this.placedObjects], // Copy array
-            spawns: spawnsCopy  // Use the deep copy
+            spawns: spawnsCopy,  // Use the deep copy
+            mapBounds: { ...this.mapBounds }  // Include playable area bounds
         };
     }
 
@@ -1146,6 +1159,44 @@ export class MapEditor {
         }
 
         this.terrainCtx.putImageData(imageData, 0, 0);
+
+        // Calculate and store the actual map bounds
+        this.calculateMapBounds();
+    }
+
+    /**
+     * Calculate the actual map boundaries by scanning for terrain.
+     * This detects where the "real" map starts/ends vs empty space.
+     */
+    calculateMapBounds() {
+        const imageData = this.terrainCtx.getImageData(0, 0, this.worldWidth, this.worldHeight);
+        const data = imageData.data;
+        const width = this.worldWidth;
+        const height = this.worldHeight;
+
+        let topY = height;  // Will find minimum
+        let bottomY = 0;    // Will find maximum
+
+        // Scan all pixels to find terrain bounds
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x += 5) { // Sample every 5 pixels for speed
+                const idx = (y * width + x) * 4;
+                if (data[idx + 3] > 128) {
+                    // Found terrain pixel
+                    if (y < topY) topY = y;
+                    if (y > bottomY) bottomY = y;
+                }
+            }
+        }
+
+        // Update bounds
+        this.mapBounds = {
+            topY: topY < height ? topY : 0,
+            bottomY: bottomY > 0 ? bottomY : height,
+            waterLevel: this.worldHeight - 60
+        };
+
+        console.log(`📐 Map bounds calculated: Top Y=${this.mapBounds.topY}, Bottom Y=${this.mapBounds.bottomY}`);
     }
 
 

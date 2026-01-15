@@ -137,6 +137,21 @@ export class Game extends EventEmitter {
                     this.customBackgroundColor = mapData.backgroundColor;
                 }
 
+                // Store map bounds (for teleport/spawn validation)
+                // Use provided bounds or fall back to calculating them
+                if (mapData.mapBounds) {
+                    this.mapBounds = mapData.mapBounds;
+                    console.log(`📐 Using exported map bounds: Top=${this.mapBounds.topY}, Bottom=${this.mapBounds.bottomY}`);
+                } else {
+                    // Fallback: calculate bounds from terrain (for older maps)
+                    this.mapBounds = {
+                        topY: this.terrain.getMapTopBoundary(),
+                        bottomY: this.worldHeight - 100,
+                        waterLevel: this.worldHeight - 60
+                    };
+                    console.log(`📐 Calculated map bounds: Top=${this.mapBounds.topY}`);
+                }
+
                 console.log('🗺️ Custom map loaded:', mapData.name);
                 resolve();
             };
@@ -144,6 +159,7 @@ export class Game extends EventEmitter {
                 console.error('Failed to load custom map image');
                 // Fall back to generated terrain
                 this.terrain.generate();
+                this.mapBounds = { topY: 0, bottomY: this.worldHeight, waterLevel: this.worldHeight - 60 };
                 resolve();
             };
             img.src = mapData.terrain;
@@ -1352,56 +1368,117 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Execute teleport - move koala to target location
+     * Execute teleport - move koala to target location (Worms Armageddon style)
+     * The koala drops from the sky above the target ground position.
      */
     executeTeleport(koala, targetX, targetY) {
-        // Find ground level at this X to check if landing in water
-        const groundY = this.terrain.getGroundY(targetX);
+        // Validate the target location
+        const validation = this.terrain.isValidTeleportTarget(targetX);
 
-        // Check if target X is valid (not in water)
-        if (groundY >= this.worldHeight - 50) {
-            console.log('Cannot teleport to water');
+        if (!validation.valid) {
+            console.log(`Cannot teleport: ${validation.reason}`);
+            // Could add visual/audio feedback here
             return;
         }
 
-        // Find the first available air spot starting from the top (challenging drop)
-        // This ensures they stay inside map dimensions but don't spawn in rock
-        let dropY = 50; // Start with a safe padding from the absolute top
+        const groundY = validation.groundY;
 
-        // Scan down until we find a non-solid pixel
-        // If top is air, it stays at 50. If top is a roof, it finds the gap below.
-        while (dropY < groundY - 35 && this.terrain.checkCollision(targetX, dropY)) {
-            dropY++;
+        // Find the "sky" position above the ground at this X
+        // This gives us the drop point - just like in Worms Armageddon
+        let dropY = this.terrain.getSkyAboveGround(targetX, groundY);
+
+        // Ensure we have at least 50 pixels of clearance above ground for the fall animation
+        if (dropY > groundY - 50) {
+            dropY = Math.max(5, groundY - 80);
         }
 
-        // Add a tiny bit of breathing room if we hit a ceiling
-        if (this.terrain.checkCollision(targetX, dropY - 1)) {
-            dropY += 5;
+        // Use stored map bounds to prevent teleporting above the actual map area
+        // (handles imported maps with empty space at top)
+        const mapTop = this.mapBounds?.topY || this.terrain.getMapTopBoundary();
+
+        // Clamp drop position to be within the actual map area
+        // Don't let them spawn in the empty zone above the imported map
+        dropY = Math.max(mapTop > 0 ? mapTop - 20 : 5, dropY);
+
+        // Safety clamp: stay within world boundaries (minimum Y=5)
+        dropY = Math.max(5, Math.min(this.worldHeight - 100, dropY));
+
+        // Helper function: Check if a bounding box area is MOSTLY clear
+        // This prevents false positives from small empty pixels inside terrain
+        const isAreaClear = (x, y, width = 20, height = 30) => {
+            let solidCount = 0;
+            let totalChecks = 0;
+
+            // Check a grid of points within the bounding box
+            for (let checkX = x - width / 2; checkX <= x + width / 2; checkX += 5) {
+                for (let checkY = y; checkY <= y + height; checkY += 5) {
+                    totalChecks++;
+                    if (this.terrain.checkCollision(checkX, checkY)) {
+                        solidCount++;
+                    }
+                }
+            }
+
+            // Area is clear if less than 20% of points are solid
+            // (allows for some noise but catches actual terrain)
+            return solidCount < totalChecks * 0.2;
+        };
+
+        // CRITICAL: Verify the drop position is actually in open air
+        // Use bounding box check to handle small empty pixels in terrain
+
+        // Define the maximum scan depth - go to just above water level
+        const waterLevel = this.worldHeight - 80;
+
+        if (!isAreaClear(targetX, dropY)) {
+            let foundClear = false;
+
+            // Scan downward from current position all the way to water level
+            for (let y = dropY; y < waterLevel; y += 3) {
+                if (isAreaClear(targetX, y)) {
+                    dropY = y;
+                    foundClear = true;
+                    break;
+                }
+            }
+
+            // If still no clear space found, try scanning from the very top
+            if (!foundClear) {
+                for (let y = 10; y < waterLevel; y += 3) {
+                    if (isAreaClear(targetX, y)) {
+                        dropY = y;
+                        foundClear = true;
+                        break;
+                    }
+                }
+            }
+
+            // If STILL nothing found, log an error - teleport location is completely blocked
+            if (!foundClear) {
+                console.error(`[Teleport] ERROR: No clear space found anywhere at X=${targetX}!`);
+                dropY = waterLevel - 100;
+            }
         }
-
-        targetY = dropY;
-
-        // Safety clamp: keep within map boundaries
-        targetY = Math.max(30, Math.min(this.worldHeight - 70, targetY));
 
         // Create teleport visual effect at old position
         this.createTeleportEffect(koala.x, koala.y);
 
-        // Move koala
+        // Move koala to drop position (they will fall to the ground)
         koala.x = targetX;
-        koala.y = targetY;
+        koala.y = dropY;
         koala.vx = 0;
         koala.vy = 0;
         koala.onGround = false;
 
+        // Reset spawn timer so they can fall immediately (no anti-gravity on teleport)
+        koala.spawnTimer = 0;
+
         // Create teleport visual effect at new position
-        this.createTeleportEffect(targetX, targetY);
+        this.createTeleportEffect(targetX, dropY);
 
         // Move camera to new position
         this.camera.targetX = targetX - this.canvas.width / 2;
-        this.camera.targetY = targetY - this.canvas.height / 2;
-
-        console.log('Teleported to:', targetX, targetY);
+        this.camera.targetY = dropY - this.canvas.height / 2;
 
         // End turn after teleport
         this.phase = 'damage';

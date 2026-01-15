@@ -2,6 +2,8 @@
  * Map Editor - Create custom terrain maps
  */
 
+import { MapManager } from '../utils/MapManager.js';
+
 export class MapEditor {
     constructor(canvas) {
         this.canvas = canvas;
@@ -21,7 +23,7 @@ export class MapEditor {
         this.camera = {
             x: 0,
             y: 0,
-            zoom: 0.5, // Revert zoom for standard map
+            zoom: 1.1, // Start at 110% zoom (matching game)
             targetX: 0,
             targetY: 0
         };
@@ -186,6 +188,11 @@ export class MapEditor {
         const screenX = e.clientX - rect.left;
         const screenY = e.clientY - rect.top;
 
+        // CRITICAL: Always update world coordinates from the click event
+        // This fixes the bug where mouse.x/y were stale (0,0) if user didn't move mouse first
+        this.mouse.x = screenX / this.camera.zoom + this.camera.x;
+        this.mouse.y = screenY / this.camera.zoom + this.camera.y;
+
         if (e.button === 0) { // Left click
             // Check if clicking on UI elements first (in screen coordinates)
             if (this.handleUIClick(screenX, screenY)) {
@@ -198,10 +205,14 @@ export class MapEditor {
             if (this.currentTool === 'rect' || this.currentTool === 'ellipse') {
                 this.shapeStart = { x: this.mouse.x, y: this.mouse.y };
             } else if (this.currentTool === 'spawn1') {
-                this.spawns.team1.push({ x: this.mouse.x, y: this.mouse.y });
+                const spawnPoint = { x: Math.round(this.mouse.x), y: Math.round(this.mouse.y) };
+                this.spawns.team1.push(spawnPoint);
+                console.log('📍 Team 1 Spawn placed:', spawnPoint, 'Total:', this.spawns.team1.length);
                 this.saveToHistory();
             } else if (this.currentTool === 'spawn2') {
-                this.spawns.team2.push({ x: this.mouse.x, y: this.mouse.y });
+                const spawnPoint = { x: Math.round(this.mouse.x), y: Math.round(this.mouse.y) };
+                this.spawns.team2.push(spawnPoint);
+                console.log('📍 Team 2 Spawn placed:', spawnPoint, 'Total:', this.spawns.team2.length);
                 this.saveToHistory();
             } else {
                 // For brush tools, apply immediately
@@ -352,14 +363,17 @@ export class MapEditor {
     }
 
     /**
-     * Clamp camera to world bounds
+     * Clamp camera to world bounds (with margin to allow viewing outside the map)
      */
     clampCamera() {
         const viewWidth = this.canvas.width / this.camera.zoom;
         const viewHeight = this.canvas.height / this.camera.zoom;
 
-        this.camera.x = Math.max(0, Math.min(this.worldWidth - viewWidth, this.camera.x));
-        this.camera.y = Math.max(0, Math.min(this.worldHeight - viewHeight, this.camera.y));
+        // Allow panning beyond map edges by this margin
+        const margin = 400;
+
+        this.camera.x = Math.max(-margin, Math.min(this.worldWidth - viewWidth + margin, this.camera.x));
+        this.camera.y = Math.max(-margin, Math.min(this.worldHeight - viewHeight + margin, this.camera.y));
     }
 
     /**
@@ -588,6 +602,9 @@ export class MapEditor {
         // Draw shape preview (while dragging rect/ellipse)
         this.drawShapePreview();
 
+        // Always draw map boundaries (to show playable area)
+        this.drawMapBoundaries();
+
         // Draw brush cursor
         this.drawBrushCursor();
 
@@ -645,6 +662,103 @@ export class MapEditor {
             ctx.lineTo(this.worldWidth, y);
             ctx.stroke();
         }
+    }
+
+    /**
+     * Draw map boundaries - shows the playable area limits
+     * Always visible to help designers see the exact map edges
+     */
+    drawMapBoundaries() {
+        const ctx = this.ctx;
+
+        // Top boundary (Y = 0)
+        ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)'; // Red
+        ctx.lineWidth = 3;
+        ctx.setLineDash([10, 10]);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(this.worldWidth, 0);
+        ctx.stroke();
+
+        // Draw "TOP" label
+        ctx.fillStyle = 'rgba(255, 100, 100, 0.9)';
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText('TOP (Y=0)', 10, 20);
+
+        // Bottom boundary (Y = worldHeight)
+        ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)';
+        ctx.beginPath();
+        ctx.moveTo(0, this.worldHeight);
+        ctx.lineTo(this.worldWidth, this.worldHeight);
+        ctx.stroke();
+
+        // Draw "BOTTOM" label
+        ctx.fillText(`BOTTOM (Y=${this.worldHeight})`, 10, this.worldHeight - 8);
+
+        // Left boundary (X = 0)
+        ctx.strokeStyle = 'rgba(100, 255, 100, 0.6)'; // Green
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, this.worldHeight);
+        ctx.stroke();
+
+        // Right boundary (X = worldWidth)
+        ctx.beginPath();
+        ctx.moveTo(this.worldWidth, 0);
+        ctx.lineTo(this.worldWidth, this.worldHeight);
+        ctx.stroke();
+
+        // Water level line (Y = worldHeight - 60)
+        const waterY = this.worldHeight - 60;
+        ctx.strokeStyle = 'rgba(100, 180, 255, 0.8)'; // Blue
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, waterY);
+        ctx.lineTo(this.worldWidth, waterY);
+        ctx.stroke();
+
+        // Draw "WATER" label
+        ctx.fillStyle = 'rgba(100, 180, 255, 0.9)';
+        ctx.fillText(`WATER LINE (Y=${waterY})`, 10, waterY - 8);
+
+        // Middle of map line (Y = worldHeight / 2)
+        const middleY = this.worldHeight / 2;
+        ctx.strokeStyle = 'rgba(255, 255, 100, 0.6)'; // Yellow
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 8]);
+        ctx.beginPath();
+        ctx.moveTo(0, middleY);
+        ctx.lineTo(this.worldWidth, middleY);
+        ctx.stroke();
+
+        // Draw "MIDDLE" label
+        ctx.fillStyle = 'rgba(255, 255, 100, 0.9)';
+        ctx.fillText(`MIDDLE (Y=${middleY})`, 10, middleY - 8);
+
+        // Center crosshair for reference (small crosshair at exact center)
+        const cx = this.worldWidth / 2;
+        const cy = this.worldHeight / 2;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 6]);
+        ctx.beginPath();
+        ctx.moveTo(cx - 30, cy);
+        ctx.lineTo(cx + 30, cy);
+        ctx.moveTo(cx, cy - 30);
+        ctx.lineTo(cx, cy + 30);
+        ctx.stroke();
+
+        // Map dimensions label at center
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(`Map: ${this.worldWidth} x ${this.worldHeight}`, cx, cy + 50);
+
+        // Reset line dash
+        ctx.setLineDash([]);
     }
 
     /**
@@ -895,7 +1009,23 @@ export class MapEditor {
         // Zoom indicator
         ctx.fillStyle = '#fff';
         ctx.font = '12px Outfit';
-        ctx.fillText(`Zoom: ${Math.round(this.camera.zoom * 100)}%`, 20, this.canvas.height - 20);
+        ctx.fillText(`Zoom: ${Math.round(this.camera.zoom * 100)}%`, 20, this.canvas.height - 40);
+
+        // Mouse coordinates display
+        ctx.fillStyle = '#3498db';
+        ctx.font = 'bold 12px Outfit';
+        const mouseX = Math.round(this.mouse.x);
+        const mouseY = Math.round(this.mouse.y);
+        ctx.fillText(`X: ${mouseX}  Y: ${mouseY}`, 20, this.canvas.height - 20);
+
+        // Also show a floating coordinate near the mouse cursor (top right of screen)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(this.canvas.width - 150, 10, 140, 30);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 14px Outfit';
+        ctx.textAlign = 'right';
+        ctx.fillText(`X: ${mouseX}  Y: ${mouseY}`, this.canvas.width - 20, 30);
+        ctx.textAlign = 'left';
     }
 
     /**
@@ -911,6 +1041,16 @@ export class MapEditor {
      * Export map data as JSON
      */
     exportMap(name = 'Untitled Map') {
+        // Deep copy spawns to avoid reference issues
+        const spawnsCopy = {
+            team1: this.spawns.team1.map(s => ({ x: s.x, y: s.y })),
+            team2: this.spawns.team2.map(s => ({ x: s.x, y: s.y }))
+        };
+
+        console.log('📦 Exporting map:', name);
+        console.log('   Team 1 spawns:', JSON.stringify(spawnsCopy.team1));
+        console.log('   Team 2 spawns:', JSON.stringify(spawnsCopy.team2));
+
         return {
             name: name,
             version: 1,
@@ -918,8 +1058,8 @@ export class MapEditor {
             height: this.worldHeight,
             backgroundColor: this.backgroundColor,
             terrain: this.terrainCanvas.toDataURL('image/png'),
-            objects: this.placedObjects,
-            spawns: this.spawns
+            objects: [...this.placedObjects], // Copy array
+            spawns: spawnsCopy  // Use the deep copy
         };
     }
 

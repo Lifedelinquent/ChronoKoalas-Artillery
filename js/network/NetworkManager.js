@@ -173,6 +173,9 @@ export class NetworkManager extends EventEmitter {
             case 'gameStart':
                 this.emit('gameStart', data);
                 break;
+            case 'mapSelected':
+                this.emit('mapSelected', data);
+                break;
             case 'gameAction':
                 this.emit('gameAction', data.action);
                 break;
@@ -215,7 +218,7 @@ export class NetworkManager extends EventEmitter {
     /**
      * Start the game (host only)
      */
-    startGame() {
+    startGame(options = {}) {
         if (!this.isHost) return;
 
         if (this.useLocalMode) {
@@ -225,13 +228,35 @@ export class NetworkManager extends EventEmitter {
                 teams: ['red', 'blue']
             };
 
-            this.emit('gameStart', { gameState });
+            this.emit('gameStart', {
+                gameState,
+                customMap: options.customMap
+            });
             return;
         }
 
         this.send({
             type: 'startGame',
-            roomCode: this.roomCode
+            roomCode: this.roomCode,
+            customMap: options.customMap
+        });
+    }
+
+    /**
+     * Send map selection to other players (host only)
+     */
+    sendMapSelection(map) {
+        if (!this.isHost) return;
+
+        if (this.useLocalMode) {
+            this.emit('mapSelected', { map });
+            return;
+        }
+
+        this.send({
+            type: 'mapSelection',
+            roomCode: this.roomCode,
+            map: map
         });
     }
 

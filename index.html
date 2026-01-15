@@ -39,6 +39,39 @@
         </div>
     </div>
 
+    <!-- Map Selection Modal (for Practice) -->
+    <div id="map-select-modal" class="modal hidden">
+        <div class="modal-content">
+            <h2 class="modal-title">Select Map</h2>
+            <div id="map-list" class="map-grid">
+                <div class="map-card selected" data-map-id="default">
+                    <div class="map-preview default-map"></div>
+                    <span class="map-name">Default Zoo</span>
+                </div>
+                <!-- Custom maps appended here -->
+            </div>
+            <div class="modal-controls">
+                <button id="btn-map-select-cancel" class="menu-btn secondary">Cancel</button>
+                <button id="btn-map-select-confirm" class="menu-btn primary">Start Game</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Map Name Modal (for Saving) -->
+    <div id="map-name-modal" class="modal hidden">
+        <div class="modal-content small shadow-gold">
+            <h2 class="modal-title">Save Map</h2>
+            <div class="modal-body">
+                <p>Enter a name for your custom map:</p>
+                <input type="text" id="map-name-input" placeholder="My Custom Map" maxlength="32">
+            </div>
+            <div class="modal-controls">
+                <button id="btn-map-name-cancel" class="menu-btn secondary">Cancel</button>
+                <button id="btn-map-name-save" class="menu-btn primary">Save Map</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Map Editor Screen -->
     <div id="editor-screen" class="screen">
         <canvas id="editor-canvas"></canvas>
@@ -77,6 +110,10 @@
             </div>
 
             <div id="host-controls" class="hidden">
+                <div class="map-selection">
+                    <span class="map-label">Map: <span id="current-map-name">Default Zoo</span></span>
+                    <button id="btn-change-map" class="menu-btn secondary small">Change Map</button>
+                </div>
                 <button id="btn-start-game" class="menu-btn success" disabled>Start Game</button>
             </div>
         </div>

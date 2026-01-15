@@ -267,8 +267,8 @@ export class Renderer {
      */
     drawKoala(koala, isCurrent) {
         const ctx = this.ctx;
-        const x = koala.x;
-        const y = koala.y;
+        const x = Math.round(koala.x);
+        const y = Math.round(koala.y);
 
         ctx.save();
         ctx.translate(x, y);
@@ -392,16 +392,16 @@ export class Renderer {
      */
     drawCurrentIndicator(koala) {
         const ctx = this.ctx;
-        const x = koala.x;
-        const y = koala.y - 55;
-        const time = performance.now() / 500;
-        const bounce = Math.sin(time) * 5;
+        const x = Math.round(koala.x);
+        const y = Math.round(koala.y - 55);
+        const time = performance.now() / 600; // Slower timing
+        const bounce = Math.sin(time) * 3; // Reduced bounce height
 
         ctx.fillStyle = koala.team.color;
         ctx.beginPath();
-        ctx.moveTo(x, y + bounce + 10);
-        ctx.lineTo(x - 8, y + bounce);
-        ctx.lineTo(x + 8, y + bounce);
+        ctx.moveTo(x, y + bounce + 8);
+        ctx.lineTo(x - 6, y + bounce);
+        ctx.lineTo(x + 6, y + bounce);
         ctx.closePath();
         ctx.fill();
     }

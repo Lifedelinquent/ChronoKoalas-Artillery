@@ -37,8 +37,13 @@ export class Physics {
     updateEntity(entity, dt) {
         const prevY = entity.y;
 
-        // Apply gravity
-        entity.vy += this.gravity * dt;
+        // Apply gravity (unless spawn protected)
+        if (!entity.spawnTimer || entity.spawnTimer <= 0) {
+            entity.vy += this.gravity * dt;
+        } else {
+            // Force zero velocity during spawn protection to "stick" the landing
+            entity.vy = 0;
+        }
 
         // Clamp velocity
         entity.vy = Math.min(entity.vy, this.terminalVelocity);
@@ -74,15 +79,34 @@ export class Physics {
         entity.onGround = false;
 
         // Check feet
+        // Check feet with "thick" raycast to prevent tunneling through thin terrain
         const footY = entity.y + entity.height / 2;
-        if (terrain.checkCollision(entity.x, footY)) {
-            // Find ground level
-            let groundY = footY;
+
+        // Check current foot position AND a few pixels up/down to catch thin lines
+        // This acts as a poor man's Continuous Collision Detection (CCD)
+        let hitGround = false;
+        let groundY = Math.floor(footY);
+
+        // Check 5 pixels range normally, but 10 pixels DOWN if we were already grounded
+        // This "Sticky Feet" logic prevents vibrating off slopes or falling through thin floors
+        const searchDown = entity.onGround ? 10 : 3;
+
+        for (let offset = -2; offset <= searchDown; offset++) {
+            if (terrain.checkCollision(entity.x, footY + offset)) {
+                hitGround = true;
+                groundY = Math.floor(footY + offset);
+                break;
+            }
+        }
+
+        if (hitGround) {
+            // Find surface normal (walk up)
             while (groundY > 0 && terrain.checkCollision(entity.x, groundY)) {
                 groundY--;
             }
 
-            entity.y = groundY - entity.height / 2;
+            // Snap entity Y so it sits perfectly on the ground pixel
+            entity.y = (groundY + 1) - entity.height / 2;
             entity.vy = 0;
             entity.onGround = true;
 

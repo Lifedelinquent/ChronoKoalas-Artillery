@@ -1,0 +1,55 @@
+
+=== FILE: js/engine/Terrain.js ===
+// Place at the end of getAllSpawnPoints() before return points;
+
+// DIAGNOSTIC LOGGING
+const topHalf = points.filter(p => p.y < 600).length;
+const bottomHalf = points.filter(p => p.y >= 600).length;
+console.log(`📊 SPAWN DIAGNOSTICS:`);
+console.log(`   - Top Half (Y < 600): ${topHalf} points found`);
+console.log(`   - Bottom Half (Y >= 600): ${bottomHalf} points found`);
+console.log(`   - Total Points: ${points.length}`);
+
+if (topHalf === 0) {
+    console.warn('⚠️ CRITICAL: No valid spawn points found in the top half of the map! Check collision mask or air-check logic.');
+}
+
+
+=== FILE: js/engine/Game.js ===
+// Place inside resolveSpawnPosition(marker, existingPositions, addJitter)
+
+// DIAGNOSTIC
+console.log(`🔎 Checking Marker (${x}, ${y}):`);
+console.log(`   - Is Valid? ${isValidSpawn}`);
+
+// Check where the ground actually is
+const groundY = this.terrain.getGroundBelow(x, y);
+console.log(`   - Ground Detected Below: Y=${groundY} (Drop distance: ${Math.round(groundY - y)}px)`);
+
+// DIAGNOSTIC verify collision at groundY
+if (groundY < this.worldHeight) {
+    const isSolid = this.terrain.checkCollision(x, groundY);
+    console.log(`   - Physics Check at Y=${groundY}: ${isSolid ? 'SOLID' : 'EMPTY (This is the bug!)'}`);
+}
+
+if (!isValidSpawn) {
+    const collision = this.terrain.checkCollision(x, y);
+    console.log(`   - Collision Check: ${collision ? 'HIT (Inside Wall)' : 'CLEAR (Air)'}`);
+}
+
+
+=== FILE: js/entities/Koala.js ===
+// Place inside constructor(x, y, team)
+
+// DIAGNOSTIC: Fall Tracker
+// This will help us confirm if the koala spawns high and falls, or spawns low
+this.initialY = y;
+console.log(`🐨 [${this.name}] CREATED at (${Math.round(x)}, ${Math.round(y)})`);
+
+setTimeout(() => {
+    console.log(`🐨 [${this.name}] after 0.5s: (${Math.round(this.x)}, ${Math.round(this.y)}) - DeltaY: ${Math.round(this.y - this.initialY)}`);
+}, 500);
+
+setTimeout(() => {
+    console.log(`🐨 [${this.name}] after 1.0s: (${Math.round(this.x)}, ${Math.round(this.y)}) - DeltaY: ${Math.round(this.y - this.initialY)}`);
+}, 1000);

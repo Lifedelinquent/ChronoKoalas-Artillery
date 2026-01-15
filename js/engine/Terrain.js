@@ -181,28 +181,29 @@ export class Terrain {
         const imageData = this.ctx.getImageData(x, 0, 1, this.height);
         const data = imageData.data;
         const surfaces = [];
+
         // Scan from top to bottom, find all transitions from air to solid
-        // We require at least some air above a surface for it to be a valid "landing" spot
-        let inAir = data[3] < 128;
-        let airCount = inAir ? 1 : 0;
+        // Track previous pixel state, starting with assumption of "air above top of image"
+        let previousWasAir = true; // Assume there's air above the image boundary
+        let airStreak = 10; // Assume plenty of air above image
 
-        // Scan deeper but stay clear of the very bottom edge
-        for (let y = 1; y < this.height - 20; y++) {
-            const isSolid = data[y * 4 + 3] >= 128;
+        for (let y = 0; y < this.height - 10; y++) {
+            const alpha = data[y * 4 + 3];
+            const isSolid = alpha >= 128;
+            const isAir = !isSolid;
 
-            if (inAir && isSolid) {
-                // Found a surface! Only count it if there was some air above it
-                if (airCount >= 3) {
+            if (previousWasAir && isSolid) {
+                // Transition from air to solid = a surface!
+                // Only count if there was meaningful air above (at least 3 pixels)
+                if (airStreak >= 3) {
                     surfaces.push(y);
                 }
-                inAir = false;
-                airCount = 0;
-            } else if (!inAir && !isSolid) {
-                inAir = true;
-                airCount = 1;
-            } else if (inAir && !isSolid) {
-                airCount++;
+                airStreak = 0;
+            } else if (isAir) {
+                airStreak++;
             }
+
+            previousWasAir = isAir;
         }
         return surfaces;
     }
@@ -445,14 +446,16 @@ export class Terrain {
             { freq: 0.007, amp: 50, phase: Math.random() * 10 }
         ];
 
-        const baseLevel = this.height * 0.65;
+        // Adjusted from 0.65 to 0.45 to allow terrain higher up (above Y=600)
+        const baseLevel = this.height * 0.45;
 
         for (let x = 0; x < this.width; x++) {
             let y = baseLevel;
             for (const w of waves) {
                 y += Math.sin(x * w.freq + w.phase) * w.amp;
             }
-            heightMap[x] = Math.max(150, Math.min(this.height - 50, y));
+            // Allow terrain as high as Y=50
+            heightMap[x] = Math.max(50, Math.min(this.height - 50, y));
         }
         return heightMap;
     }
@@ -644,7 +647,8 @@ export class Terrain {
      */
     generateHeightMap() {
         const heightMap = new Array(this.width);
-        const baseHeight = this.height * 0.5;
+        // Changed from 0.5 to 0.4 - terrain now extends higher up the map
+        const baseHeight = this.height * 0.4;
 
         // Layer multiple sine waves for natural-looking terrain
         const waves = [
@@ -677,8 +681,8 @@ export class Terrain {
                 y += (Math.random() > 0.5 ? 1 : -1) * cliffHeight;
             }
 
-            // Clamp to valid range
-            heightMap[x] = Math.max(100, Math.min(this.height - 100, y));
+            // Clamp to valid range - now allows terrain up to Y=50 (was Y=100)
+            heightMap[x] = Math.max(50, Math.min(this.height - 100, y));
         }
 
         // Smooth the height map
@@ -777,7 +781,8 @@ export class Terrain {
         const numCaves = 2 + Math.floor(Math.random() * 3);
         for (let i = 0; i < numCaves; i++) {
             const cx = 200 + Math.random() * (this.width - 400);
-            const cy = this.height * 0.6 + Math.random() * (this.height * 0.3);
+            // Allow caves anywhere between top (20%) and bottom (80%)
+            const cy = this.height * 0.2 + Math.random() * (this.height * 0.6);
             const radius = 30 + Math.random() * 50;
 
             this.createCrater(cx, cy, radius, false);
@@ -787,7 +792,8 @@ export class Terrain {
         const numTunnels = Math.floor(Math.random() * 2);
         for (let i = 0; i < numTunnels; i++) {
             const startX = Math.random() * this.width * 0.3;
-            const y = this.height * 0.5 + Math.random() * (this.height * 0.3);
+            // Allow tunnels anywhere between top (20%) and bottom (70%)
+            const y = this.height * 0.2 + Math.random() * (this.height * 0.5);
             const length = 100 + Math.random() * 200;
             const height = 30 + Math.random() * 20;
 
@@ -907,5 +913,52 @@ export class Terrain {
      */
     getCanvas() {
         return this.canvas;
+    }
+
+    /**
+     * Scan the entire map for all valid spawn points (ground with air above).
+     * This ensures the top half and multi-layered areas are all considered.
+     */
+    getAllSpawnPoints() {
+        const points = [];
+        if (!this.imageData) return points;
+
+        const data = this.imageData.data;
+        const width = this.width;
+        const height = this.height;
+
+        // Scan columns within map bounds
+        for (let x = 100; x < width - 100; x += 10) {
+            // Scan from top to absolute bottom (covering 100% of height)
+            for (let y = 1; y < height - 10; y++) {
+                const idx = (y * width + x) * 4;
+                const aboveIdx = ((y - 1) * width + x) * 4;
+
+                const isSolid = data[idx + 3] > 128;
+                const isAirAbove = data[aboveIdx + 3] < 128;
+
+                if (isSolid && isAirAbove) {
+                    // This is a top surface.
+                    // Check if there is enough vertical clearance above for a koala (approx 40px)
+                    let clearance = true;
+                    for (let checkY = y - 1; checkY > y - 40 && checkY > 0; checkY--) {
+                        const cIdx = (Math.floor(checkY) * width + x) * 4;
+                        if (data[cIdx + 3] > 128) {
+                            clearance = false;
+                            break;
+                        }
+                    }
+
+                    if (clearance) {
+                        points.push({ x, y: y - 20 });
+                        // Skip ahead to avoid multiple points too close together on the same vertical stack
+                        y += 50;
+                    }
+                }
+            }
+        }
+
+        console.log(`🗺️ Found ${points.length} potential spawn points across the map.`);
+        return points;
     }
 }

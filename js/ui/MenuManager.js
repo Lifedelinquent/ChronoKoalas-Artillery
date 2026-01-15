@@ -9,7 +9,9 @@ export class MenuManager {
             lobby: document.getElementById('lobby-screen'),
             game: document.getElementById('game-screen'),
             gameover: document.getElementById('gameover-screen'),
-            editor: document.getElementById('editor-screen')
+            editor: document.getElementById('editor-screen'),
+            mapSelect: document.getElementById('map-select-modal'),
+            mapName: document.getElementById('map-name-modal')
         };
 
         this.currentScreen = 'menu';
@@ -153,5 +155,91 @@ export class MenuManager {
 
         if (damageEl) damageEl.textContent = result.stats?.totalDamage || 0;
         if (killsEl) killsEl.textContent = result.stats?.totalKills || 0;
+    }
+
+    /**
+     * Show map selection modal
+     */
+    showMapSelection(maps, callback) {
+        const modal = this.screens.mapSelect;
+        const list = document.getElementById('map-list');
+        modal.classList.remove('hidden');
+
+        // Clear existing custom maps (keep default)
+        const defaultCard = list.querySelector('[data-map-id="default"]');
+        list.innerHTML = '';
+        list.appendChild(defaultCard);
+
+        // Populate custom maps
+        maps.forEach((map, index) => {
+            const card = document.createElement('div');
+            card.className = 'map-card';
+            card.dataset.mapId = index;
+            card.innerHTML = `
+                <div class="map-preview" style="background-image: url(${map.terrain})"></div>
+                <span class="map-name">${map.name}</span>
+            `;
+            list.appendChild(card);
+        });
+
+        // Selection logic
+        let selectedMapId = 'default';
+        const cards = list.querySelectorAll('.map-card');
+        cards.forEach(card => {
+            card.onclick = () => {
+                cards.forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                selectedMapId = card.dataset.mapId;
+            };
+        });
+
+        // Button handlers
+        document.getElementById('btn-map-select-cancel').onclick = () => {
+            modal.classList.add('hidden');
+        };
+
+        document.getElementById('btn-map-select-confirm').onclick = () => {
+            modal.classList.add('hidden');
+            callback(selectedMapId);
+        };
+    }
+
+    /**
+     * Update current map name in lobby
+     */
+    updateLobbyMapName(name) {
+        const el = document.getElementById('current-map-name');
+        if (el) el.textContent = name;
+    }
+
+    /**
+     * Show map naming modal
+     */
+    showMapNaming(callback) {
+        const modal = this.screens.mapName;
+        const input = document.getElementById('map-name-input');
+        const btnSave = document.getElementById('btn-map-name-save');
+        const btnCancel = document.getElementById('btn-map-name-cancel');
+
+        modal.classList.remove('hidden');
+        input.value = '';
+        input.focus();
+
+        btnCancel.onclick = () => {
+            modal.classList.add('hidden');
+        };
+
+        btnSave.onclick = () => {
+            const name = input.value.trim() || 'Untitled Map';
+            modal.classList.add('hidden');
+            callback(name);
+        };
+
+        // Enter key to save
+        input.onkeypress = (e) => {
+            if (e.key === 'Enter') {
+                btnSave.click();
+            }
+        };
     }
 }

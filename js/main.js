@@ -7,6 +7,7 @@ import { Game } from './engine/Game.js';
 import { MenuManager } from './ui/MenuManager.js';
 import { NetworkManager } from './network/NetworkManager.js';
 import { MapEditor } from './editor/MapEditor.js';
+import { MapManager } from './utils/MapManager.js';
 
 // Global game instance
 let game = null;
@@ -137,6 +138,9 @@ function setupMenuHandlers() {
     const btnMainMenu = document.getElementById('btn-main-menu');
     const joinPanel = document.getElementById('join-panel');
 
+    // Currently selected map for generic start
+    window.selectedMap = null;
+
     // Host Game
     btnHost.addEventListener('click', async () => {
         const roomCode = await networkManager.hostGame();
@@ -164,7 +168,14 @@ function setupMenuHandlers() {
     // Practice Mode - Start single player
     btnPractice.addEventListener('click', (e) => {
         e.target.blur(); // Remove focus so spacebar doesn't re-trigger
-        startGame(true);
+        const maps = MapManager.getAllMaps();
+        menuManager.showMapSelection(maps, (mapId) => {
+            let customMap = null;
+            if (mapId !== 'default') {
+                customMap = maps[mapId];
+            }
+            startGame(true, null, customMap);
+        });
     });
 
     // Ready toggle
@@ -180,8 +191,34 @@ function setupMenuHandlers() {
 
     // Start game (host only)
     btnStartGame.addEventListener('click', () => {
-        networkManager.startGame();
+        const options = {
+            isPractice: false,
+            customMap: window.selectedMap
+        };
+        networkManager.startGame(options);
     });
+
+    // Change Map (Lobby)
+    const btnChangeMap = document.getElementById('btn-change-map');
+    if (btnChangeMap) {
+        btnChangeMap.addEventListener('click', () => {
+            const maps = MapManager.getAllMaps();
+            menuManager.showMapSelection(maps, (mapId) => {
+                let map = null;
+                let name = 'Default Zoo';
+                if (mapId !== 'default') {
+                    map = maps[mapId];
+                    name = map.name;
+                }
+
+                window.selectedMap = map;
+                menuManager.updateLobbyMapName(name);
+
+                // Sync with other players
+                networkManager.sendMapSelection(map);
+            });
+        });
+    }
 
     // Rematch
     btnRematch.addEventListener('click', () => {
@@ -263,7 +300,13 @@ function setupMenuHandlers() {
     });
 
     networkManager.on('gameStart', (data) => {
-        startGame(false, data.gameState);
+        startGame(false, data.gameState, data.customMap);
+    });
+
+    networkManager.on('mapSelected', (data) => {
+        window.selectedMap = data.map;
+        const name = data.map ? data.map.name : 'Default Zoo';
+        menuManager.updateLobbyMapName(name);
     });
 
     networkManager.on('gameAction', (data) => {
@@ -278,14 +321,15 @@ function setupMenuHandlers() {
  * @param {boolean} isPractice - Single player practice mode
  * @param {Object} networkState - Initial state from network (multiplayer)
  */
-function startGame(isPractice = false, networkState = null) {
+function startGame(isPractice = false, networkState = null, customMap = null) {
     const canvas = document.getElementById('game-canvas');
 
     // Create game instance
     game = new Game(canvas, {
         isPractice,
         networkManager: isPractice ? null : networkManager,
-        initialState: networkState
+        initialState: networkState,
+        customMap: customMap || window.selectedMap
     });
 
     // Expose game instance globally for debugging/export
@@ -444,24 +488,28 @@ function startGameWithCustomMap(mapData) {
 function saveMap() {
     if (!mapEditor) return;
 
-    const mapName = prompt('Enter map name:', 'My Custom Map');
-    if (!mapName) return;
+    // Use custom naming modal instead of native prompt
+    menuManager.showMapNaming((mapName) => {
+        const mapData = mapEditor.exportMap(mapName);
 
-    const mapData = mapEditor.exportMap(mapName);
-    const json = JSON.stringify(mapData, null, 2);
+        // Save to local storage
+        MapManager.saveMap(mapData);
 
-    // Create download link
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${mapName.replace(/[^a-z0-9]/gi, '_')}.koalamap`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+        const json = JSON.stringify(mapData, null, 2);
 
-    console.log('💾 Map saved:', mapName);
+        // Create download link
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${mapName.replace(/[^a-z0-9]/gi, '_')}.koalamap`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        console.log('💾 Map saved:', mapName);
+    });
 }
 
 /**

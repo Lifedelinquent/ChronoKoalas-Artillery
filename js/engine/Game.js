@@ -12,6 +12,7 @@ import { Projectile } from '../weapons/Projectile.js';
 import { InputManager } from './InputManager.js';
 import { EventEmitter } from '../utils/EventEmitter.js';
 import { AudioManager } from './AudioManager.js';
+import { LootManager } from './LootManager.js';
 
 export class Game extends EventEmitter {
     constructor(canvas, options = {}) {
@@ -71,10 +72,8 @@ export class Game extends EventEmitter {
         this.networkManager = options.networkManager;
         this.isPractice = options.isPractice || false;
 
-        // Powerups
-        this.powerups = [];
-        this.powerupSpawnTimer = 300; // 5 minutes in seconds
-        this.maxPowerupsOnMap = 2;
+        // Loot crate system (replaces old powerups)
+        this.lootManager = new LootManager(this);
     }
 
     /**
@@ -682,10 +681,10 @@ export class Game extends EventEmitter {
         this.updateParticles(dt);
         if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  ✨ Particles: ${(t1 - t0).toFixed(1)}ms`); }
 
-        // Update powerups and collection
+        // Update loot crates
         if (profile) t0 = performance.now();
-        this.updatePowerups(dt);
-        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  🎁 Powerups: ${(t1 - t0).toFixed(1)}ms`); }
+        this.lootManager.update(dt);
+        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  📦 Loot: ${(t1 - t0).toFixed(1)}ms`); }
 
         // Update koala animations (backflip etc) and state
         this.updateKoalaAnimations(dt);
@@ -1254,6 +1253,22 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Create floating text (for damage numbers, healing, etc.)
+     */
+    createFloatingText(x, y, text, color = '#fff') {
+        this.particles.push({
+            type: 'floatingText',
+            x, y,
+            vy: -50, // Float upward
+            text,
+            color,
+            lifetime: 1.5,
+            time: 0,
+            size: 16
+        });
+    }
+
+    /**
      * Update particles
      */
     updateParticles(dt) {
@@ -1272,6 +1287,15 @@ export class Game extends EventEmitter {
                 p.y += p.vy * dt;
             } else if (p.type === 'explosion') {
                 p.alpha = 1 - (p.time / p.lifetime);
+            } else if (p.type === 'floatingText') {
+                p.y += p.vy * dt;
+                p.vy *= 0.98; // Slow down
+            } else if (p.type === 'spark') {
+                p.vx *= 0.95;
+                p.vy *= 0.95;
+                p.vy += 100 * dt; // Light gravity
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
             }
         }
     }
@@ -1380,6 +1404,12 @@ export class Game extends EventEmitter {
         // This ensures both clients are in sync
         if (this.networkManager && !this.isPractice && this.isMyTurn()) {
             this.sendFullStateSync();
+        }
+
+        // Check for loot crate spawn
+        // Only the host triggers spawns in multiplayer, practice mode always spawns locally
+        if (this.isPractice || (this.networkManager && this.networkManager.isHost)) {
+            this.lootManager.onTurnStart();
         }
     }
 

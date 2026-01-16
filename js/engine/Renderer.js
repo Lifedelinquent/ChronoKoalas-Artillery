@@ -170,8 +170,8 @@ export class Renderer {
         // Draw terrain
         this.drawTerrain();
 
-        // Draw powerups
-        this.drawPowerups();
+        // Draw loot crates
+        this.drawLootCrates();
 
         // Draw koalas
         this.drawKoalas();
@@ -876,6 +876,26 @@ export class Renderer {
             } else if (p.type === 'debris') {
                 ctx.fillStyle = p.color;
                 ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+            } else if (p.type === 'floatingText') {
+                const alpha = 1 - (p.time / p.lifetime);
+                ctx.save();
+                ctx.font = `bold ${p.size}px Arial`;
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = alpha;
+                ctx.textAlign = 'center';
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 4;
+                ctx.fillText(p.text, p.x, p.y);
+                ctx.restore();
+            } else if (p.type === 'spark') {
+                const alpha = 1 - (p.time / p.lifetime);
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
             }
         }
     }
@@ -916,54 +936,10 @@ export class Renderer {
         ctx.stroke();
     }
     /**
-     * Draw all active powerups
+     * Draw all active loot crates
      */
-    drawPowerups() {
-        const ctx = this.ctx;
-        const time = performance.now() / 1000;
-
-        for (const p of this.game.powerups) {
-            ctx.save();
-
-            // Hover animation
-            const hover = Math.sin(time * 3) * 5;
-            ctx.translate(p.x, p.y + hover);
-
-            if (p.type === 'health') {
-                // Glow effect
-                const glow = 15 + Math.sin(time * 6) * 5;
-                const gradient = ctx.createRadialGradient(0, 0, 5, 0, 0, glow);
-                gradient.addColorStop(0, 'rgba(46, 204, 113, 0.4)');
-                gradient.addColorStop(1, 'rgba(46, 204, 113, 0)');
-                ctx.fillStyle = gradient;
-                ctx.beginPath();
-                ctx.arc(0, 0, glow, 0, Math.PI * 2);
-                ctx.fill();
-
-                // Health box
-                ctx.fillStyle = '#ecf0f1';
-                ctx.strokeStyle = '#27ae60';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                // Check if roundRect is supported, fallback to rect
-                if (ctx.roundRect) {
-                    ctx.roundRect(-12, -12, 24, 24, 4);
-                } else {
-                    ctx.rect(-12, -12, 24, 24);
-                }
-                ctx.fill();
-                ctx.stroke();
-
-                // Red cross
-                ctx.fillStyle = '#e74c3c';
-                // Vertical bar
-                ctx.fillRect(-3, -8, 6, 16);
-                // Horizontal bar
-                ctx.fillRect(-8, -3, 16, 6);
-            }
-
-            ctx.restore();
-        }
+    drawLootCrates() {
+        // Delegate to LootManager
+        this.game.lootManager.render(this.ctx);
     }
 }
-

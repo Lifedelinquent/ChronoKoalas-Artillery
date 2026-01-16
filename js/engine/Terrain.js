@@ -229,6 +229,15 @@ export class Terrain {
     }
 
     /**
+     * Find the first ground Y position at a given X coordinate
+     * Used for loot crate placement
+     */
+    findGroundY(x) {
+        const surfaces = this.getVisualGroundY(x);
+        return surfaces.length > 0 ? surfaces[0] : null;
+    }
+
+    /**
      * Add random destructible map objects (trees, boulders, crates, barrels)
      */
     addMapObjects() {

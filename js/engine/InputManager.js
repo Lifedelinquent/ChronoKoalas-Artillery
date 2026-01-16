@@ -85,6 +85,19 @@ export class InputManager {
     handleKeyDown(e) {
         this.keys[e.code] = true;
 
+        // F3 to toggle performance debugging (always allowed)
+        if (e.code === 'F3') {
+            window.debugPerformance = !window.debugPerformance;
+            console.log(`🔧 Performance debugging: ${window.debugPerformance ? 'ON' : 'OFF'}`);
+            e.preventDefault();
+            return;
+        }
+
+        // Block game actions if it's not our turn in multiplayer
+        if (!this.game.isMyTurn()) {
+            return;
+        }
+
         // Number keys for weapon timer
         if (e.code >= 'Digit1' && e.code <= 'Digit5') {
             const timer = parseInt(e.code.replace('Digit', ''));
@@ -116,13 +129,6 @@ export class InputManager {
             if (this.game.phase === 'aiming' || this.game.phase === 'retreat') {
                 this.highJump();
             }
-            e.preventDefault();
-        }
-
-        // F3 to toggle performance debugging
-        if (e.code === 'F3') {
-            window.debugPerformance = !window.debugPerformance;
-            console.log(`🔧 Performance debugging: ${window.debugPerformance ? 'ON' : 'OFF'}`);
             e.preventDefault();
         }
     }
@@ -174,6 +180,11 @@ export class InputManager {
             // Ignore clicks right after refocusing window
             if (!this.windowFocused) return;
 
+            // Block game actions if it's not our turn in multiplayer
+            if (!this.game.isMyTurn()) {
+                return;
+            }
+
             if (this.game.phase === 'aiming') {
                 const weapon = this.game.weaponManager.currentWeapon;
 
@@ -197,8 +208,8 @@ export class InputManager {
         } else if (e.button === 2) { // Right click
             this.mouse.rightDown = true;
 
-            // Cancel charging if currently charging
-            if (this.isCharging) {
+            // Cancel charging if currently charging (only if it's our turn)
+            if (this.isCharging && this.game.isMyTurn()) {
                 this.cancelCharge();
             }
         }
@@ -279,6 +290,11 @@ export class InputManager {
      * Update during aiming phase
      */
     updateAiming(koala, dt) {
+        // Block movement if it's not our turn in multiplayer
+        if (!this.game.isMyTurn()) {
+            return;
+        }
+
         // WASD or Arrow key movement
         let moveDir = 0;
         if (this.keys['KeyA'] || this.keys['ArrowLeft']) {

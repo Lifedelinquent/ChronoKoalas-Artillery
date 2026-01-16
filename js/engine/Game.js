@@ -84,6 +84,14 @@ export class Game extends EventEmitter {
         // Initialize audio (requires user interaction)
         this.audioManager.init();
 
+        // Get game seed for multiplayer sync (or generate random for practice)
+        const initialState = this.options.initialState;
+        this.gameSeed = initialState?.seed || Math.floor(Math.random() * 1000000);
+        console.log('🎲 Game seed:', this.gameSeed);
+
+        // Create seeded random function for consistent results
+        this.seededRandom = this.createSeededRandom(this.gameSeed);
+
         // Reset camera to default zoom and position
         this.camera.zoom = 1.1; // 110% to fill screen
         this.camera.x = 0;
@@ -103,7 +111,7 @@ export class Game extends EventEmitter {
         // Create teams
         this.createTeams();
 
-        // Randomize wind
+        // Randomize wind (using seeded random for sync)
         this.randomizeWind();
 
         // Start first turn
@@ -114,6 +122,17 @@ export class Game extends EventEmitter {
         this.gameLoop();
 
         console.log('🎮 Game started!');
+    }
+
+    /**
+     * Create a seeded random number generator for multiplayer sync
+     */
+    createSeededRandom(seed) {
+        let s = seed;
+        return () => {
+            s = Math.sin(s) * 10000;
+            return s - Math.floor(s);
+        };
     }
 
     /**
@@ -1657,10 +1676,12 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Randomize wind
+     * Randomize wind (uses seeded random for multiplayer sync)
      */
     randomizeWind() {
-        this.wind = (Math.random() - 0.5) * 2; // -1 to 1
+        // Use seeded random for multiplayer sync, or regular random for practice
+        const rand = this.seededRandom ? this.seededRandom() : Math.random();
+        this.wind = (rand - 0.5) * 2; // -1 to 1
         this.updateWindDisplay();
     }
 
@@ -1730,8 +1751,20 @@ export class Game extends EventEmitter {
         const team = this.getCurrentTeam();
         const el = document.getElementById('current-team');
         if (el && team) {
-            el.textContent = team.name;
-            el.style.color = team.color;
+            // In multiplayer, show if it's your turn or opponent's turn
+            if (!this.isPractice && this.networkManager) {
+                const isMyTurn = this.isMyTurn();
+                const turnText = isMyTurn ? `${team.name} - Your Turn!` : `${team.name} - Opponent's Turn`;
+                el.textContent = turnText;
+                el.style.color = team.color;
+
+                // Add visual emphasis for your turn
+                el.style.fontWeight = isMyTurn ? 'bold' : 'normal';
+                el.style.textShadow = isMyTurn ? '0 0 10px ' + team.color : 'none';
+            } else {
+                el.textContent = team.name;
+                el.style.color = team.color;
+            }
         }
     }
 

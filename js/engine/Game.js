@@ -1197,8 +1197,9 @@ export class Game extends EventEmitter {
         // Create particles
         this.createExplosionParticles(projectile.x, projectile.y, weapon.explosionRadius);
 
-        // NETWORK SYNC: Send explosion results to opponent
-        if (this.networkManager && !this.isPractice && this.isMyTurn() && explosionResults.length > 0) {
+        // NETWORK SYNC: ALWAYS send explosion results to opponent for terrain sync
+        // Even if no koalas were hit, we need to sync the terrain crater
+        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
             this.networkManager.send({
                 type: 'explosionSync',
                 explosionX: projectile.x,
@@ -1366,6 +1367,43 @@ export class Game extends EventEmitter {
             this.updateTurnIndicator();
             this.updateWeaponUI();
         }
+
+        // NETWORK SYNC: Send full state sync at start of turn
+        // This ensures both clients are in sync
+        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+            this.sendFullStateSync();
+        }
+    }
+
+    /**
+     * Send a full state sync to the opponent
+     * This includes all koala positions, health, and game state
+     */
+    sendFullStateSync() {
+        const koalas = [];
+        for (const team of this.teams) {
+            for (const koala of team.koalas) {
+                koalas.push({
+                    name: koala.name,
+                    x: koala.x,
+                    y: koala.y,
+                    vx: koala.vx,
+                    vy: koala.vy,
+                    health: koala.health,
+                    isAlive: koala.isAlive,
+                    onGround: koala.onGround
+                });
+            }
+        }
+
+        this.networkManager.send({
+            type: 'stateSync',
+            koalas,
+            currentTeamIndex: this.currentTeamIndex,
+            currentKoalaIndex: this.currentKoalaIndex,
+            phase: this.phase,
+            wind: this.wind
+        });
     }
 
     /**
@@ -2377,5 +2415,80 @@ export class Game extends EventEmitter {
             }
         }
         return null;
+    }
+
+    /**
+     * Handle remote jump action
+     */
+    handleRemoteJump(data) {
+        console.log('🦘 Remote jump:', data);
+        const koala = this.getCurrentKoala();
+        if (koala) {
+            koala.x = data.x;
+            koala.y = data.y;
+            koala.vy = data.vy;
+            koala.onGround = false;
+            koala.isJumping = true;
+        }
+    }
+
+    /**
+     * Handle remote high jump / backflip action
+     */
+    handleRemoteHighJump(data) {
+        console.log('🦘 Remote high jump:', data);
+        const koala = this.getCurrentKoala();
+        if (koala) {
+            koala.x = data.x;
+            koala.y = data.y;
+            koala.vx = data.vx;
+            koala.vy = data.vy;
+            koala.facingLeft = data.facingLeft;
+            koala.onGround = false;
+            koala.isBackflipping = true;
+            koala.backflipRotation = 0;
+        }
+    }
+
+    /**
+     * Handle full state sync from the authoritative client
+     * This is used to correct any drift between clients
+     */
+    handleRemoteStateSync(data) {
+        console.log('🔄 Remote state sync');
+
+        // Sync all koala positions
+        if (data.koalas) {
+            for (const koalaData of data.koalas) {
+                const koala = this.findKoalaByName(koalaData.name);
+                if (koala) {
+                    koala.x = koalaData.x;
+                    koala.y = koalaData.y;
+                    koala.vx = koalaData.vx || 0;
+                    koala.vy = koalaData.vy || 0;
+                    koala.health = koalaData.health;
+                    koala.isAlive = koalaData.isAlive;
+                    koala.onGround = koalaData.onGround;
+                }
+            }
+        }
+
+        // Sync game state
+        if (data.currentTeamIndex !== undefined) {
+            this.currentTeamIndex = data.currentTeamIndex;
+        }
+        if (data.currentKoalaIndex !== undefined) {
+            this.currentKoalaIndex = data.currentKoalaIndex;
+        }
+        if (data.phase) {
+            this.phase = data.phase;
+        }
+        if (data.wind !== undefined) {
+            this.wind = data.wind;
+            this.updateWindDisplay();
+        }
+
+        this.updateTeamHealth();
+        this.updateTurnIndicator();
     }
 }

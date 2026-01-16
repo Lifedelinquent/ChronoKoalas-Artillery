@@ -519,6 +519,16 @@ export class InputManager {
         koala.vy = -350; // Stronger jump
         koala.onGround = false;
         koala.isJumping = true;
+
+        // NETWORK SYNC: Send jump to opponent
+        if (this.game.networkManager && !this.game.isPractice) {
+            this.game.networkManager.send({
+                type: 'jump',
+                x: koala.x,
+                y: koala.y,
+                vy: koala.vy
+            });
+        }
     }
 
     /**
@@ -534,6 +544,18 @@ export class InputManager {
         koala.onGround = false;
         koala.isBackflipping = true;
         koala.backflipRotation = 0; // Start spin
+
+        // NETWORK SYNC: Send high jump to opponent
+        if (this.game.networkManager && !this.game.isPractice) {
+            this.game.networkManager.send({
+                type: 'highJump',
+                x: koala.x,
+                y: koala.y,
+                vx: koala.vx,
+                vy: koala.vy,
+                facingLeft: koala.facingLeft
+            });
+        }
     }
 
     /**

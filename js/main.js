@@ -482,6 +482,24 @@ function setupMenuHandlers() {
             game.handleRemoteWeaponSelect(data);
         }
     });
+
+    networkManager.on('remoteJump', (data) => {
+        if (game) {
+            game.handleRemoteJump(data);
+        }
+    });
+
+    networkManager.on('remoteHighJump', (data) => {
+        if (game) {
+            game.handleRemoteHighJump(data);
+        }
+    });
+
+    networkManager.on('remoteStateSync', (data) => {
+        if (game) {
+            game.handleRemoteStateSync(data);
+        }
+    });
 }
 
 /**

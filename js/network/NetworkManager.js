@@ -262,6 +262,18 @@ export class NetworkManager extends EventEmitter {
                 this.emit('remoteWeaponSelect', data);
                 break;
 
+            case 'jump':
+                this.emit('remoteJump', data);
+                break;
+
+            case 'highJump':
+                this.emit('remoteHighJump', data);
+                break;
+
+            case 'stateSync':
+                this.emit('remoteStateSync', data);
+                break;
+
             case 'chat':
                 this.emit('chatMessage', data);
                 break;

@@ -2,6 +2,8 @@
  * Menu Manager - Handles UI screens and transitions
  */
 
+import { MapManager } from '../utils/MapManager.js';
+
 export class MenuManager {
     constructor() {
         this.screens = {
@@ -165,42 +167,116 @@ export class MenuManager {
         const list = document.getElementById('map-list');
         modal.classList.remove('hidden');
 
-        // Clear existing custom maps (keep default)
-        const defaultCard = list.querySelector('[data-map-id="default"]');
-        list.innerHTML = '';
-        list.appendChild(defaultCard);
-
-        // Populate custom maps
-        maps.forEach((map, index) => {
-            const card = document.createElement('div');
-            card.className = 'map-card';
-            card.dataset.mapId = index;
-            card.innerHTML = `
-                <div class="map-preview" style="background-image: url(${map.terrain})"></div>
-                <span class="map-name">${map.name}</span>
-            `;
-            list.appendChild(card);
-        });
-
-        // Selection logic
+        // Track selected map
         let selectedMapId = 'default';
-        const cards = list.querySelectorAll('.map-card');
-        cards.forEach(card => {
-            card.onclick = () => {
-                cards.forEach(c => c.classList.remove('selected'));
+
+        // Function to render the map list
+        const renderMapList = () => {
+            // Get fresh map list from storage
+            const currentMaps = MapManager.getAllMaps();
+
+            // Update the maps array reference
+            maps.length = 0;
+            currentMaps.forEach(m => maps.push(m));
+
+            // Clear existing custom maps (keep default)
+            const defaultCard = list.querySelector('[data-map-id="default"]');
+            list.innerHTML = '';
+            if (defaultCard) {
+                list.appendChild(defaultCard);
+            }
+
+            // Populate custom maps
+            currentMaps.forEach((map, index) => {
+                const card = document.createElement('div');
+                card.className = 'map-card';
+                card.dataset.mapId = index;
+                card.dataset.mapName = map.name;
+                card.innerHTML = `
+                    <div class="map-preview" style="background-image: url(${map.terrain})"></div>
+                    <span class="map-name">${map.name}</span>
+                    <button class="map-delete-btn" data-map-name="${map.name}" title="Delete Map">🗑️</button>
+                `;
+                list.appendChild(card);
+            });
+        };
+
+        // Initial render
+        renderMapList();
+
+        // Track the map pending deletion
+        let pendingDeleteMapName = null;
+
+        // Get the delete confirmation modal elements
+        const deleteModal = document.getElementById('delete-confirm-modal');
+        const deleteMapNameEl = document.getElementById('delete-map-name');
+        const btnDeleteCancel = document.getElementById('btn-delete-cancel');
+        const btnDeleteConfirm = document.getElementById('btn-delete-confirm');
+
+        // Show delete confirmation modal
+        const showDeleteConfirm = (mapName) => {
+            pendingDeleteMapName = mapName;
+            deleteMapNameEl.textContent = `"${mapName}"`;
+            deleteModal.classList.remove('hidden');
+        };
+
+        // Hide delete confirmation modal
+        const hideDeleteConfirm = () => {
+            deleteModal.classList.add('hidden');
+            pendingDeleteMapName = null;
+        };
+
+        // Cancel delete button
+        btnDeleteCancel.onclick = () => {
+            hideDeleteConfirm();
+        };
+
+        // Confirm delete button
+        btnDeleteConfirm.onclick = () => {
+            if (pendingDeleteMapName) {
+                MapManager.deleteMap(pendingDeleteMapName);
+                renderMapList();
+            }
+            hideDeleteConfirm();
+        };
+
+        // Use event delegation for all clicks on the list
+        list.onclick = (e) => {
+            // Check if a delete button was clicked
+            const deleteBtn = e.target.closest('.map-delete-btn');
+            if (deleteBtn) {
+                e.stopPropagation();
+                e.preventDefault();
+
+                const mapName = deleteBtn.dataset.mapName;
+                if (mapName) {
+                    showDeleteConfirm(mapName);
+                }
+                return;
+            }
+
+            // Check if a card was clicked (for selection)
+            const card = e.target.closest('.map-card');
+            if (card) {
+                // Deselect all
+                list.querySelectorAll('.map-card').forEach(c => c.classList.remove('selected'));
+                // Select this one
                 card.classList.add('selected');
                 selectedMapId = card.dataset.mapId;
-            };
-        });
+            }
+        };
 
         // Button handlers
         document.getElementById('btn-map-select-cancel').onclick = () => {
             modal.classList.add('hidden');
+            hideDeleteConfirm(); // Also close delete modal if open
         };
 
         document.getElementById('btn-map-select-confirm').onclick = () => {
             modal.classList.add('hidden');
-            callback(selectedMapId);
+            hideDeleteConfirm(); // Also close delete modal if open
+            const selectedCard = list.querySelector('.map-card.selected');
+            callback(selectedCard ? selectedCard.dataset.mapId : 'default');
         };
     }
 

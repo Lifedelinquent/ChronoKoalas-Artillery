@@ -72,6 +72,22 @@
         </div>
     </div>
 
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-confirm-modal" class="modal hidden">
+        <div class="modal-content small">
+            <h2 class="modal-title">⚠️ Delete Map</h2>
+            <div class="modal-body">
+                <p>Are you sure you want to delete this map?</p>
+                <p id="delete-map-name" style="color: #f1c40f; font-size: 1.3rem; font-weight: bold;"></p>
+                <p style="color: #888; font-size: 0.9rem;">This action cannot be undone.</p>
+            </div>
+            <div class="modal-controls">
+                <button id="btn-delete-cancel" class="menu-btn secondary">Cancel</button>
+                <button id="btn-delete-confirm" class="menu-btn danger">Delete</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Map Editor Screen -->
     <div id="editor-screen" class="screen">
         <canvas id="editor-canvas"></canvas>

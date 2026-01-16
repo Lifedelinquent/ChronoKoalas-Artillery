@@ -12,16 +12,18 @@ export class Terrain {
         this.data = null;
 
         // Visual canvas for terrain
+        // willReadFrequently because getVisualGroundY uses getImageData
         this.canvas = document.createElement('canvas');
         this.canvas.width = width;
         this.canvas.height = height;
-        this.ctx = this.canvas.getContext('2d');
+        this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
 
         // Collision mask canvas (for precise collision)
+        // willReadFrequently tells the browser we'll call getImageData often
         this.maskCanvas = document.createElement('canvas');
         this.maskCanvas.width = width;
         this.maskCanvas.height = height;
-        this.maskCtx = this.maskCanvas.getContext('2d');
+        this.maskCtx = this.maskCanvas.getContext('2d', { willReadFrequently: true });
 
         // Terrain colors
         this.grassColor = '#4a7c23';
@@ -913,27 +915,57 @@ export class Terrain {
 
     /**
      * Update collision mask from visual terrain
+     * @param {Object} region - Optional {x, y, width, height} to update only a specific area
      */
-    updateCollisionMask() {
-        // Copy terrain to mask
-        this.maskCtx.clearRect(0, 0, this.width, this.height);
-        this.maskCtx.drawImage(this.canvas, 0, 0);
+    updateCollisionMask(region = null) {
+        if (region) {
+            // OPTIMIZED: Only update the specified region
+            const x = Math.max(0, Math.floor(region.x));
+            const y = Math.max(0, Math.floor(region.y));
+            const w = Math.min(this.width - x, Math.ceil(region.width));
+            const h = Math.min(this.height - y, Math.ceil(region.height));
 
-        // Get image data for collision detection
-        this.imageData = this.maskCtx.getImageData(0, 0, this.width, this.height);
-        const data = this.imageData.data;
+            if (w <= 0 || h <= 0) return;
 
-        // Force binary mask to prevent invisible collision
-        // Any pixel with alpha < 128 is treated as air
-        for (let i = 0; i < data.length; i += 4) {
-            if (data[i + 3] < 128) {
-                data[i + 3] = 0;
-            } else {
-                data[i + 3] = 255;
+            // Copy just this region from terrain canvas to mask
+            this.maskCtx.clearRect(x, y, w, h);
+            this.maskCtx.drawImage(this.canvas, x, y, w, h, x, y, w, h);
+
+            // Get just this region's image data
+            const regionData = this.maskCtx.getImageData(x, y, w, h);
+            const data = regionData.data;
+
+            // Binarize alpha
+            for (let i = 0; i < data.length; i += 4) {
+                data[i + 3] = data[i + 3] < 128 ? 0 : 255;
             }
-        }
 
-        this.maskCtx.putImageData(this.imageData, 0, 0);
+            this.maskCtx.putImageData(regionData, x, y);
+
+            // Update the main imageData cache for this region
+            // We need to copy the region data back into our full imageData
+            const fullData = this.imageData.data;
+            for (let ry = 0; ry < h; ry++) {
+                for (let rx = 0; rx < w; rx++) {
+                    const srcIdx = (ry * w + rx) * 4;
+                    const dstIdx = ((y + ry) * this.width + (x + rx)) * 4;
+                    fullData[dstIdx + 3] = data[srcIdx + 3];
+                }
+            }
+        } else {
+            // FULL UPDATE: Original behavior for initial load
+            this.maskCtx.clearRect(0, 0, this.width, this.height);
+            this.maskCtx.drawImage(this.canvas, 0, 0);
+
+            this.imageData = this.maskCtx.getImageData(0, 0, this.width, this.height);
+            const data = this.imageData.data;
+
+            for (let i = 0; i < data.length; i += 4) {
+                data[i + 3] = data[i + 3] < 128 ? 0 : 255;
+            }
+
+            this.maskCtx.putImageData(this.imageData, 0, 0);
+        }
     }
 
     /**
@@ -985,7 +1017,14 @@ export class Terrain {
         this.ctx.restore();
 
         if (updateMask) {
-            this.updateCollisionMask();
+            // OPTIMIZED: Only update the crater region
+            const padding = 5; // Extra padding to catch edge effects
+            this.updateCollisionMask({
+                x: cx - radius - padding,
+                y: cy - radius - padding,
+                width: (radius + padding) * 2,
+                height: (radius + padding) * 2
+            });
         }
     }
 

@@ -116,6 +116,13 @@ export class InputManager {
             }
             e.preventDefault();
         }
+
+        // F3 to toggle performance debugging
+        if (e.code === 'F3') {
+            window.debugPerformance = !window.debugPerformance;
+            console.log(`🔧 Performance debugging: ${window.debugPerformance ? 'ON' : 'OFF'}`);
+            e.preventDefault();
+        }
     }
 
     /**
@@ -182,6 +189,11 @@ export class InputManager {
             }
         } else if (e.button === 2) { // Right click
             this.mouse.rightDown = true;
+
+            // Cancel charging if currently charging
+            if (this.isCharging) {
+                this.cancelCharge();
+            }
         }
     }
 
@@ -333,6 +345,24 @@ export class InputManager {
         // Hide power bar
         document.getElementById('power-bar-container').classList.add('hidden');
         document.getElementById('power-fill').style.width = '0%';
+    }
+
+    /**
+     * Cancel charging without firing
+     */
+    cancelCharge() {
+        if (!this.isCharging) return;
+
+        this.isCharging = false;
+        this.game.phase = 'aiming';
+        this.game.weaponManager.power = 0;
+        this.game.weaponManager.isCharging = false;
+
+        // Hide power bar
+        document.getElementById('power-bar-container').classList.add('hidden');
+        document.getElementById('power-fill').style.width = '0%';
+
+        console.log('🚫 Charge cancelled');
     }
 
     /**

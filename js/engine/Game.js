@@ -503,11 +503,47 @@ export class Game extends EventEmitter {
         const deltaTime = (currentTime - this.lastTime) / 1000;
         this.lastTime = currentTime;
 
-        if (!this.isPaused) {
-            this.update(deltaTime);
-        }
+        // Performance debugging
+        if (window.debugPerformance) {
+            const frameStart = performance.now();
+            let updateTime = 0, renderTime = 0;
 
-        this.render();
+            if (!this.isPaused) {
+                const t0 = performance.now();
+                this.update(deltaTime);
+                updateTime = performance.now() - t0;
+            }
+
+            const t1 = performance.now();
+            this.render();
+            renderTime = performance.now() - t1;
+
+            const frameTime = performance.now() - frameStart;
+
+            // Track frame times
+            this.frameTimes = this.frameTimes || [];
+            this.frameTimes.push(frameTime);
+            if (this.frameTimes.length > 60) this.frameTimes.shift();
+
+            // Log if frame took too long (>10ms for detailed, >50ms for basic)
+            const threshold = window.debugPerformanceDetail ? 10 : 50;
+            if (frameTime > threshold) {
+                console.warn(`⚠️ LAG: ${frameTime.toFixed(1)}ms (Update: ${updateTime.toFixed(1)}ms, Render: ${renderTime.toFixed(1)}ms) | Phase: ${this.phase} | Projectiles: ${this.projectiles.length}`);
+            }
+
+            // Log average every 60 frames
+            if (this.frameTimes.length === 60 && this.frameTimes.length % 60 === 0) {
+                const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
+                const max = Math.max(...this.frameTimes);
+                console.log(`📊 Avg: ${avg.toFixed(2)}ms (${(1000 / avg).toFixed(0)} FPS) | Max: ${max.toFixed(1)}ms`);
+            }
+        } else {
+            // Normal loop (no debugging overhead)
+            if (!this.isPaused) {
+                this.update(deltaTime);
+            }
+            this.render();
+        }
 
         this.animationId = requestAnimationFrame((t) => this.gameLoop(t));
     }
@@ -518,6 +554,10 @@ export class Game extends EventEmitter {
     update(dt) {
         // Cap delta time to prevent physics issues
         dt = Math.min(dt, 0.05);
+
+        // Detailed profiling when debugging
+        const profile = window.debugPerformance && window.debugPerformanceDetail;
+        let t0, t1;
 
         switch (this.phase) {
             case 'aiming':
@@ -537,16 +577,24 @@ export class Game extends EventEmitter {
         }
 
         // Always update projectiles/traps (mines need to work even during aiming)
+        if (profile) t0 = performance.now();
         this.updateProjectiles(dt);
+        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  📦 Projectiles: ${(t1 - t0).toFixed(1)}ms`); }
 
         // Update physics for all entities
+        if (profile) t0 = performance.now();
         this.physics.update(dt);
+        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  ⚙️ Physics: ${(t1 - t0).toFixed(1)}ms`); }
 
         // Update particles
+        if (profile) t0 = performance.now();
         this.updateParticles(dt);
+        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  ✨ Particles: ${(t1 - t0).toFixed(1)}ms`); }
 
         // Update powerups and collection
+        if (profile) t0 = performance.now();
         this.updatePowerups(dt);
+        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  🎁 Powerups: ${(t1 - t0).toFixed(1)}ms`); }
 
         // Update koala animations (backflip etc) and state
         this.updateKoalaAnimations(dt);
@@ -560,25 +608,6 @@ export class Game extends EventEmitter {
 
         // Smooth camera movement
         this.updateCamera(dt);
-
-        // Update turn timer
-        if (this.phase === 'aiming' && !this.isPractice) {
-            this.turnTimer -= dt;
-            this.updateTimerDisplay();
-
-            if (this.turnTimer <= 0) {
-                this.endTurn();
-            }
-
-            // Timer warning sound (last 5 seconds)
-            if (this.turnTimer <= 5 && this.turnTimer > 0) {
-                const prevSec = Math.ceil(this.turnTimer + dt);
-                const currSec = Math.ceil(this.turnTimer);
-                if (prevSec !== currSec) {
-                    this.audioManager.playTimerTick();
-                }
-            }
-        }
     }
 
     /**
@@ -692,6 +721,7 @@ export class Game extends EventEmitter {
      * Update turn timer countdown
      */
     updateTurnTimer(dt) {
+        const prevTimer = this.turnTimer;
         this.turnTimer -= dt;
 
         // Update timer display
@@ -705,6 +735,15 @@ export class Game extends EventEmitter {
                 timerEl.classList.add('low-time');
             } else {
                 timerEl.classList.remove('low-time');
+            }
+        }
+
+        // Timer warning sound (last 5 seconds, once per second)
+        if (this.turnTimer <= 5 && this.turnTimer > 0 && !this.isPractice) {
+            const prevSec = Math.ceil(prevTimer);
+            const currSec = Math.ceil(this.turnTimer);
+            if (prevSec !== currSec) {
+                this.audioManager.playTimerTick();
             }
         }
 
@@ -771,6 +810,17 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Remove a projectile and mark it as destroyed (for camera tracking)
+     */
+    removeProjectile(index) {
+        const proj = this.projectiles[index];
+        if (proj) {
+            proj.destroyed = true;
+        }
+        this.projectiles.splice(index, 1);
+    }
+
+    /**
      * Update projectiles
      */
     updateProjectiles(dt) {
@@ -814,7 +864,7 @@ export class Game extends EventEmitter {
 
             if (shouldExplode) {
                 this.handleProjectileImpact(proj);
-                this.projectiles.splice(i, 1);
+                this.removeProjectile(i);
                 continue;
             }
 
@@ -908,11 +958,11 @@ export class Game extends EventEmitter {
                 } else if (proj.type === 'rope') {
                     // Rope hits -> Pull player
                     this.handleRopeHit(proj);
-                    this.projectiles.splice(i, 1);
+                    this.removeProjectile(i);
                 } else {
                     // Non-bouncing, non-timer weapons explode on impact
                     this.handleProjectileImpact(proj);
-                    this.projectiles.splice(i, 1);
+                    this.removeProjectile(i);
                 }
                 continue;
             }
@@ -920,7 +970,7 @@ export class Game extends EventEmitter {
             // Check out of bounds
             if (proj.x < -100 || proj.x > this.worldWidth + 100 ||
                 proj.y > this.worldHeight + 100) {
-                this.projectiles.splice(i, 1);
+                this.removeProjectile(i);
                 continue;
             }
 
@@ -958,7 +1008,7 @@ export class Game extends EventEmitter {
                 proj.x = hitKoalaX;
                 proj.y = hitKoalaY;
                 this.handleProjectileImpact(proj, hitKoala);
-                this.projectiles.splice(i, 1);
+                this.removeProjectile(i);
                 continue;
             }
         }
@@ -1591,17 +1641,18 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Follow projectile with camera
+     * Start following a projectile with camera (uses main update loop)
      */
     followProjectile(projectile) {
-        const follow = () => {
-            if (this.projectiles.includes(projectile)) {
-                this.camera.targetX = projectile.x - this.canvas.width / 2;
-                this.camera.targetY = projectile.y - this.canvas.height / 2;
-                requestAnimationFrame(follow);
-            }
-        };
-        follow();
+        // Store reference - updateCamera will handle following
+        this.followingProjectile = projectile;
+    }
+
+    /**
+     * Stop following projectile
+     */
+    stopFollowingProjectile() {
+        this.followingProjectile = null;
     }
 
     /**
@@ -1616,6 +1667,15 @@ export class Game extends EventEmitter {
      * Update camera position
      */
     updateCamera(dt) {
+        // Follow projectile if tracking one (O(1) check using destroyed flag)
+        if (this.followingProjectile && !this.followingProjectile.destroyed) {
+            this.camera.targetX = this.followingProjectile.x - this.canvas.width / 2;
+            this.camera.targetY = this.followingProjectile.y - this.canvas.height / 2;
+        } else if (this.followingProjectile) {
+            // Projectile is destroyed, stop tracking
+            this.followingProjectile = null;
+        }
+
         const smoothing = 5;
         this.camera.x += (this.camera.targetX - this.camera.x) * smoothing * dt;
         this.camera.y += (this.camera.targetY - this.camera.y) * smoothing * dt;
@@ -1786,42 +1846,50 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Update weapon UI (ammo counts)
+     * Update weapon UI (ammo counts) - Optimized to minimize DOM operations
      */
     updateWeaponUI() {
         const weaponEls = document.querySelectorAll('.weapon');
+        const currentWeaponId = this.weaponManager.currentWeapon?.id;
+
         weaponEls.forEach(el => {
             const weaponId = el.dataset.weapon;
             const weapon = this.weaponManager.getWeapon(weaponId);
 
             if (weapon) {
-                // Update selected state
-                if (this.weaponManager.currentWeapon && this.weaponManager.currentWeapon.id === weaponId) {
-                    el.classList.add('selected');
-                } else {
-                    el.classList.remove('selected');
+                // Update selected state (only toggle if needed)
+                const isSelected = weaponId === currentWeaponId;
+                if (isSelected !== el.classList.contains('selected')) {
+                    el.classList.toggle('selected', isSelected);
                 }
 
-                // Remove existing ammo count
-                const existingAmmo = el.querySelector('.ammo-count');
-                if (existingAmmo) {
-                    existingAmmo.remove();
-                }
+                // Handle ammo count element
+                let ammoEl = el.querySelector('.ammo-count');
 
-                // Add new ammo count if not infinite
                 if (weapon.ammo !== Infinity) {
-                    const ammoEl = document.createElement('div');
-                    ammoEl.className = 'ammo-count';
-                    ammoEl.textContent = weapon.ammo;
-                    el.appendChild(ammoEl);
+                    // Finite ammo - create or update ammo element
+                    if (!ammoEl) {
+                        ammoEl = document.createElement('div');
+                        ammoEl.className = 'ammo-count';
+                        el.appendChild(ammoEl);
+                    }
 
-                    // Dim if empty
-                    if (weapon.ammo <= 0) {
-                        el.classList.add('disabled');
-                    } else {
-                        el.classList.remove('disabled');
+                    // Only update text if changed
+                    const ammoStr = weapon.ammo.toString();
+                    if (ammoEl.textContent !== ammoStr) {
+                        ammoEl.textContent = ammoStr;
+                    }
+
+                    // Update disabled state (only toggle if needed)
+                    const shouldBeDisabled = weapon.ammo <= 0;
+                    if (shouldBeDisabled !== el.classList.contains('disabled')) {
+                        el.classList.toggle('disabled', shouldBeDisabled);
                     }
                 } else {
+                    // Infinite ammo - remove ammo element if exists
+                    if (ammoEl) {
+                        ammoEl.remove();
+                    }
                     el.classList.remove('disabled');
                 }
             }

@@ -8,8 +8,10 @@ export class InputManager {
 
         // Input state
         this.keys = {};
-        this.mouse = { x: 0, y: 0, down: false };
+        this.mouse = { x: 0, y: 0, down: false, rightDown: false, lastMoveTime: 0 };
         this.isCharging = false;
+        this.lastActivityTime = 0;
+        this.isWeaponBarHidden = false;
 
         // Movement settings
         this.moveSpeed = 12;
@@ -142,6 +144,8 @@ export class InputManager {
      */
     handleMouseMove(e) {
         const rect = this.game.canvas.getBoundingClientRect();
+        this.mouse.screenX = e.clientX;
+        this.mouse.screenY = e.clientY;
         this.mouse.x = (e.clientX - rect.left) / this.game.camera.zoom + this.game.camera.x;
         this.mouse.y = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
 
@@ -149,6 +153,9 @@ export class InputManager {
         if (this.game.phase === 'aiming' || this.game.phase === 'firing') {
             this.updateAimFromMouse();
         }
+
+        // Track movement for weapon-bar auto-hide
+        this.mouse.lastMoveTime = performance.now();
 
         // Drag camera with right mouse button
         if (this.mouse.rightDown) {
@@ -262,6 +269,13 @@ export class InputManager {
     }
 
     /**
+     * Update loop for input-related UI or states
+     */
+    update(dt) {
+        this.updateWeaponBarVisibility(dt);
+    }
+
+    /**
      * Update during aiming phase
      */
     updateAiming(koala, dt) {
@@ -308,6 +322,57 @@ export class InputManager {
         // Update facing direction based on aim angle - ONLY if not walking
         if (moveDir === 0) {
             koala.facingLeft = Math.abs(koala.aimAngle) > Math.PI / 2;
+        }
+    }
+
+    /**
+     * Handle auto-hiding of the weapon bar
+     */
+    updateWeaponBarVisibility(dt) {
+        if (!this.weaponBar) return;
+
+        // Criteria for hiding:
+        // 1. Any movement keys held
+        const moveKeys = ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyW', 'KeyS', 'Space', 'Enter', 'Backspace'];
+        const isKeyPressed = moveKeys.some(key => this.keys[key]);
+
+        // 2. Charging weapon
+        const isFiring = this.isCharging;
+
+        // 3. Panning camera
+        const isPanning = this.mouse.rightDown;
+
+        // 4. Recent mouse movement (last 1.5 seconds)
+        const mouseMovedRecently = (performance.now() - this.mouse.lastMoveTime) < 1500;
+
+        // 5. Special check: Is mouse hovering the bar right now? 
+        // If so, NEVER hide it.
+        let isMouseOverBar = false;
+        if (this.weaponBar) {
+            const rect = this.weaponBar.getBoundingClientRect();
+            isMouseOverBar = (
+                this.mouse.screenX >= rect.left &&
+                this.mouse.screenX <= rect.right &&
+                this.mouse.screenY >= rect.top &&
+                this.mouse.screenY <= rect.bottom
+            );
+        }
+
+        const shouldHide = (isKeyPressed || isFiring || isPanning || mouseMovedRecently) && !isMouseOverBar;
+
+        if (this.game.phase !== 'aiming' && this.game.phase !== 'retreat') {
+            // Force hide during other phases (projectile, damage, etc)
+            this.weaponBar.classList.add('minimized');
+            this.isWeaponBarHidden = true;
+            return;
+        }
+
+        if (shouldHide && !this.isWeaponBarHidden) {
+            this.weaponBar.classList.add('minimized');
+            this.isWeaponBarHidden = true;
+        } else if (!shouldHide && this.isWeaponBarHidden) {
+            this.weaponBar.classList.remove('minimized');
+            this.isWeaponBarHidden = false;
         }
     }
 

@@ -606,6 +606,9 @@ export class Game extends EventEmitter {
             });
         });
 
+        // Update UI states based on input
+        this.inputManager.update(dt);
+
         // Smooth camera movement
         this.updateCamera(dt);
     }

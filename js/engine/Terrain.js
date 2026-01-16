@@ -11,6 +11,10 @@ export class Terrain {
         // Terrain data - true = solid, false = air
         this.data = null;
 
+        // Seeded random function for multiplayer sync
+        // If not set, falls back to this.random()
+        this._seededRandom = null;
+
         // Visual canvas for terrain
         // willReadFrequently because getVisualGroundY uses getImageData
         this.canvas = document.createElement('canvas');
@@ -30,6 +34,20 @@ export class Terrain {
         this.dirtColor = '#8B4513';
         this.dirtDarkColor = '#654321';
         this.skyColor = '#87CEEB';
+    }
+
+    /**
+     * Set a seeded random function for multiplayer sync
+     */
+    setSeededRandom(seededRandom) {
+        this._seededRandom = seededRandom;
+    }
+
+    /**
+     * Get a random number (uses seeded random if available)
+     */
+    random() {
+        return this._seededRandom ? this._seededRandom() : this.random();
     }
 
     /**
@@ -227,14 +245,14 @@ export class Terrain {
         const tryPlaceObject = (type, minSpacing) => {
             // Try up to 50 times to find a valid spot
             for (let attempt = 0; attempt < 50; attempt++) {
-                const x = 80 + Math.random() * (this.width - 160);
+                const x = 80 + this.random() * (this.width - 160);
                 const surfaces = getVisualGroundY(x);
 
                 // Skip if no surfaces found
                 if (surfaces.length === 0) continue;
 
                 // Pick a random surface from all available
-                const y = surfaces[Math.floor(Math.random() * surfaces.length)];
+                const y = surfaces[Math.floor(this.random() * surfaces.length)];
 
                 // Skip if too close to edges
                 if (y < 50) continue;
@@ -304,13 +322,13 @@ export class Terrain {
 
         // Trunk
         this.ctx.fillStyle = '#4e342e'; // Dark wood
-        const trunkW = 18 + Math.random() * 12;
-        const trunkH = 50 + Math.random() * 50;
+        const trunkW = 18 + this.random() * 12;
+        const trunkH = 50 + this.random() * 50;
         this.ctx.fillRect(-trunkW / 2, -trunkH, trunkW, trunkH);
 
         // Branches/Canopy
         this.ctx.fillStyle = '#2d5a27'; // Dark green leaves
-        const canopySize = 50 + Math.random() * 35;
+        const canopySize = 50 + this.random() * 35;
 
         this.ctx.beginPath();
         this.ctx.arc(0, -trunkH, canopySize, 0, Math.PI * 2);
@@ -319,8 +337,8 @@ export class Terrain {
         // Extra leafy bits
         for (let j = 0; j < 4; j++) {
             this.ctx.beginPath();
-            const lx = (Math.random() - 0.5) * canopySize * 1.4;
-            const ly = -trunkH + (Math.random() - 0.5) * canopySize * 0.8;
+            const lx = (this.random() - 0.5) * canopySize * 1.4;
+            const ly = -trunkH + (this.random() - 0.5) * canopySize * 0.8;
             this.ctx.arc(lx, ly, canopySize * 0.5, 0, Math.PI * 2);
             this.ctx.fill();
         }
@@ -335,7 +353,7 @@ export class Terrain {
         this.ctx.save();
         this.ctx.translate(x, y);
 
-        const size = 25 + Math.random() * 20;
+        const size = 25 + this.random() * 20;
 
         // Main rock body
         this.ctx.fillStyle = '#5d5d5d'; // Gray
@@ -365,7 +383,7 @@ export class Terrain {
         this.ctx.save();
         this.ctx.translate(x, y);
 
-        const size = 30 + Math.random() * 10;
+        const size = 30 + this.random() * 10;
 
         // Crate body
         this.ctx.fillStyle = '#8B4513'; // Wood brown
@@ -444,8 +462,8 @@ export class Terrain {
         // Make the base terrain hillier but smoother to ensure walkability
         const heightMap = new Array(this.width);
         const waves = [
-            { freq: 0.002, amp: 150, phase: Math.random() * 10 },
-            { freq: 0.007, amp: 50, phase: Math.random() * 10 }
+            { freq: 0.002, amp: 150, phase: this.random() * 10 },
+            { freq: 0.007, amp: 50, phase: this.random() * 10 }
         ];
 
         // Adjusted from 0.65 to 0.45 to allow terrain higher up (above Y=600)
@@ -470,7 +488,7 @@ export class Terrain {
         this.ctx.globalCompositeOperation = 'destination-out';
         this.ctx.fillStyle = 'rgba(255,255,255,1)';
 
-        const numPockets = 8 + Math.random() * 5;
+        const numPockets = 8 + this.random() * 5;
 
         // We need image data to check ground height
         // Since the collision mask isn't updated yet, we read from the visual canvas
@@ -487,11 +505,11 @@ export class Terrain {
         };
 
         for (let i = 0; i < numPockets; i++) {
-            const x = 200 + Math.random() * (this.width - 400);
+            const x = 200 + this.random() * (this.width - 400);
             const groundY = getVisualGroundY(x);
 
             if (groundY < this.height - 50) {
-                const radius = 40 + Math.random() * 30;
+                const radius = 40 + this.random() * 30;
 
                 // Draw a semi-circle bowl
                 this.ctx.beginPath();
@@ -528,15 +546,15 @@ export class Terrain {
 
         // Add some random curved walls emerging from the ground
         for (let i = 0; i < 10; i++) {
-            const x = 100 + Math.random() * (this.width - 200);
+            const x = 100 + this.random() * (this.width - 200);
             const groundY = getVisualGroundY(x);
 
             if (groundY < this.height - 50) {
                 this.ctx.beginPath();
                 // A curve swooping up and out
                 this.ctx.moveTo(x, groundY + 20);
-                const height = 60 + Math.random() * 40;
-                const lean = (Math.random() - 0.5) * 80;
+                const height = 60 + this.random() * 40;
+                const lean = (this.random() - 0.5) * 80;
 
                 this.ctx.quadraticCurveTo(x + lean, groundY - height, x + lean * 1.5, groundY - height + 20);
                 this.ctx.stroke();
@@ -723,7 +741,7 @@ export class Terrain {
                         }
 
                         // Add occasional tufts (visual noise)
-                        if (Math.random() < 0.1) {
+                        if (this.random() < 0.1) {
                             // Draw a little tuft up into the air
                             for (let k = 1; k <= 3; k++) {
                                 const tIdx = ((y - k) * width + x) * 4;
@@ -756,11 +774,11 @@ export class Terrain {
 
         // Layer multiple sine waves for natural-looking terrain
         const waves = [
-            { freq: 0.002, amp: 150, phase: Math.random() * Math.PI * 2 },
-            { freq: 0.005, amp: 80, phase: Math.random() * Math.PI * 2 },
-            { freq: 0.01, amp: 40, phase: Math.random() * Math.PI * 2 },
-            { freq: 0.02, amp: 20, phase: Math.random() * Math.PI * 2 },
-            { freq: 0.05, amp: 8, phase: Math.random() * Math.PI * 2 }
+            { freq: 0.002, amp: 150, phase: this.random() * Math.PI * 2 },
+            { freq: 0.005, amp: 80, phase: this.random() * Math.PI * 2 },
+            { freq: 0.01, amp: 40, phase: this.random() * Math.PI * 2 },
+            { freq: 0.02, amp: 20, phase: this.random() * Math.PI * 2 },
+            { freq: 0.05, amp: 8, phase: this.random() * Math.PI * 2 }
         ];
 
         for (let x = 0; x < this.width; x++) {
@@ -771,8 +789,8 @@ export class Terrain {
             }
 
             // Create some flatter areas (platforms)
-            if (Math.random() < 0.02) {
-                const platformWidth = 50 + Math.random() * 100;
+            if (this.random() < 0.02) {
+                const platformWidth = 50 + this.random() * 100;
                 for (let px = 0; px < platformWidth && x + px < this.width; px++) {
                     heightMap[x + px] = y;
                 }
@@ -780,9 +798,9 @@ export class Terrain {
             }
 
             // Add occasional vertical cliffs
-            if (Math.random() < 0.01) {
-                const cliffHeight = 50 + Math.random() * 100;
-                y += (Math.random() > 0.5 ? 1 : -1) * cliffHeight;
+            if (this.random() < 0.01) {
+                const cliffHeight = 50 + this.random() * 100;
+                y += (this.random() > 0.5 ? 1 : -1) * cliffHeight;
             }
 
             // Clamp to valid range - now allows terrain up to Y=50 (was Y=100)
@@ -822,8 +840,8 @@ export class Terrain {
         this.ctx.fillStyle = '#5a9c23';
         for (let x = 0; x < this.width; x += 3) {
             const y = heightMap[x];
-            if (Math.random() > 0.3) {
-                const height = 3 + Math.random() * 5;
+            if (this.random() > 0.3) {
+                const height = 3 + this.random() * 5;
                 this.ctx.beginPath();
                 this.ctx.moveTo(x, y);
                 this.ctx.lineTo(x - 2, y - height);
@@ -867,7 +885,7 @@ export class Terrain {
         for (let i = 0; i < data.length; i += 4) {
             if (data[i + 3] > 0) { // If not transparent
                 // Add noise
-                const noise = (Math.random() - 0.5) * 20;
+                const noise = (this.random() - 0.5) * 20;
                 data[i] = Math.max(0, Math.min(255, data[i] + noise));
                 data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
                 data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
@@ -882,24 +900,24 @@ export class Terrain {
      */
     addTerrainFeatures() {
         // Add some caves
-        const numCaves = 2 + Math.floor(Math.random() * 3);
+        const numCaves = 2 + Math.floor(this.random() * 3);
         for (let i = 0; i < numCaves; i++) {
-            const cx = 200 + Math.random() * (this.width - 400);
+            const cx = 200 + this.random() * (this.width - 400);
             // Allow caves anywhere between top (20%) and bottom (80%)
-            const cy = this.height * 0.2 + Math.random() * (this.height * 0.6);
-            const radius = 30 + Math.random() * 50;
+            const cy = this.height * 0.2 + this.random() * (this.height * 0.6);
+            const radius = 30 + this.random() * 50;
 
             this.createCrater(cx, cy, radius, false);
         }
 
         // Add some horizontal tunnels
-        const numTunnels = Math.floor(Math.random() * 2);
+        const numTunnels = Math.floor(this.random() * 2);
         for (let i = 0; i < numTunnels; i++) {
-            const startX = Math.random() * this.width * 0.3;
+            const startX = this.random() * this.width * 0.3;
             // Allow tunnels anywhere between top (20%) and bottom (70%)
-            const y = this.height * 0.2 + Math.random() * (this.height * 0.5);
-            const length = 100 + Math.random() * 200;
-            const height = 30 + Math.random() * 20;
+            const y = this.height * 0.2 + this.random() * (this.height * 0.5);
+            const length = 100 + this.random() * 200;
+            const height = 30 + this.random() * 20;
 
             this.ctx.save();
             this.ctx.globalCompositeOperation = 'destination-out';

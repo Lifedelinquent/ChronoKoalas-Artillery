@@ -104,6 +104,8 @@ export class Game extends EventEmitter {
             // Load custom map from editor
             await this.loadCustomMap(this.options.customMap);
         } else {
+            // Pass seeded random to terrain for multiplayer sync
+            this.terrain.setSeededRandom(this.seededRandom);
             // Generate terrain procedurally
             this.terrain.generate();
         }

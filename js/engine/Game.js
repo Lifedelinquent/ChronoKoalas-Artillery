@@ -1115,6 +1115,10 @@ export class Game extends EventEmitter {
         // Collect explosion results for network sync
         const explosionResults = [];
 
+        // In multiplayer, only the active player calculates damage/terrain
+        // The opponent will receive synced data via explosionSync
+        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.isMyTurn();
+
         // Create explosion
         if (weapon.explosionRadius > 0) {
             // Play explosion sound based on size
@@ -1123,48 +1127,53 @@ export class Game extends EventEmitter {
 
             this.createExplosion(projectile.x, projectile.y, weapon.explosionRadius);
 
-            // Damage terrain
-            this.terrain.createCrater(projectile.x, projectile.y, weapon.explosionRadius);
+            // Damage terrain - ONLY on authoritative client
+            // Non-active player will receive terrain sync via explosionSync
+            if (isAuthoritativeClient) {
+                this.terrain.createCrater(projectile.x, projectile.y, weapon.explosionRadius);
+            }
 
-            // Damage koalas in radius
-            for (const team of this.teams) {
-                for (const koala of team.koalas) {
-                    if (!koala.isAlive) continue;
+            // Damage koalas in radius - ONLY on authoritative client
+            if (isAuthoritativeClient) {
+                for (const team of this.teams) {
+                    for (const koala of team.koalas) {
+                        if (!koala.isAlive) continue;
 
-                    const dist = Math.hypot(koala.x - projectile.x, koala.y - projectile.y);
-                    if (dist < weapon.explosionRadius) {
-                        const damage = Math.round(weapon.damage * (1 - dist / weapon.explosionRadius));
-                        const knockback = weapon.knockback * (1 - dist / weapon.explosionRadius);
+                        const dist = Math.hypot(koala.x - projectile.x, koala.y - projectile.y);
+                        if (dist < weapon.explosionRadius) {
+                            const damage = Math.round(weapon.damage * (1 - dist / weapon.explosionRadius));
+                            const knockback = weapon.knockback * (1 - dist / weapon.explosionRadius);
 
-                        koala.takeDamage(damage);
+                            koala.takeDamage(damage);
 
-                        // Play damage sound
-                        if (damage > 0) {
-                            this.audioManager.playDamage();
+                            // Play damage sound
+                            if (damage > 0) {
+                                this.audioManager.playDamage();
+                            }
+
+                            // Apply knockback
+                            const angle = Math.atan2(koala.y - projectile.y, koala.x - projectile.x);
+                            koala.vx += Math.cos(angle) * knockback;
+                            koala.vy += Math.sin(angle) * knockback;
+
+                            // Record for sync
+                            explosionResults.push({
+                                koalaName: koala.name,
+                                damage,
+                                newHealth: koala.health,
+                                x: koala.x,
+                                y: koala.y,
+                                vx: koala.vx,
+                                vy: koala.vy
+                            });
                         }
-
-                        // Apply knockback
-                        const angle = Math.atan2(koala.y - projectile.y, koala.x - projectile.x);
-                        koala.vx += Math.cos(angle) * knockback;
-                        koala.vy += Math.sin(angle) * knockback;
-
-                        // Record for sync
-                        explosionResults.push({
-                            koalaName: koala.name,
-                            damage,
-                            newHealth: koala.health,
-                            x: koala.x,
-                            y: koala.y,
-                            vx: koala.vx,
-                            vy: koala.vy
-                        });
                     }
                 }
             }
         }
 
-        // Direct hit bonus
-        if (directHitKoala) {
+        // Direct hit bonus - ONLY on authoritative client
+        if (directHitKoala && isAuthoritativeClient) {
             const directDamage = weapon.directDamage || weapon.damage;
             directHitKoala.takeDamage(directDamage);
 
@@ -2261,6 +2270,17 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Handle remote weapon selection
+     */
+    handleRemoteWeaponSelect(data) {
+        console.log('🔫 Remote weapon select:', data.weaponId);
+
+        // Select the weapon on this client
+        this.weaponManager.selectWeapon(data.weaponId);
+        this.updateWeaponUI();
+    }
+
+    /**
      * Handle remote turn end signal
      */
     handleRemoteTurnEnd(data) {
@@ -2311,6 +2331,13 @@ export class Game extends EventEmitter {
      */
     handleRemoteExplosionSync(data) {
         console.log('💥 Remote explosion sync:', data);
+
+        // IMPORTANT: Apply terrain damage at the EXACT synced position
+        // This ensures both clients have identical terrain
+        if (data.explosionX !== undefined && data.explosionY !== undefined && data.explosionRadius > 0) {
+            this.terrain.createCrater(data.explosionX, data.explosionY, data.explosionRadius);
+            console.log(`   Terrain crater at (${data.explosionX.toFixed(0)}, ${data.explosionY.toFixed(0)}) radius ${data.explosionRadius}`);
+        }
 
         // Apply the synced results to each affected koala
         for (const result of data.results) {

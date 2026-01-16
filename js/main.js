@@ -476,6 +476,12 @@ function setupMenuHandlers() {
             game.handleRemoteExplosionSync(data);
         }
     });
+
+    networkManager.on('remoteWeaponSelect', (data) => {
+        if (game) {
+            game.handleRemoteWeaponSelect(data);
+        }
+    });
 }
 
 /**

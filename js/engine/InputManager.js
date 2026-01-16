@@ -69,6 +69,11 @@ export class InputManager {
      * Select a weapon
      */
     selectWeapon(weaponId) {
+        // Block weapon selection if not our turn in multiplayer
+        if (!this.game.isMyTurn()) {
+            return;
+        }
+
         this.game.weaponManager.selectWeapon(weaponId);
         this.game.updateWeaponUI();
 
@@ -76,6 +81,14 @@ export class InputManager {
         const team = this.game.getCurrentTeam();
         if (team) {
             team.lastSelectedWeapon = weaponId;
+        }
+
+        // NETWORK SYNC: Send weapon selection to opponent
+        if (this.game.networkManager && !this.game.isPractice) {
+            this.game.networkManager.send({
+                type: 'weaponSelect',
+                weaponId
+            });
         }
     }
 

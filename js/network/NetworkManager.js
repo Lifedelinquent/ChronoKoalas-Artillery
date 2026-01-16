@@ -208,9 +208,13 @@ export class NetworkManager extends EventEmitter {
 
         switch (data.type) {
             case 'handshake':
+                // This is info about the OTHER player who just connected
+                // If they say they're host, that means WE are the guest (and vice versa)
+                const peerName = data.isHost ? 'Host' : 'Guest';
+                const peerTeam = data.isHost ? 'red' : 'blue';
                 this.emit('playerJoined', {
-                    player: { id: data.playerId, name: data.isHost ? 'Host' : 'Guest' },
-                    team: data.isHost ? 'red' : 'blue'
+                    player: { id: data.playerId, name: peerName },
+                    team: peerTeam
                 });
                 break;
 

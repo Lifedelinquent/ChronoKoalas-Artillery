@@ -156,10 +156,22 @@ export class MenuManager {
         if (!btn) return;
 
         // Need at least 2 players, all ready
-        const canStart = this.players.length >= 2 &&
-            this.players.every(p => p.ready);
+        const playerCount = this.players.length;
+        const readyCount = this.players.filter(p => p.ready).length;
+        const canStart = playerCount >= 2 && readyCount === playerCount;
+
+        console.log(`🎮 Start button check: ${readyCount}/${playerCount} ready, canStart: ${canStart}`);
 
         btn.disabled = !canStart;
+
+        // Update button text to show status
+        if (playerCount < 2) {
+            btn.textContent = 'Waiting for players...';
+        } else if (readyCount < playerCount) {
+            btn.textContent = `Waiting (${readyCount}/${playerCount} ready)`;
+        } else {
+            btn.textContent = 'Start Game';
+        }
     }
 
     /**

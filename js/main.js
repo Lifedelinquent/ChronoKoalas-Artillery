@@ -249,6 +249,17 @@ function setupMenuHandlers() {
         // Transition to lobby
         menuManager.showLobby(networkManager.roomCode, networkManager.isHost);
 
+        // Add SELF to the lobby first
+        const selfTeam = networkManager.isHost ? 'red' : 'blue';
+        const selfName = networkManager.isHost ? 'You (Host)' : 'You (Guest)';
+        menuManager.addPlayerToLobby(
+            { id: networkManager.playerId, name: selfName },
+            selfTeam
+        );
+
+        // The peer will be added when we receive the handshake message
+        // (see playerJoined handler below)
+
         // Reset UI states
         hostPanel.classList.add('hidden');
         joinPanel.classList.add('hidden');

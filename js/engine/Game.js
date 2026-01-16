@@ -898,6 +898,12 @@ export class Game extends EventEmitter {
                 timerEl.classList.remove('retreat-mode');
             }
 
+            // Restore turn indicator (will be updated properly on next turn)
+            const turnIndicator = document.getElementById('turn-indicator');
+            if (turnIndicator) {
+                turnIndicator.innerHTML = '<span id="current-team">...</span>\'s Turn';
+            }
+
             this.phase = 'damage';
             setTimeout(() => this.processDamage(), 500);
         }
@@ -1910,21 +1916,15 @@ export class Game extends EventEmitter {
      */
     updateTurnIndicator() {
         const team = this.getCurrentTeam();
-        const el = document.getElementById('current-team');
-        if (el && team) {
+        const indicator = document.getElementById('turn-indicator');
+        if (indicator && team) {
             // In multiplayer, show if it's your turn or opponent's turn
             if (!this.isPractice && this.networkManager) {
                 const isMyTurn = this.isMyTurn();
-                const turnText = isMyTurn ? `${team.name} - Your Turn!` : `${team.name} - Opponent's Turn`;
-                el.textContent = turnText;
-                el.style.color = team.color;
-
-                // Add visual emphasis for your turn
-                el.style.fontWeight = isMyTurn ? 'bold' : 'normal';
-                el.style.textShadow = isMyTurn ? '0 0 10px ' + team.color : 'none';
+                const turnText = isMyTurn ? 'Your Turn!' : 'Opponent\'s Turn';
+                indicator.innerHTML = `<span id="current-team" style="color: ${team.color}; ${isMyTurn ? 'font-weight: bold; text-shadow: 0 0 10px ' + team.color : ''}">${team.name}</span> - ${turnText}`;
             } else {
-                el.textContent = team.name;
-                el.style.color = team.color;
+                indicator.innerHTML = `<span id="current-team" style="color: ${team.color}">${team.name}</span>'s Turn`;
             }
         }
     }

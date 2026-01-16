@@ -256,17 +256,21 @@ export class LootManager {
                 }
             }
 
-            // Check collection by any koala
+            // Check collection by any koala using spatial grid
             if (!crate.falling && !crate.collected) {
-                for (const team of this.game.teams) {
-                    for (const koala of team.koalas) {
-                        if (!koala.isAlive) continue;
+                const collectionRadius = 30;
+                const nearbyEntities = this.game.spatialGrid.queryRadius(crate.x, crate.y, collectionRadius);
 
-                        const dist = Math.hypot(koala.x - crate.x, koala.y - crate.y);
-                        if (dist < 30) {
-                            this.collectCrate(crate, koala, team);
-                            break;
-                        }
+                for (const { entity } of nearbyEntities) {
+                    // Only process koalas (they have isAlive property)
+                    if (!entity.isAlive || entity.isAlive === undefined) continue;
+
+                    const koala = entity;
+                    // Find which team this koala belongs to
+                    const team = this.game.teams.find(t => t.koalas.includes(koala));
+                    if (team) {
+                        this.collectCrate(crate, koala, team);
+                        break;
                     }
                 }
             }

@@ -13,6 +13,7 @@ import { InputManager } from './InputManager.js';
 import { EventEmitter } from '../utils/EventEmitter.js';
 import { AudioManager } from './AudioManager.js';
 import { LootManager } from './LootManager.js';
+import { SpatialGrid } from './SpatialGrid.js';
 
 export class Game extends EventEmitter {
     constructor(canvas, options = {}) {
@@ -36,6 +37,10 @@ export class Game extends EventEmitter {
         this.weaponManager = new WeaponManager(this);
         this.inputManager = new InputManager(this);
         this.audioManager = new AudioManager();
+
+        // Spatial partitioning for efficient collision detection
+        // Cell size of 100px works well for our entity sizes
+        this.spatialGrid = new SpatialGrid(this.worldWidth, this.worldHeight, 100);
 
         // Game state
         this.teams = [];
@@ -276,7 +281,38 @@ export class Game extends EventEmitter {
             this.teams.push(team);
         });
 
+        // Register all koalas in spatial grid
+        this.rebuildSpatialGrid();
+
         this.updateTeamHealth();
+    }
+
+    /**
+     * Rebuild the spatial grid with all entities
+     */
+    rebuildSpatialGrid() {
+        const entities = [];
+
+        // Add all koalas
+        for (const team of this.teams) {
+            for (const koala of team.koalas) {
+                if (koala.isAlive) {
+                    entities.push(koala);
+                }
+            }
+        }
+
+        // Add all projectiles
+        for (const proj of this.projectiles) {
+            entities.push(proj);
+        }
+
+        // Add loot crates
+        for (const crate of this.lootManager.crates) {
+            entities.push(crate);
+        }
+
+        this.spatialGrid.rebuild(entities);
     }
 
     /**
@@ -677,6 +713,11 @@ export class Game extends EventEmitter {
         this.physics.update(dt);
         if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  ⚙️ Physics: ${(t1 - t0).toFixed(1)}ms`); }
 
+        // Update spatial grid after physics (entities may have moved)
+        if (profile) t0 = performance.now();
+        this.rebuildSpatialGrid();
+        if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  🗺️ SpatialGrid: ${(t1 - t0).toFixed(1)}ms`); }
+
         // Update particles
         if (profile) t0 = performance.now();
         this.updateParticles(dt);
@@ -1067,9 +1108,10 @@ export class Game extends EventEmitter {
                 continue;
             }
 
-            // Check out of bounds
+            // Check out of bounds (left, right, bottom, and FAR above screen)
+            // Note: Using a large margin for top (-500) to allow high arcing shots
             if (proj.x < -100 || proj.x > this.worldWidth + 100 ||
-                proj.y > this.worldHeight + 100) {
+                proj.y > this.worldHeight + 100 || proj.y < -500) {
                 this.removeProjectile(i);
                 continue;
             }
@@ -1142,40 +1184,42 @@ export class Game extends EventEmitter {
             }
 
             // Damage koalas in radius - ONLY on authoritative client
+            // Use spatial grid for efficient radius query
             if (isAuthoritativeClient) {
-                for (const team of this.teams) {
-                    for (const koala of team.koalas) {
-                        if (!koala.isAlive) continue;
+                const nearbyEntities = this.spatialGrid.queryRadius(
+                    projectile.x, projectile.y, weapon.explosionRadius
+                );
 
-                        const dist = Math.hypot(koala.x - projectile.x, koala.y - projectile.y);
-                        if (dist < weapon.explosionRadius) {
-                            const damage = Math.round(weapon.damage * (1 - dist / weapon.explosionRadius));
-                            const knockback = weapon.knockback * (1 - dist / weapon.explosionRadius);
+                for (const { entity, distance } of nearbyEntities) {
+                    // Only process koalas (they have isAlive property)
+                    if (!entity.isAlive || entity.isAlive === undefined) continue;
 
-                            koala.takeDamage(damage);
+                    const koala = entity;
+                    const damage = Math.round(weapon.damage * (1 - distance / weapon.explosionRadius));
+                    const knockback = weapon.knockback * (1 - distance / weapon.explosionRadius);
 
-                            // Play damage sound
-                            if (damage > 0) {
-                                this.audioManager.playDamage();
-                            }
+                    koala.takeDamage(damage);
 
-                            // Apply knockback
-                            const angle = Math.atan2(koala.y - projectile.y, koala.x - projectile.x);
-                            koala.vx += Math.cos(angle) * knockback;
-                            koala.vy += Math.sin(angle) * knockback;
-
-                            // Record for sync
-                            explosionResults.push({
-                                koalaName: koala.name,
-                                damage,
-                                newHealth: koala.health,
-                                x: koala.x,
-                                y: koala.y,
-                                vx: koala.vx,
-                                vy: koala.vy
-                            });
-                        }
+                    // Play damage sound
+                    if (damage > 0) {
+                        this.audioManager.playDamage();
                     }
+
+                    // Apply knockback
+                    const angle = Math.atan2(koala.y - projectile.y, koala.x - projectile.x);
+                    koala.vx += Math.cos(angle) * knockback;
+                    koala.vy += Math.sin(angle) * knockback;
+
+                    // Record for sync
+                    explosionResults.push({
+                        koalaName: koala.name,
+                        damage,
+                        newHealth: koala.health,
+                        x: koala.x,
+                        y: koala.y,
+                        vx: koala.vx,
+                        vy: koala.vy
+                    });
                 }
             }
         }
@@ -2552,13 +2596,21 @@ export class Game extends EventEmitter {
             }
         }
 
-        // Sync game state
-        if (data.currentTeamIndex !== undefined) {
-            this.currentTeamIndex = data.currentTeamIndex;
+        // IMPORTANT: Only sync team/koala index during aiming phase to prevent
+        // the double-turn bug where stateSync overwrites the current turn owner
+        // during projectile/retreat/damage phases
+        const safeToSyncTurn = this.phase === 'aiming';
+
+        if (safeToSyncTurn) {
+            if (data.currentTeamIndex !== undefined) {
+                this.currentTeamIndex = data.currentTeamIndex;
+            }
+            if (data.currentKoalaIndex !== undefined) {
+                this.currentKoalaIndex = data.currentKoalaIndex;
+            }
         }
-        if (data.currentKoalaIndex !== undefined) {
-            this.currentKoalaIndex = data.currentKoalaIndex;
-        }
+
+        // Always sync phase and wind
         if (data.phase) {
             this.phase = data.phase;
         }

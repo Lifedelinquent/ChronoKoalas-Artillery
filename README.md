@@ -6,10 +6,12 @@ A fast-paced, Worms-style artillery game featuring destructible terrain, various
 
 - **Destructible Terrain:** Pixel-perfect terrain destruction using a custom canvas-based engine.
 - **Strategic Combat:** Wind-affected projectiles, varying weapon types, and environmental hazards.
+- **Improved Wind Meter:** Redesigned wind indicator with clear directional color coding (Left=Green, Right=Red) and numeric display.
 - **Koala Arsenal:** A wide range of weapons including Bazookas, Grenades, Cluster Bombs, Airstrikes, and more.
+- **Particle System:** Optimized particle engine with object pooling and smart limits for intense visual effects without lag.
 - **Performance Optimized:** Custom regional collision updates and efficient rendering for smooth 60+ FPS gameplay.
 - **Map Editor:** Create and save your own custom battlefield layouts.
-- **Multiplayer Ready:** Supports both local practice and network-based multiplayer.
+- **Multiplayer Ready:** Robust turn-based multiplayer with synced state and projectile physics.
 
 ## 🎮 Controls
 

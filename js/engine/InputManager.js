@@ -262,6 +262,11 @@ export class InputManager {
      * Update aim angle from mouse position
      */
     updateAimFromMouse() {
+        // Block aiming if it's not our turn in multiplayer
+        if (!this.game.isMyTurn()) {
+            return;
+        }
+
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
 

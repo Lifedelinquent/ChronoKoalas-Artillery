@@ -41,6 +41,7 @@ export class Game extends EventEmitter {
         this.teams = [];
         this.projectiles = [];
         this.particles = [];
+        this.maxParticles = 200; // Performance: limit particle count
         this.currentTeamIndex = 0;
         this.currentKoalaIndex = 0;
         this.turnTime = 30;
@@ -1236,10 +1237,12 @@ export class Game extends EventEmitter {
      */
     createExplosionParticles(x, y, radius) {
         const count = Math.floor(radius / 2);
-        for (let i = 0; i < count; i++) {
+        // Limit particle count for performance
+        const particlesToAdd = Math.min(count, this.maxParticles - this.particles.length);
+        for (let i = 0; i < particlesToAdd; i++) {
             const angle = Math.random() * Math.PI * 2;
             const speed = 50 + Math.random() * 150;
-            this.particles.push({
+            this.addParticle({
                 type: 'debris',
                 x, y,
                 vx: Math.cos(angle) * speed,
@@ -1253,10 +1256,21 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Add a particle with limit enforcement
+     */
+    addParticle(particle) {
+        // Remove oldest particles if at limit
+        while (this.particles.length >= this.maxParticles) {
+            this.particles.shift();
+        }
+        this.particles.push(particle);
+    }
+
+    /**
      * Create floating text (for damage numbers, healing, etc.)
      */
     createFloatingText(x, y, text, color = '#fff') {
-        this.particles.push({
+        this.addParticle({
             type: 'floatingText',
             x, y,
             vy: -50, // Float upward

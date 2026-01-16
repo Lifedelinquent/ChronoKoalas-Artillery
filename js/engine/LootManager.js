@@ -326,7 +326,7 @@ export class LootManager {
      */
     createCollectionParticles(crate) {
         for (let i = 0; i < 10; i++) {
-            this.game.particles.push({
+            this.game.addParticle({
                 type: 'spark',
                 x: crate.x,
                 y: crate.y,

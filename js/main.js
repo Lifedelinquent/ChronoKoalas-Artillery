@@ -500,6 +500,12 @@ function setupMenuHandlers() {
             game.handleRemoteStateSync(data);
         }
     });
+
+    networkManager.on('remoteCrateSpawn', (data) => {
+        if (game) {
+            game.lootManager.handleRemoteCrateSpawn(data);
+        }
+    });
 }
 
 /**

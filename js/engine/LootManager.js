@@ -116,7 +116,37 @@ export class LootManager {
 
         console.log(`📦 Crate spawned: ${item.name} (${item.rarity}) at (${position.x}, ${position.y})`);
 
+        // NETWORK SYNC: Send crate spawn to opponent
+        if (this.game.networkManager && !this.game.isPractice) {
+            this.game.networkManager.send({
+                type: 'crateSpawn',
+                category,
+                itemId: item.id,
+                x: position.x,
+                y: position.y
+            });
+        }
+
         return crate;
+    }
+
+    /**
+     * Handle remote crate spawn from network
+     */
+    handleRemoteCrateSpawn(data) {
+        console.log('📦 Remote crate spawn:', data);
+
+        // Find the item from loot tables
+        let item;
+        if (data.category === 'health') {
+            item = this.healthLootTable.find(i => i.id === data.itemId);
+        } else {
+            item = this.weaponLootTable.find(i => i.id === data.itemId);
+        }
+
+        if (item) {
+            this.createCrate(data.category, item, data.x, data.y);
+        }
     }
 
     /**

@@ -274,6 +274,10 @@ export class NetworkManager extends EventEmitter {
                 this.emit('remoteStateSync', data);
                 break;
 
+            case 'crateSpawn':
+                this.emit('remoteCrateSpawn', data);
+                break;
+
             case 'chat':
                 this.emit('chatMessage', data);
                 break;

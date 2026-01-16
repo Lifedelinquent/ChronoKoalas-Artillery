@@ -1368,16 +1368,9 @@ export class Game extends EventEmitter {
         // Follow projectile with camera
         this.followProjectile(projectile);
 
-        // Send to network
-        if (this.networkManager) {
-            this.networkManager.sendAction({
-                type: 'fire',
-                weapon: weapon.id,
-                angle,
-                power,
-                x: koala.x,
-                y: koala.y
-            });
+        // Send to network (only if this is our turn)
+        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+            this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
         }
     }
 
@@ -1417,6 +1410,11 @@ export class Game extends EventEmitter {
             default:
                 console.warn('Unknown targetted weapon:', weapon.type);
                 return;
+        }
+
+        // Send to network (only if this is our turn)
+        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+            this.networkManager.sendTargetWeapon(weapon.id, targetX, targetY);
         }
     }
 
@@ -2034,5 +2032,118 @@ export class Game extends EventEmitter {
             cancelAnimationFrame(this.animationId);
         }
         this.inputManager.destroy();
+    }
+
+    // ==================== MULTIPLAYER NETWORK HANDLERS ====================
+
+    /**
+     * Check if current turn belongs to the local player
+     */
+    isMyTurn() {
+        if (this.isPractice || !this.networkManager) {
+            return true; // Always our turn in practice mode
+        }
+        return this.networkManager.isMyTurn(this.currentTeamIndex);
+    }
+
+    /**
+     * Handle remote player firing a weapon
+     */
+    handleRemoteFire(data) {
+        console.log('🎯 Remote fire:', data);
+
+        const koala = this.getCurrentKoala();
+        if (!koala) return;
+
+        // Set up the koala's state from remote data
+        koala.x = data.x;
+        koala.y = data.y;
+        koala.aimAngle = data.angle;
+
+        // Fire the weapon
+        this.weaponManager.selectWeapon(data.weaponId);
+        this.fireWeapon(data.angle, data.power);
+    }
+
+    /**
+     * Handle remote player movement
+     */
+    handleRemoteMove(data) {
+        const koala = this.getCurrentKoala();
+        if (!koala) return;
+
+        // Update koala position
+        koala.x = data.x;
+        koala.y = data.y;
+        koala.facingLeft = data.facingLeft;
+    }
+
+    /**
+     * Handle remote player aiming
+     */
+    handleRemoteAim(data) {
+        const koala = this.getCurrentKoala();
+        if (!koala) return;
+
+        koala.aimAngle = data.angle;
+    }
+
+    /**
+     * Handle remote targeted weapon (airstrike, teleport)
+     */
+    handleRemoteTargetWeapon(data) {
+        console.log('🎯 Remote target weapon:', data);
+
+        this.weaponManager.selectWeapon(data.weaponId);
+        const weapon = this.weaponManager.currentWeapon;
+
+        if (weapon) {
+            this.fireTargettedWeapon(weapon, data.targetX, data.targetY);
+        }
+    }
+
+    /**
+     * Handle remote turn end signal
+     */
+    handleRemoteTurnEnd(data) {
+        console.log('🔄 Remote turn end:', data);
+
+        // Sync team/koala index if provided
+        if (data.nextTeam !== undefined) {
+            this.currentTeamIndex = data.nextTeam;
+        }
+        if (data.nextKoala !== undefined) {
+            this.currentKoalaIndex = data.nextKoala;
+        }
+
+        // Start the next turn
+        this.startTurn();
+    }
+
+    /**
+     * Send local fire action to network
+     */
+    sendFireAction(weaponId, angle, power, x, y) {
+        if (this.networkManager && !this.isPractice) {
+            this.networkManager.sendFire(weaponId, angle, power, x, y);
+        }
+    }
+
+    /**
+     * Send local target weapon action to network
+     */
+    sendTargetWeaponAction(weaponId, targetX, targetY) {
+        if (this.networkManager && !this.isPractice) {
+            this.networkManager.sendTargetWeapon(weaponId, targetX, targetY);
+        }
+    }
+
+    /**
+     * Send turn end to network
+     */
+    sendTurnEnd() {
+        if (this.networkManager && !this.isPractice) {
+            this.networkManager.sendTurnEnd(this.currentTeamIndex, this.currentKoalaIndex);
+        }
     }
 }

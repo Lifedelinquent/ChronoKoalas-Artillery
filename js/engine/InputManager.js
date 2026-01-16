@@ -331,47 +331,54 @@ export class InputManager {
     updateWeaponBarVisibility(dt) {
         if (!this.weaponBar) return;
 
-        // Criteria for hiding:
-        // 1. Any movement keys held
-        const moveKeys = ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyW', 'KeyS', 'Space', 'Enter', 'Backspace'];
-        const isKeyPressed = moveKeys.some(key => this.keys[key]);
-
-        // 2. Charging weapon
-        const isFiring = this.isCharging;
-
-        // 3. Panning camera
-        const isPanning = this.mouse.rightDown;
-
-        // 4. Recent mouse movement (last 1.5 seconds)
-        const mouseMovedRecently = (performance.now() - this.mouse.lastMoveTime) < 1500;
-
-        // 5. Special check: Is mouse hovering the bar right now? 
-        // If so, NEVER hide it.
+        // 1. Mouse Hover Check (Highest Priority)
         let isMouseOverBar = false;
-        if (this.weaponBar) {
-            const rect = this.weaponBar.getBoundingClientRect();
-            isMouseOverBar = (
-                this.mouse.screenX >= rect.left &&
-                this.mouse.screenX <= rect.right &&
-                this.mouse.screenY >= rect.top &&
-                this.mouse.screenY <= rect.bottom
-            );
+        const rect = this.weaponBar.getBoundingClientRect();
+        isMouseOverBar = (
+            this.mouse.screenX >= rect.left &&
+            this.mouse.screenX <= rect.right &&
+            this.mouse.screenY >= rect.top &&
+            this.mouse.screenY <= rect.bottom
+        );
+
+        if (isMouseOverBar && (this.game.phase === 'aiming' || this.game.phase === 'retreat')) {
+            this.weaponBar.classList.remove('minimized', 'faded');
+            this.isWeaponBarHidden = false;
+            return;
         }
 
-        const shouldHide = (isKeyPressed || isFiring || isPanning || mouseMovedRecently) && !isMouseOverBar;
+        // 2. Character Movement (Makes bar DISAPPEAR)
+        const moveKeys = ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Enter', 'Backspace'];
+        const isMoving = moveKeys.some(key => this.keys[key]);
 
+        // 3. Looking/Aiming/Charging (Makes bar TRANSPARENT)
+        const aimKeys = ['ArrowUp', 'ArrowDown', 'KeyW', 'KeyS', 'Space'];
+        const isAiming = aimKeys.some(key => this.keys[key]);
+        const isFiring = this.isCharging;
+        const isPanning = this.mouse.rightDown;
+        const mouseMovedRecently = (performance.now() - this.mouse.lastMoveTime) < 1500;
+
+        const shouldFade = isAiming || isFiring || isPanning || mouseMovedRecently;
+
+        // 4. Phase check
         if (this.game.phase !== 'aiming' && this.game.phase !== 'retreat') {
-            // Force hide during other phases (projectile, damage, etc)
             this.weaponBar.classList.add('minimized');
+            this.weaponBar.classList.remove('faded');
             this.isWeaponBarHidden = true;
             return;
         }
 
-        if (shouldHide && !this.isWeaponBarHidden) {
+        // Apply classes
+        if (isMoving) {
             this.weaponBar.classList.add('minimized');
+            this.weaponBar.classList.remove('faded');
             this.isWeaponBarHidden = true;
-        } else if (!shouldHide && this.isWeaponBarHidden) {
+        } else if (shouldFade) {
+            this.weaponBar.classList.add('faded');
             this.weaponBar.classList.remove('minimized');
+            this.isWeaponBarHidden = false; // It's still there, just transparent
+        } else {
+            this.weaponBar.classList.remove('minimized', 'faded');
             this.isWeaponBarHidden = false;
         }
     }

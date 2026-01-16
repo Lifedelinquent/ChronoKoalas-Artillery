@@ -43,8 +43,10 @@ export class MenuManager {
     showMenu() {
         this.showScreen('menu');
 
-        // Reset join panel
+        // Reset panels
         document.getElementById('join-panel').classList.add('hidden');
+        document.getElementById('host-panel').classList.add('hidden');
+        document.querySelector('.menu-buttons').classList.remove('hidden');
         document.getElementById('room-code-input').value = '';
     }
 
@@ -67,13 +69,32 @@ export class MenuManager {
         document.getElementById('team-red-list').innerHTML = '';
         document.getElementById('team-blue-list').innerHTML = '';
         this.players = [];
+
+        // Reset ready button
+        const btnReady = document.getElementById('btn-ready');
+        if (btnReady) {
+            btnReady.textContent = 'Ready!';
+            btnReady.classList.remove('success');
+        }
+    }
+
+    /**
+     * Add a player to the lobby (alias for addPlayer)
+     */
+    addPlayerToLobby(player, team) {
+        this.addPlayer(player, team);
     }
 
     /**
      * Add a player to the lobby
      */
     addPlayer(player, team) {
-        this.players.push({ ...player, team });
+        // Prevent duplicates
+        if (this.players.find(p => p.id === player.id)) {
+            return;
+        }
+
+        this.players.push({ ...player, team, ready: false });
 
         const listId = team === 'red' ? 'team-red-list' : 'team-blue-list';
         const list = document.getElementById(listId);
@@ -101,6 +122,13 @@ export class MenuManager {
         }
 
         this.updateStartButton();
+    }
+
+    /**
+     * Update player ready status (alias for setPlayerReady)
+     */
+    updatePlayerReady(playerId, ready) {
+        this.setPlayerReady(playerId, ready);
     }
 
     /**

@@ -8,6 +8,8 @@
     <link rel="stylesheet" href="styles/main.css">
     <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Outfit:wght@400;600;700&display=swap"
         rel="stylesheet">
+    <!-- PeerJS for P2P multiplayer -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 
 <body>
@@ -32,9 +34,22 @@
                 </button>
             </div>
 
+            <div id="host-panel" class="hidden">
+                <p class="panel-label">Share this code with your friend:</p>
+                <div class="room-code-display">
+                    <span id="host-room-code">------</span>
+                    <button id="btn-copy-code" class="copy-btn" title="Copy to clipboard">📋</button>
+                </div>
+                <p id="host-status" class="connection-status">Waiting for player...</p>
+                <button id="btn-cancel-host" class="menu-btn danger small">Cancel</button>
+            </div>
+
             <div id="join-panel" class="hidden">
-                <input type="text" id="room-code-input" placeholder="Enter Room Code" maxlength="6">
+                <p class="panel-label">Enter your friend's room code:</p>
+                <input type="text" id="room-code-input" placeholder="XXXXXX" maxlength="6">
                 <button id="btn-connect" class="menu-btn primary small">Connect</button>
+                <p id="join-status" class="connection-status"></p>
+                <button id="btn-cancel-join" class="menu-btn danger small hidden">Cancel</button>
             </div>
         </div>
     </div>

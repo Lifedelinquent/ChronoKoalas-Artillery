@@ -137,32 +137,167 @@ function setupMenuHandlers() {
     const btnRematch = document.getElementById('btn-rematch');
     const btnMainMenu = document.getElementById('btn-main-menu');
     const joinPanel = document.getElementById('join-panel');
+    const hostPanel = document.getElementById('host-panel');
+    const menuButtons = document.querySelector('.menu-buttons');
 
     // Currently selected map for generic start
     window.selectedMap = null;
 
-    // Host Game
+    // Host Game - Create peer and show room code
     btnHost.addEventListener('click', async () => {
-        const roomCode = await networkManager.hostGame();
-        if (roomCode) {
-            menuManager.showLobby(roomCode, true);
+        // Hide menu buttons, show host panel
+        menuButtons.classList.add('hidden');
+        hostPanel.classList.remove('hidden');
+        joinPanel.classList.add('hidden');
+
+        const hostStatus = document.getElementById('host-status');
+        const hostRoomCode = document.getElementById('host-room-code');
+
+        hostStatus.textContent = 'Creating room...';
+        hostStatus.className = 'connection-status connecting';
+
+        try {
+            const roomCode = await networkManager.hostGame();
+            if (roomCode) {
+                hostRoomCode.textContent = roomCode;
+                hostStatus.textContent = 'Waiting for player to join...';
+            }
+        } catch (error) {
+            hostStatus.textContent = 'Failed to create room. Try again.';
+            hostStatus.className = 'connection-status error';
         }
     });
+
+    // Copy room code button
+    const btnCopyCode = document.getElementById('btn-copy-code');
+    if (btnCopyCode) {
+        btnCopyCode.addEventListener('click', () => {
+            const code = document.getElementById('host-room-code').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                btnCopyCode.textContent = '✓';
+                btnCopyCode.classList.add('copied');
+                setTimeout(() => {
+                    btnCopyCode.textContent = '📋';
+                    btnCopyCode.classList.remove('copied');
+                }, 2000);
+            });
+        });
+    }
+
+    // Cancel hosting
+    const btnCancelHost = document.getElementById('btn-cancel-host');
+    if (btnCancelHost) {
+        btnCancelHost.addEventListener('click', () => {
+            networkManager.cancel();
+            hostPanel.classList.add('hidden');
+            menuButtons.classList.remove('hidden');
+        });
+    }
 
     // Join Game - Show input panel
     btnJoin.addEventListener('click', () => {
-        joinPanel.classList.toggle('hidden');
+        menuButtons.classList.add('hidden');
+        joinPanel.classList.remove('hidden');
+        hostPanel.classList.add('hidden');
+
+        document.getElementById('join-status').textContent = '';
+        document.getElementById('room-code-input').value = '';
+        document.getElementById('room-code-input').focus();
     });
+
+    // Cancel joining
+    const btnCancelJoin = document.getElementById('btn-cancel-join');
+    if (btnCancelJoin) {
+        btnCancelJoin.addEventListener('click', () => {
+            networkManager.cancel();
+            joinPanel.classList.add('hidden');
+            menuButtons.classList.remove('hidden');
+        });
+    }
 
     // Connect to room
     btnConnect.addEventListener('click', async () => {
-        const roomCode = document.getElementById('room-code-input').value.toUpperCase();
-        if (roomCode.length >= 4) {
-            const success = await networkManager.joinGame(roomCode);
-            if (success) {
-                menuManager.showLobby(roomCode, false);
-            }
+        const roomCode = document.getElementById('room-code-input').value.toUpperCase().trim();
+        const joinStatus = document.getElementById('join-status');
+        const btnCancelJoinEl = document.getElementById('btn-cancel-join');
+
+        if (roomCode.length < 4) {
+            joinStatus.textContent = 'Enter a valid room code';
+            joinStatus.className = 'connection-status error';
+            return;
         }
+
+        joinStatus.textContent = 'Connecting...';
+        joinStatus.className = 'connection-status connecting';
+        btnConnect.disabled = true;
+        btnCancelJoinEl.classList.remove('hidden');
+
+        try {
+            await networkManager.joinGame(roomCode);
+            // Connection handling is done via events
+        } catch (error) {
+            joinStatus.textContent = 'Failed to connect. Check the code!';
+            joinStatus.className = 'connection-status error';
+            btnConnect.disabled = false;
+        }
+    });
+
+    // Network event handlers
+    networkManager.on('connected', (data) => {
+        console.log('🎮 Connected to peer!', data);
+
+        // Transition to lobby
+        menuManager.showLobby(networkManager.roomCode, networkManager.isHost);
+
+        // Reset UI states
+        hostPanel.classList.add('hidden');
+        joinPanel.classList.add('hidden');
+        menuButtons.classList.remove('hidden');
+        btnConnect.disabled = false;
+    });
+
+    networkManager.on('error', (data) => {
+        console.error('Network error:', data.message);
+
+        const hostStatus = document.getElementById('host-status');
+        const joinStatus = document.getElementById('join-status');
+
+        if (networkManager.isHost && hostStatus) {
+            hostStatus.textContent = data.message;
+            hostStatus.className = 'connection-status error';
+        } else if (joinStatus) {
+            joinStatus.textContent = data.message;
+            joinStatus.className = 'connection-status error';
+        }
+
+        btnConnect.disabled = false;
+    });
+
+    networkManager.on('disconnected', (data) => {
+        console.log('🔌 Disconnected:', data?.reason);
+
+        // Show disconnection message if in game
+        if (game) {
+            alert('Opponent disconnected!');
+            game.destroy();
+            game = null;
+        }
+        menuManager.showMenu();
+    });
+
+    networkManager.on('playerJoined', (data) => {
+        console.log('👤 Player joined:', data);
+        menuManager.addPlayerToLobby(data.player, data.team);
+    });
+
+    networkManager.on('playerReady', (data) => {
+        console.log('✅ Player ready:', data);
+        menuManager.updatePlayerReady(data.playerId, data.ready);
+    });
+
+    networkManager.on('gameStart', (data) => {
+        console.log('🎮 Game starting!', data);
+        startGame(false, data.gameState, data.gameState?.customMap);
     });
 
     // Practice Mode - Start single player
@@ -180,12 +315,14 @@ function setupMenuHandlers() {
 
     // Ready toggle
     btnReady.addEventListener('click', () => {
-        networkManager.toggleReady();
+        const isReady = networkManager.toggleReady();
+        btnReady.textContent = isReady ? 'Not Ready' : 'Ready!';
+        btnReady.classList.toggle('success', !isReady);
     });
 
     // Leave lobby
     btnLeave.addEventListener('click', () => {
-        networkManager.leaveLobby();
+        networkManager.disconnect();
         menuManager.showMenu();
     });
 
@@ -286,32 +423,40 @@ function setupMenuHandlers() {
         });
     }
 
-    // Network event handlers
-    networkManager.on('playerJoined', (data) => {
-        menuManager.addPlayer(data.player, data.team);
-    });
-
-    networkManager.on('playerLeft', (data) => {
-        menuManager.removePlayer(data.playerId);
-    });
-
-    networkManager.on('playerReady', (data) => {
-        menuManager.setPlayerReady(data.playerId, data.ready);
-    });
-
-    networkManager.on('gameStart', (data) => {
-        startGame(false, data.gameState, data.customMap);
-    });
-
     networkManager.on('mapSelected', (data) => {
         window.selectedMap = data.map;
         const name = data.map ? data.map.name : 'Default Zoo';
         menuManager.updateLobbyMapName(name);
     });
 
-    networkManager.on('gameAction', (data) => {
+    // Remote game actions (for multiplayer synchronization)
+    networkManager.on('remoteFire', (data) => {
         if (game) {
-            game.handleNetworkAction(data);
+            game.handleRemoteFire(data);
+        }
+    });
+
+    networkManager.on('remoteMove', (data) => {
+        if (game) {
+            game.handleRemoteMove(data);
+        }
+    });
+
+    networkManager.on('remoteAim', (data) => {
+        if (game) {
+            game.handleRemoteAim(data);
+        }
+    });
+
+    networkManager.on('remoteTargetWeapon', (data) => {
+        if (game) {
+            game.handleRemoteTargetWeapon(data);
+        }
+    });
+
+    networkManager.on('remoteTurnEnd', (data) => {
+        if (game) {
+            game.handleRemoteTurnEnd(data);
         }
     });
 }

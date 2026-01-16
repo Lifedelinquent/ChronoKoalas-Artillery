@@ -74,6 +74,13 @@ export class InputManager {
             return;
         }
 
+        // Special case: if blowtorch is active and user clicks blowtorch again, end turn early
+        if (this.game.phase === 'blowtorch' && weaponId === 'blowtorch') {
+            console.log('Ending blowtorch turn early');
+            this.game.endBlowtorch();
+            return;
+        }
+
         this.game.weaponManager.selectWeapon(weaponId);
         this.game.updateWeaponUI();
 
@@ -123,8 +130,12 @@ export class InputManager {
 
             if (this.game.phase === 'aiming') {
                 const weapon = this.game.weaponManager.currentWeapon;
-                // Don't start charging for targetted weapons (use mouse click instead)
-                if (weapon && !weapon.targetted) {
+                // Instant activation for melee and blowtorch
+                if (weapon && (weapon.type === 'melee' || weapon.type === 'blowtorch')) {
+                    const koala = this.game.getCurrentKoala();
+                    this.game.fireWeapon(koala.aimAngle, 1.0);
+                } else if (weapon && !weapon.targetted) {
+                    // Don't start charging for targetted weapons (use mouse click instead)
                     this.startCharging();
                 }
             }
@@ -214,6 +225,10 @@ export class InputManager {
                     // Melee hits are instant
                     const koala = this.game.getCurrentKoala();
                     this.game.fireWeapon(koala.aimAngle, 1.0); // Full power swing
+                } else if (weapon && weapon.type === 'blowtorch') {
+                    // Blowtorch activates immediately without charging
+                    const koala = this.game.getCurrentKoala();
+                    this.game.fireWeapon(0, 1.0); // Angle/power don't matter for blowtorch
                 } else {
                     this.startCharging();
                 }

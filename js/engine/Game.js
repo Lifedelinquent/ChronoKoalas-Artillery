@@ -695,6 +695,10 @@ export class Game extends EventEmitter {
                 this.updateTurnTimer(dt);
                 this.updateFiring(dt);
                 break;
+            case 'blowtorch':
+                this.updateTurnTimer(dt);
+                this.updateBlowtorch(dt);
+                break;
             case 'retreat':
                 this.updateRetreat(dt);
                 break;
@@ -840,6 +844,159 @@ export class Game extends EventEmitter {
                 }
             }
         }
+    }
+
+    /**
+     * Activate blowtorch - dig through terrain while following mouse
+     */
+    activateBlowtorch(koala, weapon) {
+        this.phase = 'blowtorch';
+
+        // Store blowtorch state on the koala
+        koala.blowtorchActive = true;
+        koala.blowtorchMeter = 100; // Start with full meter
+        koala.blowtorchMaxMeter = 100;
+        koala.blowtorchSpeed = weapon.speed;
+        koala.blowtorchDigRadius = weapon.digRadius;
+        koala.blowtorchDrainRate = 33; // Meter per second when digging (~3 seconds total)
+        koala.blowtorchDigging = false; // Not digging until mouse pressed
+
+        // Show power bar as blowtorch meter at 100%
+        const powerBarContainer = document.getElementById('power-bar-container');
+        if (powerBarContainer) {
+            powerBarContainer.classList.remove('hidden');
+        }
+        const powerFill = document.getElementById('power-fill');
+        if (powerFill) {
+            powerFill.style.width = '100%'; // Start at full
+        }
+
+        console.log('Blowtorch activated for', koala.name);
+    }
+
+    /**
+     * Update blowtorch - meter-based digging system
+     */
+    updateBlowtorch(dt) {
+        const koala = this.getCurrentKoala();
+        if (!koala || !koala.blowtorchActive) {
+            this.endBlowtorch();
+            return;
+        }
+
+        // Check if mouse button is held down to dig
+        const isDigging = this.inputManager.mouse.down;
+        koala.blowtorchDigging = isDigging;
+
+        // Only deplete meter when actively digging
+        if (isDigging) {
+            koala.blowtorchMeter -= koala.blowtorchDrainRate * dt;
+
+            // Update power bar to show remaining meter
+            const powerFill = document.getElementById('power-fill');
+            if (powerFill) {
+                const percentage = Math.max(0, (koala.blowtorchMeter / koala.blowtorchMaxMeter) * 100);
+                powerFill.style.width = percentage + '%';
+            }
+
+            if (koala.blowtorchMeter <= 0) {
+                // Meter depleted - end turn
+                koala.blowtorchMeter = 0;
+                this.endBlowtorch();
+                return;
+            }
+        }
+
+        // Initialize dig accumulator if needed
+        if (koala.blowtorchDigAccum === undefined) {
+            koala.blowtorchDigAccum = 0;
+        }
+
+        // Allow movement during blowtorch phase
+        this.inputManager.updateAiming(koala, dt);
+
+        // Only dig when mouse is held
+        if (isDigging) {
+            // Get mouse position for direction
+            const mouse = this.inputManager.mouse;
+            const dx = mouse.x - koala.x;
+            const dy = mouse.y - (koala.y - 10);
+            const dist = Math.hypot(dx, dy);
+
+            if (dist > 5) {
+                const dirX = dx / dist;
+                const dirY = dy / dist;
+
+                // Move koala toward mouse
+                const moveSpeed = koala.blowtorchSpeed * dt;
+                const oldX = koala.x;
+                const oldY = koala.y;
+                koala.x += dirX * moveSpeed;
+                koala.y += dirY * moveSpeed;
+
+                // Update facing direction
+                koala.facingLeft = dx < 0;
+
+                // Accumulate distance traveled for digging
+                const distMoved = Math.hypot(koala.x - oldX, koala.y - oldY);
+                koala.blowtorchDigAccum += distMoved;
+
+                // Dig terrain every 4 pixels traveled
+                if (koala.blowtorchDigAccum >= 4) {
+                    koala.blowtorchDigAccum = 0;
+                    this.terrain.createCrater(koala.x, koala.y, koala.blowtorchDigRadius);
+
+                    // Play fire sound occasionally
+                    if (Math.random() > 0.9) {
+                        this.audioManager.playFire('blowtorch');
+                    }
+                }
+
+                // Create flame particles
+                const particleCount = 3;
+                for (let i = 0; i < particleCount; i++) {
+                    const spread = (Math.random() - 0.5) * 20;
+                    this.addParticle({
+                        type: 'spark',
+                        x: koala.x + dirX * 15,
+                        y: koala.y + dirY * 15,
+                        vx: dirX * 50 + spread,
+                        vy: dirY * 50 + spread,
+                        color: Math.random() > 0.5 ? '#ff6600' : '#ffcc00',
+                        size: 2 + Math.random() * 2,
+                        lifetime: 0.5,
+                        time: 0
+                    });
+                }
+
+                // Keep koala in bounds
+                koala.x = Math.max(20, Math.min(this.worldWidth - 20, koala.x));
+                koala.y = Math.max(20, Math.min(this.worldHeight - 20, koala.y));
+            }
+        }
+    }
+
+    /**
+     * End blowtorch mode and clean up
+     */
+    endBlowtorch() {
+        const koala = this.getCurrentKoala();
+        if (koala) {
+            koala.blowtorchActive = false;
+            koala.blowtorchDigging = false;
+        }
+
+        // Hide power bar
+        const powerBarContainer = document.getElementById('power-bar-container');
+        if (powerBarContainer) {
+            powerBarContainer.classList.add('hidden');
+        }
+        const powerFill = document.getElementById('power-fill');
+        if (powerFill) {
+            powerFill.style.width = '0%';
+        }
+
+        this.startRetreat();
     }
 
     /**
@@ -1613,6 +1770,17 @@ export class Game extends EventEmitter {
                     this.startRetreat();
                 }
             }, 500);
+
+            // Decrement ammo
+            if (weapon.ammo !== Infinity) {
+                weapon.ammo--;
+            }
+            return;
+        }
+
+        // Handle Blowtorch
+        if (weapon.type === 'blowtorch') {
+            this.activateBlowtorch(koala, weapon);
 
             // Decrement ammo
             if (weapon.ammo !== Infinity) {

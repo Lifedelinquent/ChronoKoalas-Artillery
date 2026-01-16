@@ -156,6 +156,16 @@ export class WeaponManager {
                 usesTimer: true,
                 defaultTimer: 3, // 3 seconds after first terrain hit
                 ammo: 1
+            },
+            blowtorch: {
+                id: 'blowtorch',
+                name: 'Blowtorch',
+                type: 'blowtorch',
+                utility: true,
+                meter: 100, // Full meter capacity
+                speed: 80, // Forward movement speed while digging
+                digRadius: 18, // Terrain destruction radius
+                ammo: 2
             }
         };
     }

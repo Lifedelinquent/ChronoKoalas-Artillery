@@ -30,7 +30,7 @@ export class Renderer {
         this.sprites.weapons = {};
         const weapons = [
             'bazooka', 'grenade', 'shotgun', 'bat', 'dynamite',
-            'airstrike', 'teleport', 'rope', 'mine', 'holygrenade'
+            'airstrike', 'teleport', 'rope', 'mine', 'holygrenade', 'blowtorch'
         ];
         weapons.forEach(w => {
             this.sprites.weapons[w] = new Image();

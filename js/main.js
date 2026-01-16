@@ -470,6 +470,12 @@ function setupMenuHandlers() {
             game.handleRemoteTurnEnd(data);
         }
     });
+
+    networkManager.on('remoteExplosionSync', (data) => {
+        if (game) {
+            game.handleRemoteExplosionSync(data);
+        }
+    });
 }
 
 /**

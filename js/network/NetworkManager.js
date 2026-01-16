@@ -254,6 +254,10 @@ export class NetworkManager extends EventEmitter {
                 this.emit('remoteTurnEnd', data);
                 break;
 
+            case 'explosionSync':
+                this.emit('remoteExplosionSync', data);
+                break;
+
             case 'chat':
                 this.emit('chatMessage', data);
                 break;

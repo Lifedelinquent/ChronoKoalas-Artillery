@@ -1112,6 +1112,9 @@ export class Game extends EventEmitter {
     handleProjectileImpact(projectile, directHitKoala = null) {
         const weapon = projectile.weapon;
 
+        // Collect explosion results for network sync
+        const explosionResults = [];
+
         // Create explosion
         if (weapon.explosionRadius > 0) {
             // Play explosion sound based on size
@@ -1144,6 +1147,17 @@ export class Game extends EventEmitter {
                         const angle = Math.atan2(koala.y - projectile.y, koala.x - projectile.x);
                         koala.vx += Math.cos(angle) * knockback;
                         koala.vy += Math.sin(angle) * knockback;
+
+                        // Record for sync
+                        explosionResults.push({
+                            koalaName: koala.name,
+                            damage,
+                            newHealth: koala.health,
+                            x: koala.x,
+                            y: koala.y,
+                            vx: koala.vx,
+                            vy: koala.vy
+                        });
                     }
                 }
             }
@@ -1151,11 +1165,39 @@ export class Game extends EventEmitter {
 
         // Direct hit bonus
         if (directHitKoala) {
-            directHitKoala.takeDamage(weapon.directDamage || weapon.damage);
+            const directDamage = weapon.directDamage || weapon.damage;
+            directHitKoala.takeDamage(directDamage);
+
+            // Add to sync results if not already there from AoE
+            const existing = explosionResults.find(r => r.koalaName === directHitKoala.name);
+            if (existing) {
+                existing.newHealth = directHitKoala.health;
+            } else {
+                explosionResults.push({
+                    koalaName: directHitKoala.name,
+                    damage: directDamage,
+                    newHealth: directHitKoala.health,
+                    x: directHitKoala.x,
+                    y: directHitKoala.y,
+                    vx: directHitKoala.vx,
+                    vy: directHitKoala.vy
+                });
+            }
         }
 
         // Create particles
         this.createExplosionParticles(projectile.x, projectile.y, weapon.explosionRadius);
+
+        // NETWORK SYNC: Send explosion results to opponent
+        if (this.networkManager && !this.isPractice && this.isMyTurn() && explosionResults.length > 0) {
+            this.networkManager.send({
+                type: 'explosionSync',
+                explosionX: projectile.x,
+                explosionY: projectile.y,
+                explosionRadius: weapon.explosionRadius,
+                results: explosionResults
+            });
+        }
     }
 
     /**
@@ -2261,5 +2303,52 @@ export class Game extends EventEmitter {
         if (this.networkManager && !this.isPractice) {
             this.networkManager.sendTurnEnd(this.currentTeamIndex, this.currentKoalaIndex);
         }
+    }
+
+    /**
+     * Handle explosion sync from remote player
+     * This applies the authoritative damage/knockback values from the active player
+     */
+    handleRemoteExplosionSync(data) {
+        console.log('💥 Remote explosion sync:', data);
+
+        // Apply the synced results to each affected koala
+        for (const result of data.results) {
+            const koala = this.findKoalaByName(result.koalaName);
+            if (koala) {
+                // Sync health (authoritative from active player)
+                koala.health = result.newHealth;
+
+                // Sync position and velocity (for knockback)
+                koala.x = result.x;
+                koala.y = result.y;
+                koala.vx = result.vx;
+                koala.vy = result.vy;
+
+                // Check for death
+                if (koala.health <= 0 && koala.isAlive) {
+                    koala.die();
+                }
+
+                console.log(`   ${koala.name}: HP=${koala.health}, pos=(${koala.x.toFixed(0)}, ${koala.y.toFixed(0)})`);
+            }
+        }
+
+        // Update team health display
+        this.updateTeamHealth();
+    }
+
+    /**
+     * Find a koala by name across all teams
+     */
+    findKoalaByName(name) {
+        for (const team of this.teams) {
+            for (const koala of team.koalas) {
+                if (koala.name === name) {
+                    return koala;
+                }
+            }
+        }
+        return null;
     }
 }

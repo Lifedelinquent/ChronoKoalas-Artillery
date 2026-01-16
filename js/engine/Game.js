@@ -1450,6 +1450,11 @@ export class Game extends EventEmitter {
     selectNextKoala() {
         const team = this.teams[this.currentTeamIndex];
 
+        if (!team || !team.isAlive()) {
+            console.warn('selectNextKoala: Team is dead, should have been skipped');
+            return;
+        }
+
         // Find next alive koala on current team, starting from the team's saved index
         let found = false;
         for (let i = 0; i < team.koalas.length; i++) {
@@ -1458,13 +1463,14 @@ export class Game extends EventEmitter {
                 this.currentKoalaIndex = idx;
                 team.currentKoalaIndex = idx; // Update team's index to the one we found
                 found = true;
+                console.log(`🐨 Selected ${team.name} koala ${idx}: ${team.koalas[idx].name}`);
                 break;
             }
         }
 
         if (!found) {
-            // Team has no alive koalas (should be handled by nextTeam, but safety first)
-            this.nextTeam();
+            // This shouldn't happen if nextTeam() properly skipped dead teams
+            console.error('selectNextKoala: No alive koala found but team.isAlive() was true!');
         }
     }
 
@@ -1472,6 +1478,8 @@ export class Game extends EventEmitter {
      * Move to next team
      */
     nextTeam() {
+        const prevTeam = this.currentTeamIndex;
+
         // 1. Increment the koala index for the team that JUST finished their turn
         // so that next time it's their turn, they pick the next teammate
         const finishedTeam = this.teams[this.currentTeamIndex];
@@ -1488,6 +1496,8 @@ export class Game extends EventEmitter {
 
         // 3. Set the game's active index to the new team's next-in-line
         this.currentKoalaIndex = this.teams[this.currentTeamIndex].currentKoalaIndex;
+
+        console.log(`🔄 Turn: ${this.teams[prevTeam].name} → ${this.teams[this.currentTeamIndex].name}`);
     }
 
     /**
@@ -1968,15 +1978,38 @@ export class Game extends EventEmitter {
     }
 
     updateWindDisplay() {
-        const arrow = document.getElementById('wind-arrow');
-        if (arrow) {
-            const width = Math.abs(this.wind) * 50;
-            const offset = this.wind > 0 ? 0 : -width;
-            arrow.style.width = width + '%';
-            arrow.style.marginLeft = (50 + offset) + '%';
-            arrow.style.background = this.wind > 0
-                ? 'linear-gradient(90deg, transparent, #3498db)'
-                : 'linear-gradient(270deg, transparent, #3498db)';
+        const fill = document.getElementById('wind-fill');
+        const value = document.getElementById('wind-value');
+
+        if (fill) {
+            const absWind = Math.abs(this.wind);
+            const widthPercent = absWind * 45; // Max 45% from center
+
+            // Remove old classes
+            fill.classList.remove('wind-left-fill', 'wind-right-fill');
+
+            if (this.wind < 0) {
+                // Left wind (green)
+                fill.style.width = widthPercent + '%';
+                fill.style.left = (50 - widthPercent) + '%';
+                fill.classList.add('wind-left-fill');
+            } else if (this.wind > 0) {
+                // Right wind (red)
+                fill.style.width = widthPercent + '%';
+                fill.style.left = '50%';
+                fill.classList.add('wind-right-fill');
+            } else {
+                // No wind
+                fill.style.width = '0';
+                fill.style.left = '50%';
+            }
+        }
+
+        if (value) {
+            const windStrength = Math.round(Math.abs(this.wind) * 100);
+            const direction = this.wind < 0 ? '←' : (this.wind > 0 ? '→' : '');
+            value.textContent = direction + windStrength;
+            value.style.color = this.wind < 0 ? '#2ecc71' : (this.wind > 0 ? '#e74c3c' : '#fff');
         }
     }
 

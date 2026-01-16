@@ -167,10 +167,14 @@
             <!-- Right: Wind, Zoom, Mute -->
             <div class="hud-right">
                 <div id="wind-indicator">
-                    <span class="wind-label">Wind</span>
-                    <div class="wind-bar">
-                        <div id="wind-arrow"></div>
+                    <span class="wind-icon">💨</span>
+                    <div class="wind-meter">
+                        <div class="wind-left"></div>
+                        <div class="wind-center"></div>
+                        <div class="wind-right"></div>
+                        <div id="wind-fill"></div>
                     </div>
+                    <span id="wind-value">0</span>
                 </div>
                 <div id="zoom-indicator">
                     <span id="zoom-level">100%</span>

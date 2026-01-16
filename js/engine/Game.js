@@ -121,6 +121,11 @@ export class Game extends EventEmitter {
         this.lastTime = performance.now();
         this.gameLoop();
 
+        // Start background timer for when tab is inactive (multiplayer sync)
+        if (this.networkManager && !this.isPractice) {
+            this.startBackgroundTimer();
+        }
+
         console.log('🎮 Game started!');
     }
 
@@ -572,6 +577,64 @@ export class Game extends EventEmitter {
         }
 
         this.animationId = requestAnimationFrame((t) => this.gameLoop(t));
+    }
+
+    /**
+     * Start background update timer (for when tab is inactive)
+     * requestAnimationFrame pauses when tab is not visible, but we need
+     * to keep processing network updates and game state
+     */
+    startBackgroundTimer() {
+        // Listen for visibility changes
+        if (!this.visibilityHandler) {
+            this.visibilityHandler = () => {
+                if (document.hidden) {
+                    // Tab became hidden - start fallback timer
+                    console.log('🔄 Tab hidden - starting background timer');
+                    this.startFallbackTimer();
+                } else {
+                    // Tab became visible - stop fallback timer
+                    console.log('🔄 Tab visible - stopping background timer');
+                    this.stopFallbackTimer();
+                    // Sync time to prevent huge deltaTime
+                    this.lastTime = performance.now();
+                }
+            };
+            document.addEventListener('visibilitychange', this.visibilityHandler);
+        }
+    }
+
+    /**
+     * Start the fallback setInterval timer for background updates
+     */
+    startFallbackTimer() {
+        if (this.fallbackTimerId) return; // Already running
+
+        this.fallbackTimerId = setInterval(() => {
+            if (this.isGameOver) {
+                this.stopFallbackTimer();
+                return;
+            }
+
+            const now = performance.now();
+            const deltaTime = Math.min((now - this.lastTime) / 1000, 0.1); // Cap at 100ms
+            this.lastTime = now;
+
+            if (!this.isPaused) {
+                this.update(deltaTime);
+            }
+            // Skip rendering when tab is hidden (saves resources)
+        }, 50); // 20 updates per second when hidden
+    }
+
+    /**
+     * Stop the fallback timer
+     */
+    stopFallbackTimer() {
+        if (this.fallbackTimerId) {
+            clearInterval(this.fallbackTimerId);
+            this.fallbackTimerId = null;
+        }
     }
 
     /**
@@ -2074,6 +2137,16 @@ export class Game extends EventEmitter {
         if (this.animationId) {
             cancelAnimationFrame(this.animationId);
         }
+
+        // Stop background timer
+        this.stopFallbackTimer();
+
+        // Remove visibility handler
+        if (this.visibilityHandler) {
+            document.removeEventListener('visibilitychange', this.visibilityHandler);
+            this.visibilityHandler = null;
+        }
+
         this.inputManager.destroy();
     }
 

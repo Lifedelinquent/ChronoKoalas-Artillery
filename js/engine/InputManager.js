@@ -281,7 +281,21 @@ export class InputManager {
 
         // Calculate world angle directly (full 360 degrees)
         // atan2 returns -PI to PI, this gives us full freedom
-        koala.aimAngle = Math.atan2(dy, dx);
+        const newAngle = Math.atan2(dy, dx);
+
+        // Only sync if angle actually changed significantly
+        if (Math.abs(newAngle - koala.aimAngle) > 0.01) {
+            koala.aimAngle = newAngle;
+
+            // NETWORK SYNC: Send aim update to opponent (throttled)
+            if (this.game.networkManager && !this.game.isPractice) {
+                const now = performance.now();
+                if (!this.lastMouseAimSync || now - this.lastMouseAimSync > 66) {
+                    this.game.networkManager.sendAim(koala.aimAngle);
+                    this.lastMouseAimSync = now;
+                }
+            }
+        }
     }
 
     /**
@@ -311,6 +325,7 @@ export class InputManager {
             koala.facingLeft = false;
         }
 
+        let positionChanged = false;
         if (moveDir !== 0) {
             if (koala.onGround) {
                 // Ground movement with terrain following
@@ -320,20 +335,25 @@ export class InputManager {
                     if (result.newY !== koala.y) {
                         koala.y = result.newY;
                     }
+                    positionChanged = true;
                 }
             } else {
                 // Air control - significantly reduced to match slow walk speed
                 koala.vx += moveDir * 50 * dt; // Reduced acceleration
                 koala.vx = Math.max(-40, Math.min(40, koala.vx)); // Lower air speed cap
+                positionChanged = true;
             }
         }
 
         // Keyboard aiming (up/down arrows) - full rotation
+        let aimChanged = false;
         if (this.keys['ArrowUp'] || this.keys['KeyW']) {
             koala.aimAngle -= this.aimSpeed * dt;
+            aimChanged = true;
         }
         if (this.keys['ArrowDown'] || this.keys['KeyS']) {
             koala.aimAngle += this.aimSpeed * dt;
+            aimChanged = true;
         }
 
         // Normalize angle to -PI to PI range (full rotation)
@@ -343,6 +363,23 @@ export class InputManager {
         // Update facing direction based on aim angle - ONLY if not walking
         if (moveDir === 0) {
             koala.facingLeft = Math.abs(koala.aimAngle) > Math.PI / 2;
+        }
+
+        // NETWORK SYNC: Send position and aim updates to opponent (throttled)
+        if (this.game.networkManager && !this.game.isPractice) {
+            const now = performance.now();
+
+            // Throttle position updates to 20 times per second (every 50ms)
+            if (positionChanged && (!this.lastMoveSync || now - this.lastMoveSync > 50)) {
+                this.game.networkManager.sendMove(koala.x, koala.y, koala.facingLeft);
+                this.lastMoveSync = now;
+            }
+
+            // Throttle aim updates to 15 times per second (every 66ms)
+            if (aimChanged && (!this.lastAimSync || now - this.lastAimSync > 66)) {
+                this.game.networkManager.sendAim(koala.aimAngle);
+                this.lastAimSync = now;
+            }
         }
     }
 

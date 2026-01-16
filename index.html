@@ -156,18 +156,27 @@
 
         <!-- HUD Overlay -->
         <div id="hud">
+            <!-- Left: Turn Indicator -->
             <div id="turn-indicator">
                 <span id="current-team">Red Team</span>'s Turn
             </div>
+
+            <!-- Center: Timer -->
             <div id="turn-timer">30</div>
-            <div id="wind-indicator">
-                <span class="wind-label">Wind:</span>
-                <div class="wind-bar">
-                    <div id="wind-arrow"></div>
+
+            <!-- Right: Wind, Zoom, Mute -->
+            <div class="hud-right">
+                <div id="wind-indicator">
+                    <span class="wind-label">Wind</span>
+                    <div class="wind-bar">
+                        <div id="wind-arrow"></div>
+                    </div>
                 </div>
+                <div id="zoom-indicator">
+                    <span id="zoom-level">100%</span>
+                </div>
+                <button id="mute-toggle" class="hud-btn" title="Toggle Sound">🔊</button>
             </div>
-            <div id="zoom-indicator">Zoom: <span id="zoom-level">100%</span></div>
-            <button id="mute-toggle" class="hud-btn" title="Toggle Sound">🔊</button>
         </div>
 
         <!-- Weapon Selector -->

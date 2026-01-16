@@ -283,6 +283,9 @@ export class Game extends EventEmitter {
         let x = marker.x;
         let y = marker.y;
 
+        // Helper: use seeded random if available (multiplayer sync)
+        const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
+
         // Check if marker position has valid ground nearby
         const isValidSpawn = this.isValidSpawnPoint(x, y);
 
@@ -290,7 +293,7 @@ export class Game extends EventEmitter {
             // Marker is in a valid spot - use it directly
             // (or apply small jitter if reusing same marker)
             if (addJitter) {
-                x += (Math.random() - 0.5) * 50;
+                x += (rand() - 0.5) * 50;
             }
             return { x, y };
         }
@@ -377,6 +380,9 @@ export class Game extends EventEmitter {
      * that characters can spawn in caves, on islands, and in the top half of the map.
      */
     findRandomSpawnPosition(existingPositions, minDistance) {
+        // Helper: use seeded random if available (multiplayer sync)
+        const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
+
         // 1. Get ALL potentially valid spawn points from the terrain engine
         // This scans the entire map once per game start
         if (!this.validSpawnPoints || this.validSpawnPoints.length === 0) {
@@ -386,15 +392,15 @@ export class Game extends EventEmitter {
         // If the map is completely empty or the scan failed, use a safety fallback
         if (!this.validSpawnPoints || this.validSpawnPoints.length === 0) {
             console.warn('⚠️ No spawn points found via scan, using safety fallback');
-            return { x: 100 + Math.random() * (this.worldWidth - 200), y: 100 };
+            return { x: 100 + rand() * (this.worldWidth - 200), y: 100 };
         }
 
         // 2. Use all valid points found in the scan
         const safePoints = this.validSpawnPoints;
 
-        // 3. Shuffle the points for random selection
+        // 3. Shuffle the points for random selection (using seeded random for sync)
         const shuffledPoints = [...(safePoints.length > 0 ? safePoints : this.validSpawnPoints)]
-            .sort(() => Math.random() - 0.5);
+            .sort(() => rand() - 0.5);
 
         // 4. Try to find a point that satisfies distance and Line-of-Sight requirements
         for (const point of shuffledPoints) {
@@ -437,8 +443,9 @@ export class Game extends EventEmitter {
             if (!tooClose) return { ...point };
         }
 
-        // 6. Hard fallback: Just pick any valid point from the list at random
-        const randomPoint = shuffledPoints[Math.floor(Math.random() * shuffledPoints.length)];
+        // 6. Hard fallback: Just pick any valid point from the list (using seeded random)
+        const randomIndex = Math.floor(rand() * shuffledPoints.length);
+        const randomPoint = shuffledPoints[randomIndex];
         return { ...randomPoint };
     }
 
@@ -1983,14 +1990,17 @@ export class Game extends EventEmitter {
      * Spawn a health powerup on the map
      */
     spawnPowerup() {
+        // Helper: use seeded random if available (multiplayer sync)
+        const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
+
         // Try to find a valid spot
         for (let attempt = 0; attempt < 100; attempt++) {
-            const x = 200 + Math.random() * (this.worldWidth - 400);
+            const x = 200 + rand() * (this.worldWidth - 400);
             const surfaces = this.terrain.getVisualGroundY(x);
 
             if (surfaces.length > 0) {
-                // Pick a random surface
-                const y = surfaces[Math.floor(Math.random() * surfaces.length)];
+                // Pick a random surface (using seeded random)
+                const y = surfaces[Math.floor(rand() * surfaces.length)];
 
                 // Add the powerup
                 this.powerups.push({

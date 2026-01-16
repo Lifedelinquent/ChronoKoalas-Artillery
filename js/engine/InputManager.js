@@ -340,6 +340,20 @@ export class InputManager {
 
         let positionChanged = false;
         if (moveDir !== 0) {
+            // Double-check that koala is actually on ground before allowing ground movement
+            // This prevents "walking on air" after terrain is destroyed
+            if (koala.onGround) {
+                const footY = koala.y + koala.height / 2;
+                // Check if there's actually terrain below feet
+                const stillOnGround = this.game.terrain.checkCollision(koala.x, footY) ||
+                    this.game.terrain.checkCollision(koala.x, footY + 1) ||
+                    this.game.terrain.checkCollision(koala.x, footY + 2);
+                if (!stillOnGround) {
+                    // Terrain was destroyed! Start falling.
+                    koala.onGround = false;
+                }
+            }
+
             if (koala.onGround) {
                 // Ground movement with terrain following
                 const result = this.game.physics.canWalkUp(koala, moveDir * this.moveSpeed * dt);

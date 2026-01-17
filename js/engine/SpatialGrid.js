@@ -175,6 +175,13 @@ export class SpatialGrid {
     }
 
     /**
+     * Get entities in radius (alias for common usage in Game.js)
+     */
+    getNearby(x, y, radius) {
+        return this.queryRadius(x, y, radius).map(item => item.entity);
+    }
+
+    /**
      * Rebuild the entire grid from a list of entities
      * Useful for syncing or after major changes
      */

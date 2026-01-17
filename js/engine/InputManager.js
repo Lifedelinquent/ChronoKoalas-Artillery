@@ -69,8 +69,8 @@ export class InputManager {
      * Select a weapon
      */
     selectWeapon(weaponId) {
-        // Block weapon selection if not our turn in multiplayer
-        if (!this.game.isMyTurn()) {
+        // Block weapon selection if not our turn or during countdown
+        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
             return;
         }
 
@@ -113,8 +113,8 @@ export class InputManager {
             return;
         }
 
-        // Block game actions if it's not our turn in multiplayer
-        if (!this.game.isMyTurn()) {
+        // Block game actions if it's not our turn or during countdown
+        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
             return;
         }
 
@@ -204,8 +204,8 @@ export class InputManager {
             // Ignore clicks right after refocusing window
             if (!this.windowFocused) return;
 
-            // Block game actions if it's not our turn in multiplayer
-            if (!this.game.isMyTurn()) {
+            // Block game actions if it's not our turn or during countdown
+            if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
                 return;
             }
 
@@ -290,8 +290,8 @@ export class InputManager {
      * Update aim angle from mouse position
      */
     updateAimFromMouse() {
-        // Block aiming if it's not our turn in multiplayer
-        if (!this.game.isMyTurn()) {
+        // Block aiming if it's not our turn or during countdown
+        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
             return;
         }
 
@@ -337,8 +337,8 @@ export class InputManager {
      * Update during aiming phase
      */
     updateAiming(koala, dt) {
-        // Block movement if it's not our turn in multiplayer
-        if (!this.game.isMyTurn()) {
+        // Block movement if it's not our turn or during countdown
+        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
             return;
         }
 

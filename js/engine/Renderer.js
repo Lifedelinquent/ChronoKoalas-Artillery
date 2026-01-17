@@ -190,6 +190,9 @@ export class Renderer {
 
         // Restore transform
         ctx.restore();
+
+        // Draw HUD elements (not affected by camera)
+        this.drawCountdown();
     }
 
     /**
@@ -341,6 +344,25 @@ export class Renderer {
                     // Adjust y-offset to align with hand.
                     ctx.drawImage(weaponSprite, 0, -wSize / 2, wSize, wSize);
 
+                    // Check for fuse timer indicator while aiming/held (only for current player)
+                    // Only show if it's adjustable (usesTimer is true but fixedTimer is not defined)
+                    if (isCurrent && currentWeapon && currentWeapon.usesTimer && currentWeapon.fixedTimer === undefined) {
+                        ctx.save();
+                        // Draw near weapon, UPRIGHT (un-rotate the aim rotation)
+                        ctx.rotate(-rotation);
+                        // Translate to position slightly above and forward of the weapon
+                        ctx.translate(15, -15);
+                        ctx.fillStyle = '#fff';
+                        ctx.strokeStyle = '#000';
+                        ctx.lineWidth = 3;
+                        ctx.font = 'bold 16px Arial';
+                        ctx.textAlign = 'center';
+                        const timerValue = (currentWeapon.fixedTimer !== undefined) ? currentWeapon.fixedTimer : (this.game.weaponManager.timer || 3);
+                        ctx.strokeText(timerValue, 0, 0);
+                        ctx.fillText(timerValue, 0, 0);
+                        ctx.restore();
+                    }
+
                     ctx.restore();
                 }
             }
@@ -361,30 +383,41 @@ export class Renderer {
     }
 
     /**
-     * Draw health bar above koala
+     * Draw health number above koala (replaces bar)
      */
     drawHealthBar(koala) {
         const ctx = this.ctx;
         const x = koala.x;
-        const y = koala.y - 35;
-        const width = 30;
-        const height = 5;
+        const y = koala.y - 38;
+        const health = Math.ceil(koala.health);
         const healthPercent = koala.health / 100;
 
-        // Background
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillRect(x - width / 2, y, width, height);
-
-        // Health fill
+        // Health color based on percentage
         const healthColor = healthPercent > 0.5 ? '#2ecc71' :
             healthPercent > 0.25 ? '#f1c40f' : '#e74c3c';
-        ctx.fillStyle = healthColor;
-        ctx.fillRect(x - width / 2, y, width * healthPercent, height);
 
-        // Border
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x - width / 2, y, width, height);
+        // Draw pill-shaped background
+        const text = health.toString();
+        ctx.font = 'bold 14px Outfit';
+        const textWidth = ctx.measureText(text).width;
+        const pillWidth = textWidth + 10;
+        const pillHeight = 16;
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.beginPath();
+        ctx.roundRect(x - pillWidth / 2, y - pillHeight / 2, pillWidth, pillHeight, 8);
+        ctx.fill();
+
+        // Draw colored border
+        ctx.strokeStyle = healthColor;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Draw health number
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(text, x, y);
     }
 
     /**
@@ -393,7 +426,7 @@ export class Renderer {
     drawCurrentIndicator(koala) {
         const ctx = this.ctx;
         const x = Math.round(koala.x);
-        const y = Math.round(koala.y - 55);
+        const y = Math.round(koala.y - 70); // Higher to clear name tag
         const time = performance.now() / 600; // Slower timing
         const bounce = Math.sin(time) * 3; // Reduced bounce height
 
@@ -407,14 +440,25 @@ export class Renderer {
     }
 
     /**
-     * Draw name tag
+     * Draw name tag with style
      */
     drawNameTag(koala) {
         const ctx = this.ctx;
-        ctx.fillStyle = '#fff';
-        ctx.font = '10px Outfit';
+        const x = koala.x;
+        const y = koala.y - 55;
+
+        ctx.font = 'bold 12px Outfit';
         ctx.textAlign = 'center';
-        ctx.fillText(koala.name, koala.x, koala.y - 42);
+        ctx.textBaseline = 'middle';
+
+        // Draw outline/shadow for visibility
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.lineWidth = 3;
+        ctx.strokeText(koala.name, x, y);
+
+        // Draw text in team color
+        ctx.fillStyle = koala.team.color;
+        ctx.fillText(koala.name, x, y);
     }
 
     /**
@@ -461,6 +505,71 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(endX, endY, 5, 0, Math.PI * 2);
         ctx.fill();
+    }
+
+    /**
+     * Draw pre-match countdown overlay
+     */
+    drawCountdown() {
+        if (this.game.phase !== 'countdown') return;
+
+        const ctx = this.ctx;
+        const timer = this.game.countdownTimer;
+
+        // Darken screen slightly
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+        ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // Calculate text, scale, and alpha for smooth animation
+        let text = '';
+        let scale = 1.0;
+        let alpha = 1.0;
+
+        if (timer > 0.5) {
+            // Numbers phase: 3, 2, 1
+            const secondsLeft = Math.ceil(timer - 0.5);
+            text = secondsLeft.toString();
+
+            // Calculate progress within current second (1.0 -> 0.0)
+            const timeIntoSecond = (timer - 0.5) % 1.0;
+            const progress = timeIntoSecond === 0 ? 1.0 : timeIntoSecond;
+
+            // Scale: starts at 2.0 and shrinks to 1.0 over the second
+            scale = 1.0 + progress;
+        } else {
+            // GO! phase (last 0.5 seconds)
+            text = 'GO!';
+
+            // Scale: explodes outward from 1.0 to 3.0
+            const goProgress = (0.5 - timer) / 0.5; // 0.0 -> 1.0
+            scale = 1.0 + goProgress * 2.0;
+
+            // Fade out as it grows
+            alpha = 1.0 - goProgress;
+        }
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(this.canvas.width / 2, this.canvas.height / 2);
+        ctx.scale(scale, scale);
+
+        // Draw shadow/outline
+        ctx.font = 'bold 120px Outfit';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 10;
+        ctx.strokeText(text, 0, 0);
+
+        // Draw main text with gradient
+        const grad = ctx.createLinearGradient(0, -60, 0, 60);
+        grad.addColorStop(0, '#fff');
+        grad.addColorStop(1, '#ffd700'); // Gold
+        ctx.fillStyle = grad;
+        ctx.fillText(text, 0, 0);
+
+        ctx.restore();
     }
 
     /**
@@ -559,7 +668,7 @@ export class Renderer {
                     this.drawGrenade(ctx, proj);
                     break;
                 case 'shotgun':
-                    this.drawBullet(ctx);
+                    this.drawPellet(ctx, proj);
                     break;
                 case 'dynamite':
                     this.drawDynamite(ctx, proj);
@@ -575,6 +684,39 @@ export class Renderer {
             }
 
             ctx.restore();
+
+            // Draw timer indicator if active and started - UPRIGHT
+            // User requested: Hide timer on grenades after throw (they only want it before throw)
+            if (proj.timerStarted && proj.timer !== null && proj.type !== 'grenade') {
+                const timeLeft = Math.ceil(proj.timer - proj.timeOnGround);
+                if (timeLeft >= 0) {
+                    ctx.save();
+                    ctx.translate(proj.x, proj.y);
+                    ctx.fillStyle = '#fff';
+                    ctx.strokeStyle = '#000';
+                    ctx.lineWidth = 3;
+                    ctx.font = 'bold 18px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.strokeText(timeLeft, 0, -25);
+                    ctx.fillText(timeLeft, 0, -25);
+                    ctx.restore();
+                }
+            } else if (proj.isTriggered && proj.triggerTimer !== undefined) {
+                // Show countdown for triggered mines
+                const timeLeft = Math.ceil(proj.triggerDelay - proj.triggerTimer);
+                if (timeLeft >= 0) {
+                    ctx.save();
+                    ctx.translate(proj.x, proj.y);
+                    ctx.fillStyle = '#ff0'; // Yellow for triggered mines
+                    ctx.strokeStyle = '#000';
+                    ctx.lineWidth = 3;
+                    ctx.font = 'bold 18px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.strokeText(timeLeft, 0, -25);
+                    ctx.fillText(timeLeft, 0, -25);
+                    ctx.restore();
+                }
+            }
         }
     }
 
@@ -686,6 +828,23 @@ export class Renderer {
         ctx.strokeStyle = '#d4ac0d';
         ctx.lineWidth = 1;
         ctx.stroke();
+    }
+
+    /**
+     * Draw shotgun pellet (smaller than bullet)
+     */
+    drawPellet(ctx, proj) {
+        // Small metallic pellet
+        ctx.fillStyle = '#888';
+        ctx.beginPath();
+        ctx.arc(0, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Highlight for 3D effect
+        ctx.fillStyle = '#ccc';
+        ctx.beginPath();
+        ctx.arc(-1, -1, 1, 0, Math.PI * 2);
+        ctx.fill();
     }
 
     /**

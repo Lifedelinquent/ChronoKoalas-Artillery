@@ -36,8 +36,8 @@ export class Koala {
         // Name
         this.name = 'Koala';
 
-        // Spawn Protection: Ignore gravity for 1 second to prevent falling through map on load
-        this.spawnTimer = 1.0;
+        // Spawn Protection: Minimal ignore gravity to prevent falling through map on initial load
+        this.spawnTimer = 0.1;
     }
 
     /**

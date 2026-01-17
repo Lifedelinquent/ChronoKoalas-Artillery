@@ -298,8 +298,11 @@ export class MenuManager {
             // Check if a card was clicked (for selection)
             const card = e.target.closest('.map-card');
             if (card) {
-                // Deselect all
-                list.querySelectorAll('.map-card').forEach(c => c.classList.remove('selected'));
+                // Deselect all - use getElementsByClassName (faster than querySelectorAll)
+                const cards = list.getElementsByClassName('map-card');
+                for (let i = 0; i < cards.length; i++) {
+                    cards[i].classList.remove('selected');
+                }
                 // Select this one
                 card.classList.add('selected');
                 selectedMapId = card.dataset.mapId;

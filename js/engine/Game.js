@@ -14,6 +14,7 @@ import { EventEmitter } from '../utils/EventEmitter.js';
 import { AudioManager } from './AudioManager.js';
 import { LootManager } from './LootManager.js';
 import { SpatialGrid } from './SpatialGrid.js';
+import { DOMCache } from '../utils/DOMCache.js';
 
 export class Game extends EventEmitter {
     constructor(canvas, options = {}) {
@@ -47,6 +48,11 @@ export class Game extends EventEmitter {
         this.projectiles = [];
         this.particles = [];
         this.maxParticles = 200; // Performance: limit particle count
+
+        // Object pooling for projectiles (performance optimization)
+        this.projectilePool = [];
+        this.maxPoolSize = 50;
+
         this.currentTeamIndex = 0;
         this.currentKoalaIndex = 0;
         this.turnTime = 30;
@@ -57,10 +63,19 @@ export class Game extends EventEmitter {
         this.phase = 'waiting'; // waiting, aiming, firing, projectile, retreat, damage, nextTurn
         this.isPaused = false;
         this.isGameOver = false;
+        this.countdownTimer = 0; // NEW: Pre-match countdown timer
+
+        // Delayed action queue (replaces setTimeout for better performance)
+        this.delayedActions = [];
+        this.damagePhaseDelay = 0;
+        this.damagePhaseCallback = null;
 
         // Retreat time settings
         this.retreatTime = 5; // 5 seconds to retreat after firing
         this.retreatTimer = 0;
+
+        // Multi-shot weapon tracking (shotgun)
+        this.shotgunShotsRemaining = 0;
 
         // Camera
         this.camera = {
@@ -77,6 +92,10 @@ export class Game extends EventEmitter {
 
         this.networkManager = options.networkManager;
         this.isPractice = options.isPractice || false;
+
+        // DOM Cache - eliminates querySelector bottleneck
+        this.dom = new DOMCache();
+        this.dom.init(); // Cache all DOM references once
 
         // Loot crate system (replaces old powerups)
         this.lootManager = new LootManager(this);
@@ -121,8 +140,9 @@ export class Game extends EventEmitter {
         // Randomize wind (using seeded random for sync)
         this.randomizeWind();
 
-        // Start first turn
-        this.startTurn();
+        // Start match with a 3-second countdown
+        this.phase = 'countdown';
+        this.countdownTimer = 3.5; // (3, 2, 1, GO!)
 
         // Start game loop
         this.lastTime = performance.now();
@@ -569,7 +589,12 @@ export class Game extends EventEmitter {
     gameLoop(currentTime = 0) {
         if (this.isGameOver) return;
 
-        const deltaTime = (currentTime - this.lastTime) / 1000;
+        // On first frame, currentTime is 0 (default) which would cause negative dt
+        // Skip update on first frame to let requestAnimationFrame provide real time
+        let deltaTime = 0;
+        if (currentTime > 0 && this.lastTime > 0) {
+            deltaTime = (currentTime - this.lastTime) / 1000;
+        }
         this.lastTime = currentTime;
 
         // Performance debugging
@@ -679,14 +704,20 @@ export class Game extends EventEmitter {
      * Update game state
      */
     update(dt) {
-        // Cap delta time to prevent physics issues
-        dt = Math.min(dt, 0.05);
+        // Cap delta time to prevent physics issues (also clamp negative values)
+        dt = Math.max(0, Math.min(dt, 0.05));
 
         // Detailed profiling when debugging
         const profile = window.debugPerformance && window.debugPerformanceDetail;
         let t0, t1;
 
         switch (this.phase) {
+            case 'countdown':
+                this.countdownTimer -= dt;
+                if (this.countdownTimer <= 0) {
+                    this.startTurn();
+                }
+                break;
             case 'aiming':
                 this.updateTurnTimer(dt);
                 this.updateAiming(dt);
@@ -741,6 +772,9 @@ export class Game extends EventEmitter {
                 if (koala.isAlive) koala.update(dt);
             });
         });
+
+        // Process delayed actions (replaces setTimeout - no more timer fired lag!)
+        this.updateDelayedActions(dt);
 
         // Update UI states based on input
         this.inputManager.update(dt);
@@ -847,6 +881,31 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Schedule a delayed action (replaces setTimeout for game loop integration)
+     */
+    scheduleDelayedAction(delay, callback) {
+        this.delayedActions.push({
+            delay: delay / 1000, // Convert ms to seconds
+            callback: callback
+        });
+    }
+
+    /**
+     * Update delayed actions (processes in main loop with deltaTime)
+     */
+    updateDelayedActions(dt) {
+        for (let i = this.delayedActions.length - 1; i >= 0; i--) {
+            const action = this.delayedActions[i];
+            action.delay -= dt;
+
+            if (action.delay <= 0) {
+                action.callback();
+                this.delayedActions.splice(i, 1);
+            }
+        }
+    }
+
+    /**
      * Activate blowtorch - dig through terrain while following mouse
      */
     activateBlowtorch(koala, weapon) {
@@ -862,13 +921,11 @@ export class Game extends EventEmitter {
         koala.blowtorchDigging = false; // Not digging until mouse pressed
 
         // Show power bar as blowtorch meter at 100%
-        const powerBarContainer = document.getElementById('power-bar-container');
-        if (powerBarContainer) {
-            powerBarContainer.classList.remove('hidden');
+        if (this.dom.elements.powerBarContainer) {
+            this.dom.elements.powerBarContainer.classList.remove('hidden');
         }
-        const powerFill = document.getElementById('power-fill');
-        if (powerFill) {
-            powerFill.style.width = '100%'; // Start at full
+        if (this.dom.elements.powerFill) {
+            this.dom.elements.powerFill.style.width = '100%'; // Start at full
         }
 
         console.log('Blowtorch activated for', koala.name);
@@ -893,10 +950,9 @@ export class Game extends EventEmitter {
             koala.blowtorchMeter -= koala.blowtorchDrainRate * dt;
 
             // Update power bar to show remaining meter
-            const powerFill = document.getElementById('power-fill');
-            if (powerFill) {
+            if (this.dom.elements.powerFill) {
                 const percentage = Math.max(0, (koala.blowtorchMeter / koala.blowtorchMaxMeter) * 100);
-                powerFill.style.width = percentage + '%';
+                this.dom.elements.powerFill.style.width = percentage + '%';
             }
 
             if (koala.blowtorchMeter <= 0) {
@@ -987,13 +1043,11 @@ export class Game extends EventEmitter {
         }
 
         // Hide power bar
-        const powerBarContainer = document.getElementById('power-bar-container');
-        if (powerBarContainer) {
-            powerBarContainer.classList.add('hidden');
+        if (this.dom.elements.powerBarContainer) {
+            this.dom.elements.powerBarContainer.classList.add('hidden');
         }
-        const powerFill = document.getElementById('power-fill');
-        if (powerFill) {
-            powerFill.style.width = '0%';
+        if (this.dom.elements.powerFill) {
+            this.dom.elements.powerFill.style.width = '0%';
         }
 
         this.startRetreat();
@@ -1017,7 +1071,7 @@ export class Game extends EventEmitter {
         this.turnTimer -= dt;
 
         // Update timer display
-        const timerEl = document.getElementById('turn-timer');
+        const timerEl = this.dom.elements.turnTimer;
         if (timerEl) {
             const seconds = Math.max(0, Math.ceil(this.turnTimer));
             timerEl.textContent = seconds;
@@ -1043,7 +1097,7 @@ export class Game extends EventEmitter {
         if (this.turnTimer <= 0) {
             this.turnTimer = 0;
             this.phase = 'damage';
-            setTimeout(() => this.processDamage(), 500);
+            this.scheduleDelayedAction(500, () => this.processDamage());
         }
     }
 
@@ -1061,7 +1115,7 @@ export class Game extends EventEmitter {
         }
 
         // Show retreat indicator
-        const turnIndicator = document.getElementById('turn-indicator');
+        const turnIndicator = this.dom.elements.turnIndicator;
         if (turnIndicator) {
             turnIndicator.innerHTML = '<span class="retreat-label">RETREAT!</span>';
         }
@@ -1091,31 +1145,67 @@ export class Game extends EventEmitter {
             this.retreatTimer = 0;
 
             // Remove retreat UI classes
-            const timerEl = document.getElementById('turn-timer');
+            const timerEl = this.dom.elements.turnTimer;
             if (timerEl) {
                 timerEl.classList.remove('retreat-mode');
             }
 
             // Restore turn indicator (will be updated properly on next turn)
-            const turnIndicator = document.getElementById('turn-indicator');
+            const turnIndicator = this.dom.elements.turnIndicator;
             if (turnIndicator) {
                 turnIndicator.innerHTML = '<span id="current-team">...</span>\'s Turn';
             }
 
             this.phase = 'damage';
-            setTimeout(() => this.processDamage(), 500);
+            this.scheduleDelayedAction(500, () => this.processDamage());
         }
     }
 
     /**
      * Remove a projectile and mark it as destroyed (for camera tracking)
+     * Returns it to the pool for reuse
      */
     removeProjectile(index) {
         const proj = this.projectiles[index];
         if (proj) {
             proj.destroyed = true;
+            // Return to pool for reuse
+            this.returnProjectileToPool(proj);
         }
         this.projectiles.splice(index, 1);
+    }
+
+    /**
+     * Get a projectile from the pool or create a new one
+     */
+    getProjectileFromPool() {
+        if (this.projectilePool.length > 0) {
+            return this.projectilePool.pop();
+        }
+        // Pool is empty, will need to create new one
+        return null;
+    }
+
+    /**
+     * Return a projectile to the pool for reuse
+     */
+    returnProjectileToPool(projectile) {
+        // Don't exceed pool size
+        if (this.projectilePool.length >= this.maxPoolSize) {
+            return;
+        }
+
+        // Reset projectile properties for reuse
+        projectile.destroyed = false;
+        projectile.stationary = false;
+        projectile.timerStarted = false;
+        projectile.timeOnGround = 0;
+        projectile.bounceCount = 0;
+        projectile.isTriggered = false;
+        projectile.triggerTimer = 0;
+        projectile.shooter = null;
+
+        this.projectilePool.push(projectile);
     }
 
     /**
@@ -1124,10 +1214,26 @@ export class Game extends EventEmitter {
     updateProjectiles(dt) {
         // Handle turn phase transition
         if (this.phase === 'projectile') {
-            const isBlocking = p => !p.stationary || (p.timer !== null && p.timerStarted) || p.isTriggered;
-            const blockingProjectiles = this.projectiles.filter(isBlocking);
+            // Count blocking projectiles without creating a new array (faster)
+            let blockingCount = 0;
+            for (let i = 0; i < this.projectiles.length; i++) {
+                const p = this.projectiles[i];
+                if (!p.stationary || (p.timer !== null && p.timerStarted) || p.isTriggered) {
+                    blockingCount++;
+                    break; // Early exit - we found at least one
+                }
+            }
 
-            if (blockingProjectiles.length === 0) {
+            if (blockingCount === 0) {
+                // Special handling for shotgun multi-shot
+                if (this.shotgunShotsRemaining > 0) {
+                    console.log(`🔫 Shotgun ready for shot ${2 - this.shotgunShotsRemaining + 1}`);
+                    this.phase = 'aiming'; // Return to aiming for next shot
+                    return;
+                }
+
+                // Reset shotgun counter when turn ends
+                this.shotgunShotsRemaining = 0;
                 this.startRetreat();
                 return;
             }
@@ -1147,6 +1253,15 @@ export class Game extends EventEmitter {
                 this.physics.updateProjectile(proj, dt);
             }
 
+            // Check pellet max range (shotgun pellets disappear after distance)
+            if (proj.isPellet && proj.maxRange) {
+                const distTraveled = Math.hypot(proj.x - proj.startX, proj.y - proj.startY);
+                if (distTraveled >= proj.maxRange) {
+                    this.removeProjectile(i);
+                    continue;
+                }
+            }
+
             // Update timer and check for timer-based explosion
             const shouldExplode = proj.update(dt, this.wind);
 
@@ -1161,8 +1276,29 @@ export class Game extends EventEmitter {
             }
 
             if (shouldExplode) {
-                this.handleProjectileImpact(proj);
-                this.removeProjectile(i);
+                // Check if it's a dud (returns 'dud' string)
+                if (shouldExplode === 'dud') {
+                    // Create dud smoke effect
+                    for (let i = 0; i < 15; i++) {
+                        this.addParticle({
+                            x: proj.x,
+                            y: proj.y - 10,
+                            vx: (Math.random() - 0.5) * 50,
+                            vy: -Math.random() * 100 - 50,
+                            life: 1.5,
+                            maxLife: 1.5,
+                            color: '#666',
+                            size: 4
+                        });
+                    }
+                    // TODO: Play dud sound
+                    console.log('💨 Mine was a DUD!');
+                    // Don't remove - dud stays on map
+                } else {
+                    // Normal explosion
+                    this.handleProjectileImpact(proj);
+                    this.removeProjectile(i);
+                }
                 continue;
             }
 
@@ -1257,6 +1393,15 @@ export class Game extends EventEmitter {
                     // Rope hits -> Pull player
                     this.handleRopeHit(proj);
                     this.removeProjectile(i);
+                } else if (proj.timer !== null && proj.timerStarted) {
+                    // Has timer (dynamite, etc.) - stick to terrain and wait for timer
+                    proj.vx = 0;
+                    proj.vy = 0;
+                    proj.stationary = true;
+                    const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
+                    proj.x += normal.x * 2;
+                    proj.y += normal.y * 2;
+                    // Timer already started, just wait
                 } else {
                     // Non-bouncing, non-timer weapons explode on impact
                     this.handleProjectileImpact(proj);
@@ -1306,8 +1451,16 @@ export class Game extends EventEmitter {
             if (hitKoala) {
                 proj.x = hitKoalaX;
                 proj.y = hitKoalaY;
-                this.handleProjectileImpact(proj, hitKoala);
-                this.removeProjectile(i);
+
+                // Check if this weapon should explode on contact
+                if (proj.weapon.noContactExplosion) {
+                    // Don't explode, just pass through/bounce
+                    console.log(proj.weapon.name, 'hit koala but noContactExplosion is true');
+                } else {
+                    // Normal explosion on contact
+                    this.handleProjectileImpact(proj, hitKoala);
+                    this.removeProjectile(i);
+                }
                 continue;
             }
         }
@@ -1541,10 +1694,10 @@ export class Game extends EventEmitter {
         }
 
         // Apply fall damage and wait for physics to settle
-        setTimeout(() => {
+        this.scheduleDelayedAction(anyDied ? 1000 : 300, () => {
             this.applyFallDamage();
             this.nextTurn();
-        }, anyDied ? 1000 : 300);
+        });
     }
 
     /**
@@ -1575,6 +1728,7 @@ export class Game extends EventEmitter {
         this.phase = 'aiming';
         this.turnTimer = this.turnTime;
         this.randomizeWind();
+        this.shotgunShotsRemaining = 0; // Reset multi-shot counter
 
         // Update timer display
         const timerEl = document.getElementById('turn-timer');
@@ -1765,11 +1919,11 @@ export class Game extends EventEmitter {
             this.phase = 'projectile';
 
             // Set a timer to end the "projectile" phase after the swing animation
-            setTimeout(() => {
+            this.scheduleDelayedAction(500, () => {
                 if (this.projectiles.length === 0) {
                     this.startRetreat();
                 }
-            }, 500);
+            });
 
             // Decrement ammo
             if (weapon.ammo !== Infinity) {
@@ -1786,6 +1940,54 @@ export class Game extends EventEmitter {
             if (weapon.ammo !== Infinity) {
                 weapon.ammo--;
             }
+            return;
+        }
+
+        // Handle Shotgun (scatter pellets with 2 shots per turn)
+        if (weapon.type === 'shotgun') {
+            // Initialize shots remaining on first shot
+            if (this.shotgunShotsRemaining === 0) {
+                this.shotgunShotsRemaining = weapon.shotsPerTurn || 2;
+            }
+
+            this.phase = 'projectile';
+            this.shotgunShotsRemaining--;
+
+            // Spawn offset from koala
+            const spawnOffset = 30;
+            const spawnX = koala.x + Math.cos(angle) * spawnOffset;
+            const spawnY = (koala.y - 10) + Math.sin(angle) * spawnOffset;
+
+            // Create multiple pellets with spread
+            const pelletCount = weapon.pelletCount || 6;
+            const spreadAngle = weapon.spreadAngle || 0.25;
+
+            for (let i = 0; i < pelletCount; i++) {
+                // Calculate spread offset for this pellet
+                const spreadOffset = (i - (pelletCount - 1) / 2) * (spreadAngle / (pelletCount - 1));
+                const pelletAngle = angle + spreadOffset;
+
+                const projectile = this.weaponManager.createProjectile(spawnX, spawnY, pelletAngle, 1.0);
+                if (projectile) {
+                    projectile.shooter = koala;
+                    projectile.isPellet = true;
+                    projectile.maxRange = weapon.maxRange || 200;
+                    projectile.startX = spawnX;
+                    projectile.startY = spawnY;
+                    this.projectiles.push(projectile);
+                }
+            }
+
+            console.log(`🔫 Shotgun blast! ${pelletCount} pellets, ${this.shotgunShotsRemaining} shots remaining`);
+
+            // Play fire sound
+            this.audioManager.playFire(weapon.id);
+
+            // Network sync
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+
             return;
         }
 
@@ -1817,8 +2019,14 @@ export class Game extends EventEmitter {
         this.projectiles.push(projectile);
         console.log('Projectile created at:', spawnX.toFixed(0), spawnY.toFixed(0), 'shooter:', koala.name);
 
-        // Follow projectile with camera
-        this.followProjectile(projectile);
+        // Special handling for dynamite - start retreat immediately
+        if (weapon.type === 'dynamite') {
+            console.log('💣 Dynamite placed! Starting retreat...');
+            this.startRetreat();
+        } else {
+            // Follow projectile with camera for normal weapons
+            this.followProjectile(projectile);
+        }
 
         // Send to network (only if this is our turn)
         if (this.networkManager && !this.isPractice && this.isMyTurn()) {
@@ -1985,7 +2193,7 @@ export class Game extends EventEmitter {
 
         // End turn after teleport
         this.phase = 'damage';
-        setTimeout(() => this.processDamage(), 500);
+        this.scheduleDelayedAction(500, () => this.processDamage());
     }
 
     /**
@@ -2004,21 +2212,47 @@ export class Game extends EventEmitter {
             const missileX = startX + (index * spacing);
             const missileY = 50; // Start from top of world
 
-            // Create a proper Projectile instance
-            const proj = new Projectile({
-                x: missileX,
-                y: missileY,
-                vx: 0,
-                vy: 300, // Fall downward
-                type: 'airstrike',
-                weapon: weapon,
-                gravityMultiplier: 0.5,
-                affectedByWind: false,
-                bounces: false
-            });
+            // Create a proper Projectile instance (using pool if available)
+            let proj = this.getProjectileFromPool();
 
-            // Override rotation to point downward
-            proj.rotation = Math.PI / 2;
+            if (proj) {
+                // Reuse pooled projectile
+                proj.x = missileX;
+                proj.y = missileY;
+                proj.vx = 0;
+                proj.vy = 300; // Fall downward
+                proj.type = 'airstrike';
+                proj.weapon = weapon;
+                proj.gravityMultiplier = 0.5;
+                proj.affectedByWind = false;
+                proj.bounces = false;
+                proj.timer = null;
+                proj.timerStarted = false;
+                proj.timeOnGround = 0;
+                proj.bounceCount = 0;
+                proj.triggeredByProximity = false;
+                proj.isTriggered = false;
+                proj.triggerTimer = 0;
+                proj.stationary = false;
+                proj.destroyed = false;
+                proj.shooter = null;
+                proj.rotation = Math.PI / 2; // Point downward
+            } else {
+                // Pool empty, create new
+                proj = new Projectile({
+                    x: missileX,
+                    y: missileY,
+                    vx: 0,
+                    vy: 300, // Fall downward
+                    type: 'airstrike',
+                    weapon: weapon,
+                    gravityMultiplier: 0.5,
+                    affectedByWind: false,
+                    bounces: false
+                });
+                // Override rotation to point downward
+                proj.rotation = Math.PI / 2;
+            }
 
             this.projectiles.push(proj);
 
@@ -2031,8 +2265,8 @@ export class Game extends EventEmitter {
 
         // Schedule remaining missiles
         for (let i = 1; i < missileCount; i++) {
-            // Stagger the missiles slightly
-            setTimeout(() => {
+            // Stagger the missiles slightly using delayed action
+            this.scheduleDelayedAction(i * 200, () => {
                 // Only spawn if game is still active
                 if (!this.isGameOver) {
                     spawnMissile(i);
@@ -2041,7 +2275,7 @@ export class Game extends EventEmitter {
                         this.phase = 'projectile';
                     }
                 }
-            }, i * 200); // 200ms spacing for better effect
+            });
         }
 
         // Move camera to target area (center on impact point)
@@ -2143,22 +2377,44 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Find nearest koala within range
+     * Find nearest koala within range (optimized with spatial grid)
      */
     findNearbyKoala(x, y, radius) {
+        if (!this.spatialGrid) {
+            // Fallback to old method if no spatial grid
+            let nearest = null;
+            let minDist = radius;
+            for (const team of this.teams) {
+                for (const koala of team.koalas) {
+                    if (!koala.isAlive) continue;
+                    const dist = Math.hypot(koala.x - x, koala.y - y);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearest = koala;
+                    }
+                }
+            }
+            return nearest;
+        }
+
+        // Use spatial grid for O(1) lookup instead of O(n) iteration
+        const nearby = this.spatialGrid.getNearby(x, y, radius);
+
         let nearest = null;
         let minDist = radius;
 
-        for (const team of this.teams) {
-            for (const koala of team.koalas) {
-                if (!koala.isAlive) continue;
-                const dist = Math.hypot(koala.x - x, koala.y - y);
+        for (let i = 0; i < nearby.length; i++) {
+            const entity = nearby[i];
+            // Only check koalas (not other entities)
+            if (entity.isAlive && entity.health !== undefined) {
+                const dist = Math.hypot(entity.x - x, entity.y - y);
                 if (dist < minDist) {
                     minDist = dist;
-                    nearest = koala;
+                    nearest = entity;
                 }
             }
         }
+
         return nearest;
     }
 
@@ -2182,7 +2438,7 @@ export class Game extends EventEmitter {
      */
     updateTurnIndicator() {
         const team = this.getCurrentTeam();
-        const indicator = document.getElementById('turn-indicator');
+        const indicator = this.dom.elements.turnIndicator;
         if (indicator && team) {
             // In multiplayer, show if it's your turn or opponent's turn
             if (!this.isPractice && this.networkManager) {
@@ -2196,7 +2452,7 @@ export class Game extends EventEmitter {
     }
 
     updateTimerDisplay() {
-        const el = document.getElementById('turn-timer');
+        const el = this.dom.elements.turnTimer;
         if (el) {
             el.textContent = Math.ceil(this.turnTimer);
             el.style.color = this.turnTimer < 10 ? '#e74c3c' : '#f1c40f';
@@ -2204,8 +2460,8 @@ export class Game extends EventEmitter {
     }
 
     updateWindDisplay() {
-        const fill = document.getElementById('wind-fill');
-        const value = document.getElementById('wind-value');
+        const fill = this.dom.elements.windFill;
+        const value = this.dom.elements.windValue;
 
         if (fill) {
             const absWind = Math.abs(this.wind);
@@ -2246,11 +2502,9 @@ export class Game extends EventEmitter {
             const maxHealth = team.koalas.length * 100;
             const percent = (totalHealth / maxHealth) * 100;
 
-            const fillId = i === 0 ? 'red-hp-fill' : 'blue-hp-fill';
-            const valueId = i === 0 ? 'red-hp-value' : 'blue-hp-value';
-
-            const fillEl = document.getElementById(fillId);
-            const valueEl = document.getElementById(valueId);
+            // Use cached elements
+            const fillEl = i === 0 ? this.dom.elements.redHpFill : this.dom.elements.blueHpFill;
+            const valueEl = i === 0 ? this.dom.elements.redHpValue : this.dom.elements.blueHpValue;
 
             if (fillEl) fillEl.style.width = percent + '%';
             if (valueEl) valueEl.textContent = totalHealth;
@@ -2330,13 +2584,15 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Update weapon UI (ammo counts) - Optimized to minimize DOM operations
+     * Update weapon UI (ammo counts) - Optimized with DOM caching
      */
     updateWeaponUI() {
-        const weaponEls = document.querySelectorAll('.weapon');
+        // Use cached weapon elements array (no querySelector!)
+        const weaponEls = this.dom.weaponArray;
         const currentWeaponId = this.weaponManager.currentWeapon?.id;
 
-        weaponEls.forEach(el => {
+        for (let i = 0; i < weaponEls.length; i++) {
+            const el = weaponEls[i];
             const weaponId = el.dataset.weapon;
             const weapon = this.weaponManager.getWeapon(weaponId);
 
@@ -2347,8 +2603,12 @@ export class Game extends EventEmitter {
                     el.classList.toggle('selected', isSelected);
                 }
 
-                // Handle ammo count element
-                let ammoEl = el.querySelector('.ammo-count');
+                // Cache ammo element on the weapon element itself
+                // This avoids querySelector on every update
+                if (!el._cachedAmmoEl) {
+                    el._cachedAmmoEl = el.querySelector('.ammo-count');
+                }
+                let ammoEl = el._cachedAmmoEl;
 
                 if (weapon.ammo !== Infinity) {
                     // Finite ammo - create or update ammo element
@@ -2356,6 +2616,7 @@ export class Game extends EventEmitter {
                         ammoEl = document.createElement('div');
                         ammoEl.className = 'ammo-count';
                         el.appendChild(ammoEl);
+                        el._cachedAmmoEl = ammoEl; // Cache the new element
                     }
 
                     // Only update text if changed
@@ -2373,11 +2634,12 @@ export class Game extends EventEmitter {
                     // Infinite ammo - remove ammo element if exists
                     if (ammoEl) {
                         ammoEl.remove();
+                        el._cachedAmmoEl = null; // Clear cache
                     }
                     el.classList.remove('disabled');
                 }
             }
-        });
+        }
     }
 
     /**

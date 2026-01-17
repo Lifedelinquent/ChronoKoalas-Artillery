@@ -22,10 +22,11 @@ export class Projectile {
         this.bounceCount = 0;
         this.maxBounces = 3;
 
-        // Timer (for grenades) - only starts after first terrain hit
+        // Timer behavior
         this.timer = options.timer;
-        this.timerStarted = false; // Timer hasn't started yet
-        this.timeOnGround = 0; // Time since first terrain hit
+        this.timerStartsOnThrow = options.timerStartsOnThrow || false;
+        this.timerStarted = this.timerStartsOnThrow; // Start immediately if flagged
+        this.timeOnGround = 0;
 
         // Size for collision
         this.radius = 5;
@@ -34,7 +35,19 @@ export class Projectile {
         this.triggeredByProximity = options.triggeredByProximity || false;
         this.isTriggered = false;
         this.triggerTimer = 0;
-        this.triggerDelay = 3.0; // Seconds from detection to blast
+        this.triggerDelay = options.weapon?.triggerDelay || 3.0;
+
+        // Dud state (for mines)
+        this.isDud = false;
+        if (options.weapon?.dudChance && Math.random() < options.weapon.dudChance) {
+            this.isDud = true;
+        }
+
+        // Explodes on settle (for holy hand grenade)
+        this.explodesOnSettle = options.weapon?.explodesOnSettle || false;
+        this.settleVelocityThreshold = options.weapon?.settleVelocityThreshold || 100;
+        this.settleTime = 0; // Time spent below threshold
+        this.settleRequiredTime = 0.3; // Must be slow for 0.3 seconds
     }
 
     /**
@@ -51,9 +64,34 @@ export class Projectile {
      * Update projectile
      */
     update(dt, wind) {
+        // Handle settle-based explosion (Holy Hand Grenade)
+        // Check velocity ALWAYS, not just when stationary
+        if (this.explodesOnSettle) {
+            const speed = Math.hypot(this.vx, this.vy);
+            if (speed < this.settleVelocityThreshold) {
+                this.settleTime += dt;
+                if (this.settleTime >= this.settleRequiredTime) {
+                    return true; // Settled - BOOM!
+                }
+            } else {
+                // Reset if moving too fast
+                this.settleTime = 0;
+            }
+        }
+
         // Handle proximity-triggered mines
         if (this.triggeredByProximity && this.stationary) {
             if (this.isTriggered) {
+                // Check if it's a dud
+                if (this.isDud) {
+                    // Dud doesn't explode, just returns special state
+                    if (!this.dudActivated) {
+                        this.dudActivated = true;
+                        return 'dud'; // Signal for dud effect
+                    }
+                    return false; // Dud stays there
+                }
+
                 this.triggerTimer += dt;
                 if (this.triggerTimer >= this.triggerDelay) {
                     return true; // BOOM
@@ -61,7 +99,7 @@ export class Projectile {
             }
         }
 
-        // Check timer only if it has started (after terrain hit)
+        // Check timer (starts on throw or on terrain hit)
         if (this.timer !== null && this.timerStarted) {
             this.timeOnGround += dt;
             if (this.timeOnGround >= this.timer) {

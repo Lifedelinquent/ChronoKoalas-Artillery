@@ -49,31 +49,36 @@ export class WeaponManager {
                 id: 'grenade',
                 name: 'Grenade',
                 type: 'grenade',
-                damage: 45,
+                damage: 50,
                 directDamage: 0,
-                explosionRadius: 75,
-                knockback: 250,
-                speed: 800, // Increased for stronger throws
+                explosionRadius: 85, // Bigger explosion
+                knockback: 300,
+                speed: 800,
                 gravity: 1,
                 affectedByWind: false,
                 bounces: true,
                 bounciness: 0.7,
                 usesTimer: true,
-                defaultTimer: 3, // 3 seconds after first terrain hit
+                timerStartsOnThrow: true, // NEW: Timer starts immediately when thrown
+                defaultTimer: 3, // User can set 1-5 seconds
+                noContactExplosion: true, // NEW: Don't explode on koala contact
                 ammo: 5
             },
             shotgun: {
                 id: 'shotgun',
                 name: 'Shotgun',
                 type: 'shotgun',
-                damage: 25,
-                directDamage: 25,
-                explosionRadius: 15,
-                knockback: 150,
-                speed: 1500,
-                gravity: 0.3,
+                damage: 8,           // Damage per pellet (6 pellets = 48 max)
+                directDamage: 8,
+                explosionRadius: 15, // Terrain damage per pellet
+                knockback: 80,       // Per pellet
+                speed: 1200,
+                gravity: 0,          // Pellets travel straight (short range)
                 affectedByWind: false,
-                shots: 2,
+                pelletCount: 6,      // Number of pellets per shot
+                spreadAngle: 0.25,   // Spread in radians (~15 degrees total)
+                maxRange: 200,       // Pellets disappear after this distance
+                shotsPerTurn: 2,     // Can fire twice before turn ends
                 ammo: Infinity
             },
             dynamite: {
@@ -82,13 +87,16 @@ export class WeaponManager {
                 type: 'dynamite',
                 damage: 75,
                 directDamage: 0,
-                explosionRadius: 100,
+                explosionRadius: 120, // Bigger explosion
                 knockback: 400,
-                speed: 200,
+                speed: 0, // Can't be thrown, only dropped
                 gravity: 1,
                 affectedByWind: false,
                 drops: true, // Drops straight down
-                fuseTime: 5,
+                usesTimer: true,
+                timerStartsOnThrow: true,
+                fixedTimer: 5,
+                noContactExplosion: true,
                 ammo: 2
             },
             airstrike: {
@@ -130,6 +138,11 @@ export class WeaponManager {
                 speed: 300, // Throw it a bit
                 drops: true,
                 triggeredByProximity: true,
+                usesTimer: true, // NEW: Uses timer when triggered
+                fixedTimer: 3,   // Locked to 3 seconds
+                triggerDelay: 3, // Delay from trigger to explosion
+                dudChance: 0.15, // 15% chance of being a dud
+                noContactExplosion: true, // NEW: Don't explode on contact
                 ammo: 2
             },
             bat: {
@@ -149,12 +162,13 @@ export class WeaponManager {
                 directDamage: 0,
                 explosionRadius: 150,
                 knockback: 500,
-                speed: 700, // Increased for stronger throws
+                speed: 700,
                 gravity: 1,
                 bounces: true,
                 bounciness: 0.6,
-                usesTimer: true,
-                defaultTimer: 3, // 3 seconds after first terrain hit
+                explodesOnSettle: true, // NEW: Explodes when it stops moving
+                settleVelocityThreshold: 63, // Balanced threshold for settling
+                noContactExplosion: true, // NEW: Don't explode on koala contact
                 ammo: 1
             },
             blowtorch: {
@@ -208,8 +222,8 @@ export class WeaponManager {
         if (this.isCharging) {
             this.power = Math.min(this.maxPower, this.power + this.chargeSpeed * dt);
 
-            // Update power bar UI
-            const fill = document.getElementById('power-fill');
+            // Update power bar UI using cached element
+            const fill = this.game.dom.elements.powerFill;
             if (fill) {
                 fill.style.width = this.power + '%';
             }
@@ -226,6 +240,7 @@ export class WeaponManager {
 
     /**
      * Create a projectile from current weapon
+     * Uses object pooling for better performance
      */
     createProjectile(x, y, angle, power) {
         const weapon = this.currentWeapon;
@@ -238,25 +253,64 @@ export class WeaponManager {
         // Use player-set timer, or weapon's default timer, or null
         let projectileTimer = null;
         if (weapon.usesTimer) {
-            projectileTimer = this.timer !== null ? this.timer : (weapon.defaultTimer || 3);
+            // Respect fixedTimer if it exists, otherwise use player set timer
+            projectileTimer = (weapon.fixedTimer !== undefined) ? weapon.fixedTimer : (this.timer !== null ? this.timer : (weapon.defaultTimer || 3));
         }
 
         console.log('Creating projectile - weapon:', weapon.name, 'speed:', speed, 'power:', actualPower, 'timer:', projectileTimer);
 
-        const projectile = new Projectile({
-            x,
-            y,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
-            type: weapon.type,
-            weapon: weapon,
-            timer: projectileTimer,
-            gravityMultiplier: weapon.gravity || 1,
-            affectedByWind: weapon.affectedByWind !== false,
-            bounces: weapon.bounces || false,
-            bounciness: weapon.bounciness || 0.5,
-            triggeredByProximity: weapon.triggeredByProximity || false
-        });
+        // Try to get from pool first
+        let projectile = this.game.getProjectileFromPool();
+
+        if (projectile) {
+            // Reuse pooled projectile - reinitialize properties
+            projectile.x = x;
+            projectile.y = y;
+            projectile.vx = Math.cos(angle) * speed;
+            projectile.vy = Math.sin(angle) * speed;
+            projectile.type = weapon.type;
+            projectile.weapon = weapon;
+            projectile.rotation = Math.atan2(projectile.vy, projectile.vx);
+            projectile.gravityMultiplier = weapon.gravity || 1;
+            projectile.affectedByWind = weapon.affectedByWind !== false;
+            projectile.bounces = weapon.bounces || false;
+            projectile.bounciness = weapon.bounciness || 0.5;
+            projectile.timer = projectileTimer;
+            projectile.timerStartsOnThrow = weapon.timerStartsOnThrow || false;
+            projectile.timerStarted = weapon.timerStartsOnThrow || false;
+            projectile.timeOnGround = 0;
+            projectile.bounceCount = 0;
+            projectile.triggeredByProximity = weapon.triggeredByProximity || false;
+            projectile.isTriggered = false;
+            projectile.triggerTimer = 0;
+            projectile.triggerDelay = weapon.triggerDelay || 3.0;
+            projectile.isDud = weapon.dudChance && Math.random() < weapon.dudChance;
+            projectile.dudActivated = false;
+            projectile.explodesOnSettle = weapon.explodesOnSettle || false;
+            projectile.settleVelocityThreshold = weapon.settleVelocityThreshold || 100;
+            projectile.settleTime = 0;
+            projectile.settleRequiredTime = 0.3;
+            projectile.stationary = false;
+            projectile.destroyed = false;
+            projectile.shooter = null;
+        } else {
+            // Pool is empty, create new projectile
+            projectile = new Projectile({
+                x,
+                y,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                type: weapon.type,
+                weapon: weapon,
+                timer: projectileTimer,
+                timerStartsOnThrow: weapon.timerStartsOnThrow || false,
+                gravityMultiplier: weapon.gravity || 1,
+                affectedByWind: weapon.affectedByWind !== false,
+                bounces: weapon.bounces || false,
+                bounciness: weapon.bounciness || 0.5,
+                triggeredByProximity: weapon.triggeredByProximity || false
+            });
+        }
 
         return projectile;
     }

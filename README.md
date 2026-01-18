@@ -16,13 +16,22 @@ A fast-paced, Worms-style artillery game featuring destructible terrain, various
 - **Multiplayer Ready:** Robust turn-based multiplayer with synced state and projectile physics.
 - **Styled UI:** Numeric health display with color-coded borders, team-colored name tags, and polished visual feedback.
 
+### 🆕 Recent Updates
+
+- **Dead Koala Ghosts:** When a koala dies, they appear as a faded ghost sprite with a floating golden halo. Dead bodies remain on the battlefield and can be flung around by explosions!
+- **Biased Explosion Knockback:** Characters now fly "up and out" from explosions instead of sliding sideways. The explosion force origin is shifted down for more dramatic launches.
+- **Instant Water Death:** Koalas die immediately when touching water - no waiting for turn end.
+- **Improved Terrain Walking:** Characters can step up over bumps up to 8 pixels high and stick to terrain when walking down slopes (up to 16 pixels). Larger walls block movement.
+- **Fall Damage System:** Falls over 260 pixels cause damage. Taking fall damage during your turn ends it immediately!
+- **Forward Hop Jump:** Regular jump (Enter) now moves forward in the facing direction for tactical repositioning.
+
 ## 🎮 Controls
 
 ### Movement & Actions
 | Key | Action |
 |-----|--------|
 | **Arrow Keys / WASD** | Move Koala |
-| **Enter** | Jump |
+| **Enter** | Forward Hop (jumps in facing direction) |
 | **Backspace** | High Jump / Backflip |
 | **Space / Left Click** | (Hold) Charge Weapon Power |
 | **Right Click** | Cancel Charge (before releasing) |
@@ -50,6 +59,18 @@ A fast-paced, Worms-style artillery game featuring destructible terrain, various
 | **Teleport** | Instantly relocate your koala |
 | **Baseball Bat** | Melee knockback weapon |
 | **Blowtorch** | Tunnel through terrain |
+
+## ⚡ Physics
+
+| Mechanic | Value |
+|----------|-------|
+| **Gravity** | 400 px/s² |
+| **Terminal Velocity** | 800 px/s |
+| **Safe Fall Distance** | 260 pixels |
+| **Fall Damage Formula** | `(distance - 260) / 5` |
+| **Step-Up Height** | 8 pixels max |
+| **Step-Down Height** | 16 pixels max |
+| **Water Level** | 60 pixels from bottom |
 
 ## 🛠️ Technical Details
 

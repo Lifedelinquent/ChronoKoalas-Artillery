@@ -118,6 +118,12 @@ export class InputManager {
             return;
         }
 
+        // Block input if current koala is dead
+        const currentKoala = this.game.getCurrentKoala();
+        if (!currentKoala || !currentKoala.isAlive) {
+            return;
+        }
+
         // Number keys for weapon timer
         if (e.code >= 'Digit1' && e.code <= 'Digit5') {
             const timer = parseInt(e.code.replace('Digit', ''));
@@ -206,6 +212,12 @@ export class InputManager {
 
             // Block game actions if it's not our turn or during countdown
             if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
+                return;
+            }
+
+            // Block input if current koala is dead
+            const currentKoala = this.game.getCurrentKoala();
+            if (!currentKoala || !currentKoala.isAlive) {
                 return;
             }
 
@@ -538,14 +550,15 @@ export class InputManager {
     }
 
     /**
-     * Make koala jump
+     * Make koala jump (forward hop)
      */
     jump() {
         const koala = this.game.getCurrentKoala();
         if (!koala || !koala.onGround) return;
 
-        // Quick, responsive jump
-        koala.vy = -350; // Stronger jump
+        // Forward hop - less height, more horizontal movement
+        koala.vy = -250; // Lower jump
+        koala.vx = koala.facingLeft ? -150 : 150; // Forward momentum
         koala.onGround = false;
         koala.isJumping = true;
 
@@ -555,6 +568,7 @@ export class InputManager {
                 type: 'jump',
                 x: koala.x,
                 y: koala.y,
+                vx: koala.vx,
                 vy: koala.vy
             });
         }

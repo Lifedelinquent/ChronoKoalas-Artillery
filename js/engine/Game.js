@@ -77,6 +77,9 @@ export class Game extends EventEmitter {
         // Multi-shot weapon tracking (shotgun)
         this.shotgunShotsRemaining = 0;
 
+        // Grace period after firing (prevents instant phase transition)
+        this.projectileGraceTimer = 0;
+
         // Camera
         this.camera = {
             x: 0,
@@ -316,9 +319,8 @@ export class Game extends EventEmitter {
         // Add all koalas
         for (const team of this.teams) {
             for (const koala of team.koalas) {
-                if (koala.isAlive) {
-                    entities.push(koala);
-                }
+                // Include ALL koalas (alive and dead) so dead bodies can be flung by explosions
+                entities.push(koala);
             }
         }
 
@@ -1107,6 +1109,7 @@ export class Game extends EventEmitter {
     startRetreat() {
         this.phase = 'retreat';
         this.retreatTimer = this.retreatTime;
+        this.shotgunShotsRemaining = 0; // Clear multi-shot state
 
         // Update UI to show retreat timer
         const timerEl = document.getElementById('turn-timer');
@@ -1214,28 +1217,37 @@ export class Game extends EventEmitter {
     updateProjectiles(dt) {
         // Handle turn phase transition
         if (this.phase === 'projectile') {
-            // Count blocking projectiles without creating a new array (faster)
-            let blockingCount = 0;
-            for (let i = 0; i < this.projectiles.length; i++) {
-                const p = this.projectiles[i];
-                if (!p.stationary || (p.timer !== null && p.timerStarted) || p.isTriggered) {
-                    blockingCount++;
-                    break; // Early exit - we found at least one
+            // Decrement grace timer
+            if (this.projectileGraceTimer > 0) {
+                this.projectileGraceTimer -= dt;
+                // Don't check for phase transition during grace period
+            } else {
+                // Count blocking projectiles without creating a new array (faster)
+                let blockingCount = 0;
+                for (let i = 0; i < this.projectiles.length; i++) {
+                    const p = this.projectiles[i];
+                    if (!p.stationary || (p.timer !== null && p.timerStarted) || p.isTriggered) {
+                        blockingCount++;
+                        break; // Early exit - we found at least one
+                    }
                 }
-            }
 
-            if (blockingCount === 0) {
-                // Special handling for shotgun multi-shot
-                if (this.shotgunShotsRemaining > 0) {
-                    console.log(`🔫 Shotgun ready for shot ${2 - this.shotgunShotsRemaining + 1}`);
-                    this.phase = 'aiming'; // Return to aiming for next shot
+                if (blockingCount === 0) {
+                    console.log(`🔄 Phase transition check: shotgunShotsRemaining=${this.shotgunShotsRemaining}, projectiles=${this.projectiles.length}`);
+
+                    // Special handling for shotgun multi-shot
+                    if (this.shotgunShotsRemaining > 0) {
+                        console.log(`🔫 Shotgun ready for shot ${2 - this.shotgunShotsRemaining + 1}`);
+                        this.phase = 'aiming'; // Return to aiming for next shot
+                        return;
+                    }
+
+                    // Reset shotgun counter when turn ends
+                    this.shotgunShotsRemaining = 0;
+                    console.log('🏃 Starting retreat');
+                    this.startRetreat();
                     return;
                 }
-
-                // Reset shotgun counter when turn ends
-                this.shotgunShotsRemaining = 0;
-                this.startRetreat();
-                return;
             }
         }
 
@@ -1501,35 +1513,42 @@ export class Game extends EventEmitter {
                 );
 
                 for (const { entity, distance } of nearbyEntities) {
-                    // Only process koalas (they have isAlive property)
-                    if (!entity.isAlive || entity.isAlive === undefined) continue;
+                    // Skip if not a koala (no isAlive property)
+                    if (entity.isAlive === undefined) continue;
 
                     const koala = entity;
-                    const damage = Math.round(weapon.damage * (1 - distance / weapon.explosionRadius));
                     const knockback = weapon.knockback * (1 - distance / weapon.explosionRadius);
 
-                    koala.takeDamage(damage);
-
-                    // Play damage sound
-                    if (damage > 0) {
-                        this.audioManager.playDamage();
-                    }
-
-                    // Apply knockback
-                    const angle = Math.atan2(koala.y - projectile.y, koala.x - projectile.x);
+                    // Apply knockback with biased origin (shifted down 10px)
+                    // This ensures characters fly "up and out" instead of sliding sideways
+                    // IMPORTANT: Apply knockback to BOTH alive AND dead koalas (ragdoll effect)
+                    const biasedExplosionY = projectile.y + 10;
+                    const angle = Math.atan2(koala.y - biasedExplosionY, koala.x - projectile.x);
                     koala.vx += Math.cos(angle) * knockback;
-                    koala.vy += Math.sin(angle) * knockback;
+                    koala.vy += Math.sin(angle) * knockback * 1.3; // 30% extra upward force
+                    koala.onGround = false; // Ensure they get launched
 
-                    // Record for sync
-                    explosionResults.push({
-                        koalaName: koala.name,
-                        damage,
-                        newHealth: koala.health,
-                        x: koala.x,
-                        y: koala.y,
-                        vx: koala.vx,
-                        vy: koala.vy
-                    });
+                    // Only apply damage to alive koalas
+                    if (koala.isAlive) {
+                        const damage = Math.round(weapon.damage * (1 - distance / weapon.explosionRadius));
+                        koala.takeDamage(damage);
+
+                        // Play damage sound
+                        if (damage > 0) {
+                            this.audioManager.playDamage();
+                        }
+
+                        // Record for sync
+                        explosionResults.push({
+                            koalaName: koala.name,
+                            damage,
+                            newHealth: koala.health,
+                            x: koala.x,
+                            y: koala.y,
+                            vx: koala.vx,
+                            vy: koala.vy
+                        });
+                    }
                 }
             }
         }
@@ -1706,13 +1725,18 @@ export class Game extends EventEmitter {
     applyFallDamage() {
         for (const team of this.teams) {
             for (const koala of team.koalas) {
-                if (koala.isAlive && koala.fallDistance > 50) {
-                    const damage = Math.floor((koala.fallDistance - 50) / 5);
+                // Use maxFallDistance which accumulates all falls during the turn
+                const totalFall = (koala.maxFallDistance || 0) + (koala.fallDistance || 0);
+                if (koala.isAlive && totalFall > 260) {
+                    const damage = Math.floor((totalFall - 260) / 5);
                     koala.takeDamage(damage);
-                    koala.fallDistance = 0;
+                    console.log(`💥 ${koala.name} took ${damage} fall damage (fell ${totalFall}px)`);
                 }
+                // Reset both trackers for next turn
+                koala.fallDistance = 0;
+                koala.maxFallDistance = 0;
 
-                // Check if fell in water
+                // Check if fell in water (backup check - main check is in Physics.js)
                 if (koala.isAlive && koala.y > this.worldHeight - 50) {
                     koala.die();
                 }
@@ -1951,6 +1975,7 @@ export class Game extends EventEmitter {
             }
 
             this.phase = 'projectile';
+            this.projectileGraceTimer = 0.1; // Grace period
             this.shotgunShotsRemaining--;
 
             // Spawn offset from koala
@@ -1991,7 +2016,12 @@ export class Game extends EventEmitter {
             return;
         }
 
+        // Reset shotgun counter when firing any other weapon
+        console.log(`🔄 Non-shotgun weapon fired, resetting shotgunShotsRemaining from ${this.shotgunShotsRemaining} to 0`);
+        this.shotgunShotsRemaining = 0;
+
         this.phase = 'projectile';
+        this.projectileGraceTimer = 0.1; // 100ms grace period before phase transition check
 
         // Decrement ammo
         if (weapon.ammo !== Infinity) {
@@ -2979,6 +3009,7 @@ export class Game extends EventEmitter {
         if (koala) {
             koala.x = data.x;
             koala.y = data.y;
+            koala.vx = data.vx || 0;
             koala.vy = data.vy;
             koala.onGround = false;
             koala.isJumping = true;

@@ -293,6 +293,12 @@ export class WeaponManager {
             projectile.stationary = false;
             projectile.destroyed = false;
             projectile.shooter = null;
+
+            // Reset shotgun-specific properties so they don't persist
+            projectile.isPellet = undefined;
+            projectile.maxRange = undefined;
+            projectile.startX = undefined;
+            projectile.startY = undefined;
         } else {
             // Pool is empty, create new projectile
             projectile = new Projectile({

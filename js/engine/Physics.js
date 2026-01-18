@@ -17,12 +17,10 @@ export class Physics {
      * Update all physics entities
      */
     update(dt) {
-        // Update koalas
+        // Update koalas (both alive AND dead - dead can still be flung by explosions)
         for (const team of this.game.teams) {
             for (const koala of team.koalas) {
-                if (koala.isAlive) {
-                    this.updateEntity(koala, dt);
-                }
+                this.updateEntity(koala, dt);
             }
         }
 
@@ -59,11 +57,36 @@ export class Physics {
         this.resolveTerrainCollision(entity);
 
         // Track fall distance for fall damage
+        // Use maxFallDistance to track the longest fall this turn (doesn't reset on landing)
         if (entity.vy > 0 && !entity.onGround) {
             entity.fallDistance = (entity.fallDistance || 0) + (entity.y - prevY);
-        } else if (entity.onGround) {
-            // Reset fall distance when safely on ground
+        } else if (entity.onGround && entity.fallDistance > 0) {
+            // INSTANT FALL DAMAGE - apply on landing if over threshold
+            if (entity.isAlive && entity.fallDistance > 260) {
+                const damage = Math.floor((entity.fallDistance - 260) / 5);
+                entity.takeDamage(damage);
+                console.log(`💥 ${entity.name} took ${damage} fall damage (fell ${entity.fallDistance}px)`);
+
+                // If this is the current player's koala, end their turn
+                const currentKoala = this.game.getCurrentKoala();
+                if (entity === currentKoala && this.game.phase === 'aiming') {
+                    console.log('🛑 Fall damage ends turn!');
+                    this.game.endTurn();
+                }
+            }
+            // Accumulate into maxFallDistance and reset current fall
+            entity.maxFallDistance = (entity.maxFallDistance || 0) + entity.fallDistance;
             entity.fallDistance = 0;
+        }
+
+        // INSTANT WATER DEATH - check if entity touched water
+        const waterLevel = this.game.worldHeight - 60;
+        if (entity.isAlive && entity.y > waterLevel) {
+            entity.die();
+            // Play splash sound if available
+            if (this.game.audioManager && this.game.audioManager.playDeath) {
+                this.game.audioManager.playDeath();
+            }
         }
 
         // World bounds
@@ -100,6 +123,13 @@ export class Physics {
         }
 
         if (hitGround) {
+            // If entity is jumping upward, don't snap to ground
+            // This prevents the "slide instead of jump" bug
+            if (entity.vy < 0) {
+                entity.onGround = false;
+                return; // Let them leave the ground
+            }
+
             // Find surface normal (walk up)
             while (groundY > 0 && terrain.checkCollision(entity.x, groundY)) {
                 groundY--;
@@ -176,27 +206,48 @@ export class Physics {
     }
 
     /**
-     * Check if entity can walk up a slope
+     * Check if entity can walk up a slope or small bump
+     * Allows stepping over obstacles up to maxClimb pixels high
+     * Blocks movement if wall is taller than maxClimb
      */
     canWalkUp(entity, dx) {
         const terrain = this.game.terrain;
-        const maxClimb = 15; // Max pixels to climb
+        const maxClimb = 8; // Max pixels to step up (user-specified)
 
         const newX = entity.x + dx;
         const footY = entity.y + entity.height / 2;
 
-        // Check if blocked at foot level
+        // First check: Is the next position at foot level clear?
         if (!terrain.checkCollision(newX, footY)) {
+            // Clear path - but we should also check for stepping DOWN onto slopes
+            // Find where the ground actually is below the new position
+            const maxStepDown = 16; // Snap down up to 16px - sticks to terrain well
+            for (let down = 0; down <= maxStepDown; down++) {
+                if (terrain.checkCollision(newX, footY + down)) {
+                    // Found ground - snap to it (step down)
+                    return { canMove: true, newY: entity.y + down };
+                }
+            }
+            // No ground within 4px - allow move and let gravity handle falling
             return { canMove: true, newY: entity.y };
         }
 
-        // Try climbing
+        // Path is blocked at foot level - try stepping UP
         for (let climb = 1; climb <= maxClimb; climb++) {
-            if (!terrain.checkCollision(newX, footY - climb)) {
-                return { canMove: true, newY: entity.y - climb };
+            const testY = footY - climb;
+
+            // Check if this height is clear
+            if (!terrain.checkCollision(newX, testY)) {
+                // Found air! But also verify the body can fit
+                // Check a point at head level to ensure we're not walking into an overhang
+                const headY = entity.y - entity.height / 2 - climb;
+                if (!terrain.checkCollision(newX, headY)) {
+                    return { canMove: true, newY: entity.y - climb };
+                }
             }
         }
 
+        // Wall is taller than maxClimb pixels - block movement
         return { canMove: false };
     }
 

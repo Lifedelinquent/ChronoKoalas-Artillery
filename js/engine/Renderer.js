@@ -249,7 +249,7 @@ export class Renderer {
     }
 
     /**
-     * Draw all koalas
+     * Draw all koalas (alive and dead)
      */
     drawKoalas() {
         const ctx = this.ctx;
@@ -257,10 +257,20 @@ export class Renderer {
 
         for (const team of this.game.teams) {
             for (const koala of team.koalas) {
-                if (!koala.isAlive) continue;
+                // Draw dead koalas first (so alive ones render on top)
+                if (!koala.isAlive) {
+                    this.drawDeadKoala(koala);
+                }
+            }
+        }
 
-                const isCurrent = koala === currentKoala;
-                this.drawKoala(koala, isCurrent);
+        // Draw alive koalas
+        for (const team of this.game.teams) {
+            for (const koala of team.koalas) {
+                if (koala.isAlive) {
+                    const isCurrent = koala === currentKoala;
+                    this.drawKoala(koala, isCurrent);
+                }
             }
         }
     }
@@ -380,6 +390,78 @@ export class Renderer {
 
         // Name tag
         this.drawNameTag(koala);
+    }
+
+    /**
+     * Draw a dead koala (ghost sprite - faded, tilted, with halo)
+     */
+    drawDeadKoala(koala) {
+        const ctx = this.ctx;
+        const x = Math.round(koala.x);
+        const y = Math.round(koala.y);
+
+        ctx.save();
+        ctx.translate(x, y);
+
+        // Ghost effect: semi-transparent
+        ctx.globalAlpha = 0.5;
+
+        // Fallen over - tilted 90 degrees
+        ctx.rotate(Math.PI / 2);
+
+        // Determine sprite based on team color
+        let sprite = this.sprites.red;
+        if (koala.team.color.toLowerCase() === '#3498db') {
+            sprite = this.sprites.blue;
+        }
+
+        // Draw faded koala sprite
+        if (sprite.complete && sprite.naturalHeight !== 0) {
+            const size = 48;
+            ctx.drawImage(sprite, -size / 2, -size / 2 - 2, size, size);
+        } else {
+            // Fallback: draw grey placeholder
+            ctx.fillStyle = '#666';
+            ctx.fillRect(-10, -15, 20, 30);
+        }
+
+        ctx.restore();
+
+        // Draw halo above the body (not rotated)
+        ctx.save();
+        ctx.globalAlpha = 0.7;
+        ctx.strokeStyle = '#ffd700'; // Gold
+        ctx.lineWidth = 2;
+
+        // Floating animation
+        const floatOffset = Math.sin(performance.now() / 500) * 3;
+
+        // Draw halo ellipse above the koala
+        ctx.beginPath();
+        ctx.ellipse(x, y - 35 + floatOffset, 12, 4, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Draw halo glow
+        ctx.strokeStyle = 'rgba(255, 215, 0, 0.3)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.ellipse(x, y - 35 + floatOffset, 14, 5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.restore();
+
+        // Draw name tag (faded)
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        ctx.font = 'bold 10px Outfit';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.strokeText(koala.name, x, y - 50 + floatOffset);
+        ctx.fillStyle = '#888';
+        ctx.fillText(koala.name, x, y - 50 + floatOffset);
+        ctx.restore();
     }
 
     /**

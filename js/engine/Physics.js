@@ -56,32 +56,48 @@ export class Physics {
         // Terrain collision
         this.resolveTerrainCollision(entity);
 
-        // Track fall distance for fall damage
-        // Use maxFallDistance to track the longest fall this turn (doesn't reset on landing)
-        if (entity.vy > 0 && !entity.onGround) {
-            entity.fallDistance = (entity.fallDistance || 0) + (entity.y - prevY);
-        } else if (entity.onGround && entity.fallDistance > 0) {
-            // INSTANT FALL DAMAGE - apply on landing if over threshold
-            if (entity.isAlive && entity.fallDistance > 260) {
-                const damage = Math.floor((entity.fallDistance - 260) / 5);
-                entity.takeDamage(damage);
-                console.log(`💥 ${entity.name} took ${damage} fall damage (fell ${entity.fallDistance}px)`);
-
-                // If this is the current player's koala, end their turn
-                const currentKoala = this.game.getCurrentKoala();
-                if (entity === currentKoala && this.game.phase === 'aiming') {
-                    console.log('🛑 Fall damage ends turn!');
-                    this.game.endTurn();
-                }
-            }
-            // Accumulate into maxFallDistance and reset current fall
-            entity.maxFallDistance = (entity.maxFallDistance || 0) + entity.fallDistance;
-            entity.fallDistance = 0;
+        // Update peakY: track the highest point (lowest numerical Y) since leaving ground
+        if (entity.peakY === undefined) entity.peakY = entity.y;
+        if (!entity.onGround && entity.y < entity.peakY) {
+            entity.peakY = entity.y;
         }
 
-        // INSTANT WATER DEATH - check if entity touched water
+        // Check for landing impact or falling
+        const justLanded = entity.onGround && prevY < entity.y && entity.vy >= 0;
+
+        if (justLanded) {
+            const fallAmount = entity.y - entity.peakY;
+
+            if (fallAmount > 0) {
+                // INSTANT FALL DAMAGE - apply on landing if over threshold
+                if (entity.isAlive && fallAmount > 260) {
+                    const damage = Math.floor((fallAmount - 260) / 5);
+                    entity.takeDamage(damage);
+                    console.log(`💥 ${entity.name} took ${damage} fall damage (fell ${fallAmount.toFixed(1)}px from peak Y:${entity.peakY.toFixed(1)})`);
+
+                    // If this is the current player's koala, end their turn
+                    const currentKoala = this.game.getCurrentKoala();
+                    if (entity === currentKoala && this.game.phase === 'aiming') {
+                        console.log('🛑 Fall damage ends turn!');
+                        this.game.endTurn();
+                    }
+                }
+
+                // Accumulate into maxFallDistance for TurnManager summary
+                entity.maxFallDistance = Math.max((entity.maxFallDistance || 0), fallAmount);
+            }
+
+            // Reset peakY now that we landed safely or took damage
+            entity.peakY = entity.y;
+            entity.fallDistance = 0; // Legacy property cleanup
+        } else if (entity.vy < 0) {
+            // Moving up, update peak
+            entity.peakY = Math.min(entity.peakY, entity.y);
+        }
+
+        // INSTANT DEATH - check if entity touched water OR went out of side bounds (Ring Out)
         const waterLevel = this.game.worldHeight - 60;
-        if (entity.isAlive && entity.y > waterLevel) {
+        if (entity.isAlive && (entity.y > waterLevel || entity.x < -100 || entity.x > this.game.worldWidth + 100)) {
             entity.die();
             // Play splash sound if available
             if (this.game.audioManager && this.game.audioManager.playDeath) {
@@ -89,9 +105,9 @@ export class Physics {
             }
         }
 
-        // World bounds
-        entity.x = Math.max(10, Math.min(this.game.worldWidth - 10, entity.x));
-        entity.y = Math.max(0, Math.min(this.game.worldHeight - 10, entity.y));
+        // World bounds - Remove horizontal clamping so they can fly out of bounds (Ring Out)
+        // Only clamp vertical top to prevent flying permanently above screen
+        entity.y = Math.max(-500, Math.min(this.game.worldHeight + 100, entity.y));
     }
 
     /**
@@ -136,7 +152,17 @@ export class Physics {
             }
 
             // Snap entity Y so it sits perfectly on the ground pixel
-            entity.y = (groundY + 1) - entity.height / 2;
+            const targetY = (groundY + 1) - entity.height / 2;
+
+            // SMOOTH STICKY FEET: Limit downward snapping to prevent teleportation jitter on steep slopes
+            if (entity.onGround && targetY > entity.y) {
+                // Moving down slope: ease it (max 4px per frame)
+                entity.y = Math.min(entity.y + 4, targetY);
+            } else {
+                // Moving up slope or initial landing: snap instantly
+                entity.y = targetY;
+            }
+
             entity.vy = 0;
             entity.onGround = true;
 

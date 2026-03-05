@@ -15,6 +15,7 @@ import { AudioManager } from './AudioManager.js';
 import { LootManager } from './LootManager.js';
 import { SpatialGrid } from './SpatialGrid.js';
 import { DOMCache } from '../utils/DOMCache.js';
+import { TurnManager } from './TurnManager.js';
 
 export class Game extends EventEmitter {
     constructor(canvas, options = {}) {
@@ -51,34 +52,24 @@ export class Game extends EventEmitter {
 
         // Object pooling for projectiles (performance optimization)
         this.projectilePool = [];
+        this.particlePool = [];
         this.maxPoolSize = 50;
 
-        this.currentTeamIndex = 0;
-        this.currentKoalaIndex = 0;
-        this.turnTime = 30;
-        this.turnTimer = this.turnTime;
         this.wind = 0; // -1 to 1
 
-        // Game phases
-        this.phase = 'waiting'; // waiting, aiming, firing, projectile, retreat, damage, nextTurn
         this.isPaused = false;
         this.isGameOver = false;
-        this.countdownTimer = 0; // NEW: Pre-match countdown timer
+
+        // Initialize turn manager which holds turn state
+        this.turnManager = new TurnManager(this);
 
         // Delayed action queue (replaces setTimeout for better performance)
         this.delayedActions = [];
         this.damagePhaseDelay = 0;
         this.damagePhaseCallback = null;
 
-        // Retreat time settings
-        this.retreatTime = 5; // 5 seconds to retreat after firing
-        this.retreatTimer = 0;
-
         // Multi-shot weapon tracking (shotgun)
         this.shotgunShotsRemaining = 0;
-
-        // Grace period after firing (prevents instant phase transition)
-        this.projectileGraceTimer = 0;
 
         // Camera
         this.camera = {
@@ -158,6 +149,26 @@ export class Game extends EventEmitter {
 
         console.log('🎮 Game started!');
     }
+
+    // Proxy properties to TurnManager
+    get currentTeamIndex() { return this.turnManager.currentTeamIndex; }
+    set currentTeamIndex(v) { this.turnManager.currentTeamIndex = v; }
+    get currentKoalaIndex() { return this.turnManager.currentKoalaIndex; }
+    set currentKoalaIndex(v) { this.turnManager.currentKoalaIndex = v; }
+    get turnTime() { return this.turnManager.turnTime; }
+    set turnTime(v) { this.turnManager.turnTime = v; }
+    get turnTimer() { return this.turnManager.turnTimer; }
+    set turnTimer(v) { this.turnManager.turnTimer = v; }
+    get phase() { return this.turnManager.phase; }
+    set phase(v) { this.turnManager.phase = v; }
+    get countdownTimer() { return this.turnManager.countdownTimer; }
+    set countdownTimer(v) { this.turnManager.countdownTimer = v; }
+    get retreatTime() { return this.turnManager.retreatTime; }
+    set retreatTime(v) { this.turnManager.retreatTime = v; }
+    get retreatTimer() { return this.turnManager.retreatTimer; }
+    set retreatTimer(v) { this.turnManager.retreatTimer = v; }
+    get projectileGraceTimer() { return this.turnManager.projectileGraceTimer; }
+    set projectileGraceTimer(v) { this.turnManager.projectileGraceTimer = v; }
 
     /**
      * Create a seeded random number generator for multiplayer sync
@@ -1070,21 +1081,7 @@ export class Game extends EventEmitter {
      */
     updateTurnTimer(dt) {
         const prevTimer = this.turnTimer;
-        this.turnTimer -= dt;
-
-        // Update timer display
-        const timerEl = this.dom.elements.turnTimer;
-        if (timerEl) {
-            const seconds = Math.max(0, Math.ceil(this.turnTimer));
-            timerEl.textContent = seconds;
-
-            // Flash red when low
-            if (seconds <= 5) {
-                timerEl.classList.add('low-time');
-            } else {
-                timerEl.classList.remove('low-time');
-            }
-        }
+        this.turnManager.updateTurnTimer(dt);
 
         // Timer warning sound (last 5 seconds, once per second)
         if (this.turnTimer <= 5 && this.turnTimer > 0 && !this.isPractice) {
@@ -1094,28 +1091,14 @@ export class Game extends EventEmitter {
                 this.audioManager.playTimerTick();
             }
         }
-
-        // Time ran out - force end turn
-        if (this.turnTimer <= 0) {
-            this.turnTimer = 0;
-            this.phase = 'damage';
-            this.scheduleDelayedAction(500, () => this.processDamage());
-        }
     }
 
     /**
      * Start retreat phase after firing
      */
     startRetreat() {
-        this.phase = 'retreat';
-        this.retreatTimer = this.retreatTime;
+        this.turnManager.startRetreat();
         this.shotgunShotsRemaining = 0; // Clear multi-shot state
-
-        // Update UI to show retreat timer
-        const timerEl = document.getElementById('turn-timer');
-        if (timerEl) {
-            timerEl.classList.add('retreat-mode');
-        }
 
         // Show retreat indicator
         const turnIndicator = this.dom.elements.turnIndicator;
@@ -1128,7 +1111,7 @@ export class Game extends EventEmitter {
      * Update during retreat phase
      */
     updateRetreat(dt) {
-        this.retreatTimer -= dt;
+        this.turnManager.updateRetreat(dt);
 
         // Allow walking during retreat
         const koala = this.getCurrentKoala();
@@ -1136,31 +1119,13 @@ export class Game extends EventEmitter {
             this.inputManager.updateAiming(koala, dt);
         }
 
-        // Update timer display
-        const timerEl = document.getElementById('turn-timer');
-        if (timerEl) {
-            const seconds = Math.max(0, Math.ceil(this.retreatTimer));
-            timerEl.textContent = seconds;
-        }
-
-        // Retreat time over
-        if (this.retreatTimer <= 0) {
-            this.retreatTimer = 0;
-
-            // Remove retreat UI classes
-            const timerEl = this.dom.elements.turnTimer;
-            if (timerEl) {
-                timerEl.classList.remove('retreat-mode');
-            }
-
+        // Check if retreat ended
+        if (this.phase !== 'retreat') {
             // Restore turn indicator (will be updated properly on next turn)
             const turnIndicator = this.dom.elements.turnIndicator;
             if (turnIndicator) {
                 turnIndicator.innerHTML = '<span id="current-team">...</span>\'s Turn';
             }
-
-            this.phase = 'damage';
-            this.scheduleDelayedAction(500, () => this.processDamage());
         }
     }
 
@@ -1317,129 +1282,22 @@ export class Game extends EventEmitter {
             // If stationary, no need for collision detection
             if (proj.stationary) continue;
 
-            // Ray-casting collision detection to prevent tunneling
-            // Check multiple points along the path from previous to current position
+            // Ray-casting Continuous Collision Detection (CCD) to prevent tunneling
+            // We check both terrain AND koalas in the SAME progressive raycast to find the earliest hit
             const dx = proj.x - prevX;
             const dy = proj.y - prevY;
             const distance = Math.hypot(dx, dy);
-            const steps = Math.max(1, Math.ceil(distance / 4)); // Check every 4 pixels for better precision
+            const steps = Math.max(1, Math.ceil(distance / 4)); // Check every 4 pixels for precision
 
-            let hitTerrain = false;
-            let hitX = proj.x;
-            let hitY = proj.y;
+            let hitResult = null; // { type: 'terrain'|'koala', x, y, koala? }
 
             for (let s = 1; s <= steps; s++) {
                 const t = s / steps;
                 const checkX = prevX + dx * t;
                 const checkY = prevY + dy * t;
 
-                // First check: direct collision (point is inside terrain)
-                if (this.terrain.checkCollision(checkX, checkY)) {
-                    hitTerrain = true;
-                    hitX = checkX;
-                    hitY = checkY;
-                    break;
-                }
-
-                // Second check removed: This caused floating islands to block everything below them.
-                // We rely on the pixel-perfect raycasting above.
-            }
-
-            if (hitTerrain) {
-                // Set projectile position to impact point
-                proj.x = hitX;
-                proj.y = hitY;
-
-                // Handle bouncing projectiles
-                if (proj.bounces) {
-                    const speed = Math.hypot(proj.vx, proj.vy);
-                    const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
-
-                    if (speed > 40) {
-                        // Still moves - bounce!
-                        // Reflect velocity: v = v - 2(v.n)n
-                        const dot = proj.vx * normal.x + proj.vy * normal.y;
-                        proj.vx = (proj.vx - 2 * dot * normal.x) * proj.bounciness;
-                        proj.vy = (proj.vy - 2 * dot * normal.y) * proj.bounciness;
-
-                        // Push out along normal to prevent getting stuck
-                        proj.x += normal.x * 4;
-                        proj.y += normal.y * 4;
-
-                        proj.bounceCount++;
-
-                        // Start grenade timer on first terrain hit
-                        if (proj.onTerrainHit) {
-                            proj.onTerrainHit();
-                        }
-
-                        this.audioManager.playBounce();
-                    } else {
-                        // Moving slowly - settle and wait for timer
-                        proj.vx = 0;
-                        proj.vy = 0;
-                        proj.stationary = true;
-
-                        // Push slightly out based on normal
-                        proj.x += normal.x * 2;
-                        proj.y += normal.y * 2;
-
-                        // Start timer if it hasn't been started
-                        if (proj.onTerrainHit) {
-                            proj.onTerrainHit();
-                        }
-                    }
-                } else if (proj.type === 'mine') {
-                    // Mines stick to terrain
-                    proj.vx = 0;
-                    proj.vy = 0;
-                    proj.stationary = true;
-
-                    // Push slightly out based on normal to prevent falling through floor
-                    const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
-                    proj.x += normal.x * 2;
-                    proj.y += normal.y * 2;
-
-                    this.audioManager.playBounce(); // Sound effect for landing
-                } else if (proj.type === 'rope') {
-                    // Rope hits -> Pull player
-                    this.handleRopeHit(proj);
-                    this.removeProjectile(i);
-                } else if (proj.timer !== null && proj.timerStarted) {
-                    // Has timer (dynamite, etc.) - stick to terrain and wait for timer
-                    proj.vx = 0;
-                    proj.vy = 0;
-                    proj.stationary = true;
-                    const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
-                    proj.x += normal.x * 2;
-                    proj.y += normal.y * 2;
-                    // Timer already started, just wait
-                } else {
-                    // Non-bouncing, non-timer weapons explode on impact
-                    this.handleProjectileImpact(proj);
-                    this.removeProjectile(i);
-                }
-                continue;
-            }
-
-            // Check out of bounds (left, right, bottom, and FAR above screen)
-            // Note: Using a large margin for top (-500) to allow high arcing shots
-            if (proj.x < -100 || proj.x > this.worldWidth + 100 ||
-                proj.y > this.worldHeight + 100 || proj.y < -500) {
-                this.removeProjectile(i);
-                continue;
-            }
-
-            // Check koala collision with ray-casting too
-            let hitKoala = null;
-            let hitKoalaX = proj.x;
-            let hitKoalaY = proj.y;
-
-            for (let s = 1; s <= steps; s++) {
-                const t = s / steps;
-                const checkX = prevX + dx * t;
-                const checkY = prevY + dy * t;
-
+                // 1. Check koalas first at this step (koalas block projectiles before the terrain behind them does)
+                let hitKoala = null;
                 for (const team of this.teams) {
                     for (const koala of team.koalas) {
                         // Skip the shooter
@@ -1449,30 +1307,122 @@ export class Game extends EventEmitter {
                             const dist = Math.hypot(checkX - koala.x, checkY - koala.y);
                             if (dist < 20) { // Collision radius
                                 hitKoala = koala;
-                                hitKoalaX = checkX;
-                                hitKoalaY = checkY;
                                 break;
                             }
                         }
                     }
                     if (hitKoala) break;
                 }
-                if (hitKoala) break;
+
+                if (hitKoala) {
+                    hitResult = { type: 'koala', x: checkX, y: checkY, koala: hitKoala };
+                    break;
+                }
+
+                // 2. Check terrain next at this step
+                if (this.terrain.checkCollision(checkX, checkY)) {
+                    hitResult = { type: 'terrain', x: checkX, y: checkY };
+                    break;
+                }
             }
 
-            if (hitKoala) {
-                proj.x = hitKoalaX;
-                proj.y = hitKoalaY;
+            // --- RESOLVE EARLIEST HIT ---
+            if (hitResult) {
+                // Set projectile position to exact impact point
+                proj.x = hitResult.x;
+                proj.y = hitResult.y;
 
-                // Check if this weapon should explode on contact
-                if (proj.weapon.noContactExplosion) {
-                    // Don't explode, just pass through/bounce
-                    console.log(proj.weapon.name, 'hit koala but noContactExplosion is true');
-                } else {
-                    // Normal explosion on contact
-                    this.handleProjectileImpact(proj, hitKoala);
-                    this.removeProjectile(i);
+                if (hitResult.type === 'koala') {
+                    // Check if this weapon should explode on contact
+                    if (proj.weapon.noContactExplosion) {
+                        // Don't explode, just pass through/bounce
+                        console.log(proj.weapon.name, 'hit koala but noContactExplosion is true');
+                    } else {
+                        // Normal explosion on contact
+                        this.handleProjectileImpact(proj, hitResult.koala);
+                        this.removeProjectile(i);
+                    }
+                    continue;
                 }
+                else if (hitResult.type === 'terrain') {
+                    // Handle bouncing projectiles
+                    if (proj.bounces) {
+                        const speed = Math.hypot(proj.vx, proj.vy);
+                        const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
+
+                        if (speed > 40) {
+                            // Still moves - bounce!
+                            // Reflect velocity: v = v - 2(v.n)n
+                            const dot = proj.vx * normal.x + proj.vy * normal.y;
+                            proj.vx = (proj.vx - 2 * dot * normal.x) * proj.bounciness;
+                            proj.vy = (proj.vy - 2 * dot * normal.y) * proj.bounciness;
+
+                            // Push out along normal to prevent getting stuck
+                            proj.x += normal.x * 4;
+                            proj.y += normal.y * 4;
+
+                            proj.bounceCount++;
+
+                            // Start grenade timer on first terrain hit
+                            if (proj.onTerrainHit) {
+                                proj.onTerrainHit();
+                            }
+
+                            this.audioManager.playBounce();
+                        } else {
+                            // Moving slowly - settle and wait for timer
+                            proj.vx = 0;
+                            proj.vy = 0;
+                            proj.stationary = true;
+
+                            // Push slightly out based on normal
+                            proj.x += normal.x * 2;
+                            proj.y += normal.y * 2;
+
+                            // Start timer if it hasn't been started
+                            if (proj.onTerrainHit) {
+                                proj.onTerrainHit();
+                            }
+                        }
+                    } else if (proj.type === 'mine') {
+                        // Mines stick to terrain
+                        proj.vx = 0;
+                        proj.vy = 0;
+                        proj.stationary = true;
+
+                        // Push slightly out based on normal to prevent falling through floor
+                        const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
+                        proj.x += normal.x * 2;
+                        proj.y += normal.y * 2;
+
+                        this.audioManager.playBounce(); // Sound effect for landing
+                    } else if (proj.type === 'rope') {
+                        // Rope hits -> Pull player
+                        this.handleRopeHit(proj);
+                        this.removeProjectile(i);
+                    } else if (proj.timer !== null && proj.timerStarted) {
+                        // Has timer (dynamite, etc.) - stick to terrain and wait for timer
+                        proj.vx = 0;
+                        proj.vy = 0;
+                        proj.stationary = true;
+                        const normal = this.terrain.getSurfaceNormal(proj.x, proj.y);
+                        proj.x += normal.x * 2;
+                        proj.y += normal.y * 2;
+                        // Timer already started, just wait
+                    } else {
+                        // Non-bouncing, non-timer weapons explode on impact
+                        this.handleProjectileImpact(proj);
+                        this.removeProjectile(i);
+                    }
+                    continue;
+                }
+            }
+
+            // Check out of bounds (left, right, bottom, and FAR above screen)
+            // Note: Using a large margin for top (-500) to allow high arcing shots
+            if (proj.x < -100 || proj.x > this.worldWidth + 100 ||
+                proj.y > this.worldHeight + 100 || proj.y < -500) {
+                this.removeProjectile(i);
                 continue;
             }
         }
@@ -1629,14 +1579,29 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Add a particle with limit enforcement
+     * Add a particle with limit enforcement and object pooling
      */
-    addParticle(particle) {
+    addParticle(particleData) {
         // Remove oldest particles if at limit
         while (this.particles.length >= this.maxParticles) {
-            this.particles.shift();
+            const removed = this.particles.shift();
+            if (this.particlePool.length < this.maxPoolSize) {
+                this.particlePool.push(removed);
+            }
         }
-        this.particles.push(particle);
+
+        let p;
+        if (this.particlePool.length > 0) {
+            p = this.particlePool.pop();
+            // Clear all old properties to prevent ghost behaviors (e.g. retained velocities)
+            for (const key in p) delete p[key];
+            // Copy all new properties to recycled object
+            Object.assign(p, particleData);
+        } else {
+            p = { ...particleData };
+        }
+
+        this.particles.push(p);
     }
 
     /**
@@ -1646,12 +1611,14 @@ export class Game extends EventEmitter {
         this.addParticle({
             type: 'floatingText',
             x, y,
+            vx: 0,
             vy: -50, // Float upward
             text,
             color,
             lifetime: 1.5,
             time: 0,
-            size: 16
+            size: 16,
+            alpha: 1
         });
     }
 
@@ -1664,7 +1631,10 @@ export class Game extends EventEmitter {
             p.time += dt;
 
             if (p.time >= p.lifetime) {
-                this.particles.splice(i, 1);
+                const removed = this.particles.splice(i, 1)[0];
+                if (this.particlePool.length < this.maxPoolSize) {
+                    this.particlePool.push(removed);
+                }
                 continue;
             }
 
@@ -1687,228 +1657,14 @@ export class Game extends EventEmitter {
         }
     }
 
-    /**
-     * Process damage phase
-     */
-    processDamage() {
-        // Check for deaths
-        let anyDied = false;
-        for (const team of this.teams) {
-            for (const koala of team.koalas) {
-                if (koala.health <= 0 && koala.isAlive) {
-                    koala.die();
-                    this.audioManager.playDeath();
-                    anyDied = true;
-                }
-            }
-        }
-
-        this.updateTeamHealth();
-
-        // Check win condition
-        const aliveTeams = this.teams.filter(t => t.isAlive());
-        if (aliveTeams.length <= 1) {
-            this.endGame(aliveTeams[0] || null);
-            return;
-        }
-
-        // Apply fall damage and wait for physics to settle
-        this.scheduleDelayedAction(anyDied ? 1000 : 300, () => {
-            this.applyFallDamage();
-            this.nextTurn();
-        });
-    }
-
-    /**
-     * Apply fall damage to koalas that fell
-     */
-    applyFallDamage() {
-        for (const team of this.teams) {
-            for (const koala of team.koalas) {
-                // Use maxFallDistance which accumulates all falls during the turn
-                const totalFall = (koala.maxFallDistance || 0) + (koala.fallDistance || 0);
-                if (koala.isAlive && totalFall > 260) {
-                    const damage = Math.floor((totalFall - 260) / 5);
-                    koala.takeDamage(damage);
-                    console.log(`💥 ${koala.name} took ${damage} fall damage (fell ${totalFall}px)`);
-                }
-                // Reset both trackers for next turn
-                koala.fallDistance = 0;
-                koala.maxFallDistance = 0;
-
-                // Check if fell in water (backup check - main check is in Physics.js)
-                if (koala.isAlive && koala.y > this.worldHeight - 50) {
-                    koala.die();
-                }
-            }
-        }
-        this.updateTeamHealth();
-    }
-
-    /**
-     * Start a new turn
-     */
-    startTurn() {
-        this.phase = 'aiming';
-        this.turnTimer = this.turnTime;
-        this.randomizeWind();
-        this.shotgunShotsRemaining = 0; // Reset multi-shot counter
-
-        // Update timer display
-        const timerEl = document.getElementById('turn-timer');
-        if (timerEl) {
-            timerEl.textContent = Math.ceil(this.turnTimer);
-            timerEl.classList.remove('low-time', 'retreat-mode');
-        }
-
-        // Play turn start sound
-        this.audioManager.playTurnStart();
-
-        // Switch to current team's inventory
-        const team = this.teams[this.currentTeamIndex];
-        if (team && team.weapons) {
-            // Swap inventory
-            this.weaponManager.weapons = team.weapons;
-
-            // Select the team's last used weapon, or default to bazooka
-            const lastWeaponId = team.lastSelectedWeapon || 'bazooka';
-            if (team.weapons[lastWeaponId] && team.weapons[lastWeaponId].ammo > 0) {
-                this.weaponManager.selectWeapon(lastWeaponId);
-            } else {
-                this.weaponManager.selectWeapon('bazooka');
-            }
-        }
-
-        // Find next alive koala
-        this.selectNextKoala();
-
-        const koala = this.getCurrentKoala();
-        if (koala) {
-            // Center camera on current koala
-            this.camera.targetX = koala.x - this.canvas.width / 2;
-            this.camera.targetY = koala.y - this.canvas.height / 2;
-
-            // Update UI
-            this.updateTurnIndicator();
-            this.updateWeaponUI();
-        }
-
-        // NETWORK SYNC: Send full state sync at start of turn
-        // This ensures both clients are in sync
-        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.sendFullStateSync();
-        }
-
-        // Check for loot crate spawn
-        // Only the host triggers spawns in multiplayer, practice mode always spawns locally
-        if (this.isPractice || (this.networkManager && this.networkManager.isHost)) {
-            this.lootManager.onTurnStart();
-        }
-    }
-
-    /**
-     * Send a full state sync to the opponent
-     * This includes all koala positions, health, and game state
-     */
-    sendFullStateSync() {
-        const koalas = [];
-        for (const team of this.teams) {
-            for (const koala of team.koalas) {
-                koalas.push({
-                    name: koala.name,
-                    x: koala.x,
-                    y: koala.y,
-                    vx: koala.vx,
-                    vy: koala.vy,
-                    health: koala.health,
-                    isAlive: koala.isAlive,
-                    onGround: koala.onGround
-                });
-            }
-        }
-
-        this.networkManager.send({
-            type: 'stateSync',
-            koalas,
-            currentTeamIndex: this.currentTeamIndex,
-            currentKoalaIndex: this.currentKoalaIndex,
-            phase: this.phase,
-            wind: this.wind
-        });
-    }
-
-    /**
-     * Select next koala for turn
-     */
-    selectNextKoala() {
-        const team = this.teams[this.currentTeamIndex];
-
-        if (!team || !team.isAlive()) {
-            console.warn('selectNextKoala: Team is dead, should have been skipped');
-            return;
-        }
-
-        // Find next alive koala on current team, starting from the team's saved index
-        let found = false;
-        for (let i = 0; i < team.koalas.length; i++) {
-            const idx = (team.currentKoalaIndex + i) % team.koalas.length;
-            if (team.koalas[idx].isAlive) {
-                this.currentKoalaIndex = idx;
-                team.currentKoalaIndex = idx; // Update team's index to the one we found
-                found = true;
-                console.log(`🐨 Selected ${team.name} koala ${idx}: ${team.koalas[idx].name}`);
-                break;
-            }
-        }
-
-        if (!found) {
-            // This shouldn't happen if nextTeam() properly skipped dead teams
-            console.error('selectNextKoala: No alive koala found but team.isAlive() was true!');
-        }
-    }
-
-    /**
-     * Move to next team
-     */
-    nextTeam() {
-        const prevTeam = this.currentTeamIndex;
-
-        // 1. Increment the koala index for the team that JUST finished their turn
-        // so that next time it's their turn, they pick the next teammate
-        const finishedTeam = this.teams[this.currentTeamIndex];
-        if (finishedTeam) {
-            finishedTeam.currentKoalaIndex = (this.currentKoalaIndex + 1) % finishedTeam.koalas.length;
-        }
-
-        // 2. Cycle to the next alive team
-        const startTeam = this.currentTeamIndex;
-        do {
-            this.currentTeamIndex = (this.currentTeamIndex + 1) % this.teams.length;
-        } while (!this.teams[this.currentTeamIndex].isAlive() &&
-            this.currentTeamIndex !== startTeam);
-
-        // 3. Set the game's active index to the new team's next-in-line
-        this.currentKoalaIndex = this.teams[this.currentTeamIndex].currentKoalaIndex;
-
-        console.log(`🔄 Turn: ${this.teams[prevTeam].name} → ${this.teams[this.currentTeamIndex].name}`);
-    }
-
-    /**
-     * End current turn
-     */
-    endTurn() {
-        this.phase = 'damage';
-        this.processDamage();
-    }
-
-    /**
-     * Move to next turn
-     */
-    nextTurn() {
-        this.nextTeam();
-        this.selectNextKoala();
-        this.startTurn();
-    }
+    // Turn flow proxy methods
+    processDamage() { this.turnManager.processDamage(); }
+    applyFallDamage() { this.turnManager.applyFallDamage(); }
+    startTurn() { this.turnManager.startTurn(); }
+    selectNextKoala() { this.turnManager.selectNextKoala(); }
+    nextTeam() { this.turnManager.nextTeam(); }
+    endTurn() { this.turnManager.endTurn(); }
+    nextTurn() { this.turnManager.nextTurn(); }
 
     /**
      * Fire current weapon
@@ -2840,6 +2596,12 @@ export class Game extends EventEmitter {
     handleRemoteFire(data) {
         console.log('🎯 Remote fire:', data);
 
+        // Security check: Ignore remote events if it's currently the local player's turn
+        if (this.isMyTurn() && !this.isPractice) {
+            console.warn('Blocked remote fire during local turn');
+            return;
+        }
+
         const koala = this.getCurrentKoala();
         if (!koala) return;
 
@@ -2857,6 +2619,7 @@ export class Game extends EventEmitter {
      * Handle remote player movement
      */
     handleRemoteMove(data) {
+        if (this.isMyTurn() && !this.isPractice) return;
         const koala = this.getCurrentKoala();
         if (!koala) return;
 
@@ -2870,6 +2633,7 @@ export class Game extends EventEmitter {
      * Handle remote player aiming
      */
     handleRemoteAim(data) {
+        if (this.isMyTurn() && !this.isPractice) return;
         const koala = this.getCurrentKoala();
         if (!koala) return;
 
@@ -2881,6 +2645,11 @@ export class Game extends EventEmitter {
      */
     handleRemoteTargetWeapon(data) {
         console.log('🎯 Remote target weapon:', data);
+
+        if (this.isMyTurn() && !this.isPractice) {
+            console.warn('Blocked remote target weapon during local turn');
+            return;
+        }
 
         this.weaponManager.selectWeapon(data.weaponId);
         const weapon = this.weaponManager.currentWeapon;
@@ -2896,6 +2665,8 @@ export class Game extends EventEmitter {
     handleRemoteWeaponSelect(data) {
         console.log('🔫 Remote weapon select:', data.weaponId);
 
+        if (this.isMyTurn() && !this.isPractice) return;
+
         // Select the weapon on this client
         this.weaponManager.selectWeapon(data.weaponId);
         this.updateWeaponUI();
@@ -2906,6 +2677,11 @@ export class Game extends EventEmitter {
      */
     handleRemoteTurnEnd(data) {
         console.log('🔄 Remote turn end:', data);
+
+        if (this.isMyTurn() && !this.isPractice) {
+            console.warn('Blocked remote turn end signal during local turn');
+            return;
+        }
 
         // Sync team/koala index if provided
         if (data.nextTeam !== undefined) {
@@ -3005,6 +2781,7 @@ export class Game extends EventEmitter {
      */
     handleRemoteJump(data) {
         console.log('🦘 Remote jump:', data);
+        if (this.isMyTurn() && !this.isPractice) return;
         const koala = this.getCurrentKoala();
         if (koala) {
             koala.x = data.x;
@@ -3021,6 +2798,7 @@ export class Game extends EventEmitter {
      */
     handleRemoteHighJump(data) {
         console.log('🦘 Remote high jump:', data);
+        if (this.isMyTurn() && !this.isPractice) return;
         const koala = this.getCurrentKoala();
         if (koala) {
             koala.x = data.x;

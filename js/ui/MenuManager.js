@@ -18,22 +18,87 @@ export class MenuManager {
 
         this.currentScreen = 'menu';
         this.players = [];
+
+        // FSM Definition for UI state
+        this.validTransitions = {
+            menu: ['lobby', 'game', 'editor'],
+            lobby: ['menu', 'game'],
+            game: ['gameover', 'menu', 'lobby'],
+            gameover: ['menu', 'lobby'],
+            editor: ['menu', 'game']
+        };
     }
 
     /**
-     * Show a specific screen
+     * Show a specific screen with FSM validation
      */
     showScreen(screenId) {
-        // Remove .active from all screens
-        for (const screen of Object.values(this.screens)) {
-            screen.classList.remove('active');
+        const id = screenId.replace('-screen', '');
+
+        // FSM Validation
+        if (this.currentScreen && this.validTransitions[this.currentScreen] &&
+            !this.validTransitions[this.currentScreen].includes(id) &&
+            this.currentScreen !== id) {
+            console.warn(`[FSM Blocked] Invalid transition: ${this.currentScreen} -> ${id}`);
+            // Return to enforce strict FSM transitions (un-comment next line to enforce)
+            // return; 
+        }
+
+        // Execute Exit Action
+        this.onScreenExit(this.currentScreen);
+
+        // Remove .active from all main screens
+        for (const key of ['menu', 'lobby', 'game', 'gameover', 'editor']) {
+            if (this.screens[key]) {
+                this.screens[key].classList.remove('active');
+            }
         }
 
         // Add .active to target screen
-        const id = screenId.replace('-screen', '');
         if (this.screens[id]) {
             this.screens[id].classList.add('active');
+
+            console.log(`[FSM] State changed: ${this.currentScreen} -> ${id}`);
             this.currentScreen = id;
+
+            // Execute Entry Action
+            this.onScreenEnter(id);
+        }
+    }
+
+    /**
+     * Handle actions when exiting a screen
+     */
+    onScreenExit(screenId) {
+        // Cleanup logic for specific screens
+        switch (screenId) {
+            case 'lobby':
+                // Stop any lobby timers/intervals if they existed
+                break;
+            case 'game':
+                // Hide any persisting game UI
+                break;
+        }
+    }
+
+    /**
+     * Handle actions when entering a screen
+     */
+    onScreenEnter(screenId) {
+        // Setup logic for specific screens
+        switch (screenId) {
+            case 'menu':
+                // Reset panels
+                const joinPanel = document.getElementById('join-panel');
+                const hostPanel = document.getElementById('host-panel');
+                const menuBtns = document.querySelector('.menu-buttons');
+                const roomCode = document.getElementById('room-code-input');
+
+                if (joinPanel) joinPanel.classList.add('hidden');
+                if (hostPanel) hostPanel.classList.add('hidden');
+                if (menuBtns) menuBtns.classList.remove('hidden');
+                if (roomCode) roomCode.value = '';
+                break;
         }
     }
 
@@ -42,12 +107,6 @@ export class MenuManager {
      */
     showMenu() {
         this.showScreen('menu');
-
-        // Reset panels
-        document.getElementById('join-panel').classList.add('hidden');
-        document.getElementById('host-panel').classList.add('hidden');
-        document.querySelector('.menu-buttons').classList.remove('hidden');
-        document.getElementById('room-code-input').value = '';
     }
 
     /**

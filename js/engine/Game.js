@@ -2696,6 +2696,91 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Handle full state sync from remote player
+     */
+    handleRemoteStateSync(data) {
+        console.log('🔄 Remote state sync:', data);
+
+        if (this.isMyTurn() && !this.isPractice) {
+            console.warn('Blocked remote state sync during local turn');
+            return;
+        }
+
+        const state = data.state;
+        if (!state) return;
+
+        // Sync turn manager state
+        this.currentTeamIndex = state.currentTeamIndex;
+        this.currentKoalaIndex = state.currentKoalaIndex;
+        this.turnTimer = state.turnTimer;
+        this.phase = state.phase;
+        this.wind = state.wind;
+
+        // Sync all koalas
+        if (state.teams) {
+            state.teams.forEach(teamData => {
+                teamData.koalas.forEach(koalaData => {
+                    const koala = this.findKoalaByName(koalaData.name);
+                    if (koala) {
+                        koala.x = koalaData.x;
+                        koala.y = koalaData.y;
+                        koala.vx = koalaData.vx;
+                        koala.vy = koalaData.vy;
+                        koala.health = koalaData.health;
+
+                        if (koalaData.isAlive !== koala.isAlive) {
+                            if (koalaData.isAlive) {
+                                // Resurrect? (unlikely in normal gameplay but good for sync)
+                                koala.isAlive = true;
+                            } else {
+                                koala.die();
+                            }
+                        }
+                    }
+                });
+            });
+        }
+
+        // Add visual indicator of sync
+        if (this.turnManager) {
+            this.updateTurnIndicator();
+        }
+    }
+
+    /**
+     * Send full state sync to network
+     */
+    sendFullStateSync() {
+        if (!this.networkManager || this.isPractice) return;
+
+        const state = {
+            currentTeamIndex: this.currentTeamIndex,
+            currentKoalaIndex: this.currentKoalaIndex,
+            turnTimer: this.turnTimer,
+            phase: this.phase,
+            wind: this.wind,
+            teams: this.teams.map(team => ({
+                color: team.color,
+                koalas: team.koalas.map(k => ({
+                    name: k.name,
+                    x: k.x,
+                    y: k.y,
+                    vx: k.vx,
+                    vy: k.vy,
+                    health: k.health,
+                    isAlive: k.isAlive
+                }))
+            }))
+        };
+
+        this.networkManager.send({
+            type: 'stateSync',
+            state: state,
+            timestamp: Date.now()
+        });
+    }
+
+    /**
      * Send local fire action to network
      */
     sendFireAction(weaponId, angle, power, x, y) {

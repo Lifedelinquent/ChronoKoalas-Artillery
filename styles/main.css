@@ -792,6 +792,69 @@ body {
     font-weight: 700;
 }
 
+/* ========== GLOBAL AUDIO CONTROLS ========== */
+#global-audio-controls {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 10px 15px;
+    border-radius: 25px;
+    backdrop-filter: blur(5px);
+    z-index: 9999;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    transition: all 0.3s ease;
+}
+
+#global-audio-controls:hover {
+    background: rgba(0, 0, 0, 0.8);
+    border-color: rgba(255, 255, 255, 0.4);
+}
+
+.audio-btn {
+    background: none;
+    border: none;
+    color: var(--text-light);
+    font-size: 1.5rem;
+    cursor: pointer;
+    transition: transform 0.2s;
+    outline: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+}
+
+.audio-btn:hover {
+    transform: scale(1.1);
+}
+
+.audio-btn.muted {
+    color: var(--team-red);
+}
+
+.volume-slider-container {
+    width: 0;
+    overflow: hidden;
+    transition: width 0.3s ease;
+    display: flex;
+    align-items: center;
+}
+
+#global-audio-controls:hover .volume-slider-container {
+    width: 80px;
+}
+
+#global-volume-slider {
+    width: 80px;
+    cursor: pointer;
+    accent-color: var(--accent-gold);
+}
+
 /* ========== RESPONSIVE ========== */
 @media (max-width: 768px) {
     .game-title {

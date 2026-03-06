@@ -8,6 +8,7 @@ import { MenuManager } from './ui/MenuManager.js';
 import { NetworkManager } from './network/NetworkManager.js';
 import { MapEditor } from './editor/MapEditor.js';
 import { MapManager } from './utils/MapManager.js';
+import { globalAudioManager } from './engine/AudioManager.js';
 
 // Global game instance
 let game = null;
@@ -27,6 +28,9 @@ async function init() {
 
     // Set up menu event handlers
     setupMenuHandlers();
+
+    // Set up global audio controls
+    setupGlobalAudioControls();
 
     // Process logo to remove checkerboard background
     processLogo();
@@ -533,25 +537,81 @@ function startGame(isPractice = false, networkState = null, customMap = null) {
     // Start the game
     game.start();
 
-    // Set up mute toggle
-    const muteBtn = document.getElementById('mute-toggle');
-    if (muteBtn) {
-        muteBtn.addEventListener('click', () => {
-            const isMuted = game.audioManager.toggleMute();
-            muteBtn.textContent = isMuted ? '🔇' : '🔊';
-            muteBtn.classList.toggle('muted', isMuted);
-            game.audioManager.playClick(); // Play click if just unmuted
-        });
-    }
-
     // Game over handler
     game.on('gameOver', (result) => {
         menuManager.showGameOver(result);
     });
 }
 
+/**
+ * Set up global audio controls
+ */
+function setupGlobalAudioControls() {
+    const muteBtn = document.getElementById('global-mute-toggle');
+    const volSlider = document.getElementById('global-volume-slider');
+
+    if (muteBtn) {
+        muteBtn.addEventListener('click', () => {
+            const isMuted = globalAudioManager.toggleMute();
+            muteBtn.textContent = isMuted ? '🔇' : '🔊';
+            muteBtn.classList.toggle('muted', isMuted);
+            // Play click if just unmuted
+            if (!isMuted) {
+                globalAudioManager.playClick();
+            }
+        });
+    }
+
+    if (volSlider) {
+        // Set initial value based on AudioManager volume
+        volSlider.value = globalAudioManager.volume;
+
+        volSlider.addEventListener('input', (e) => {
+            const vol = parseFloat(e.target.value);
+            globalAudioManager.setVolume(vol);
+
+            // If they are sliding volume up while muted, auto-unmute
+            if (vol > 0 && globalAudioManager.isMuted) {
+                globalAudioManager.toggleMute();
+                if (muteBtn) {
+                    muteBtn.textContent = '🔊';
+                    muteBtn.classList.remove('muted');
+                }
+            } else if (vol === 0 && !globalAudioManager.isMuted) {
+                globalAudioManager.toggleMute();
+                if (muteBtn) {
+                    muteBtn.textContent = '🔇';
+                    muteBtn.classList.add('muted');
+                }
+            }
+        });
+    }
+}
+
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', init);
+
+// Add global interaction listener to unlock audio on first click
+const unlockAudio = () => {
+    if (!globalAudioManager.isInitialized) {
+        globalAudioManager.init();
+
+        // If music was queued but blocked by autoplay policy, attempt to play it now
+        // Force the menu theme if we are on the menu
+        if (menuManager && (menuManager.currentScreen === 'menu' || menuManager.currentScreen === 'lobby')) {
+            globalAudioManager.playTheme('menu');
+        } else if (globalAudioManager.music && globalAudioManager.music.paused) {
+            globalAudioManager.playMusic();
+        }
+
+        // Remove the listener once unlocked
+        document.removeEventListener('click', unlockAudio);
+        document.removeEventListener('keydown', unlockAudio);
+    }
+};
+
+document.addEventListener('click', unlockAudio);
+document.addEventListener('keydown', unlockAudio);
 
 // Handle window resize
 window.addEventListener('resize', () => {

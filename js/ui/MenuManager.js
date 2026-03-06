@@ -3,6 +3,7 @@
  */
 
 import { MapManager } from '../utils/MapManager.js';
+import { globalAudioManager } from '../engine/AudioManager.js';
 
 export class MenuManager {
     constructor() {
@@ -85,6 +86,13 @@ export class MenuManager {
      * Handle actions when entering a screen
      */
     onScreenEnter(screenId) {
+        // Play theme music depending on screen
+        if (screenId === 'menu' || screenId === 'lobby') {
+            globalAudioManager.playTheme('menu');
+        } else if (screenId === 'game') {
+            globalAudioManager.playTheme('battle');
+        }
+
         // Setup logic for specific screens
         switch (screenId) {
             case 'menu':
@@ -244,9 +252,11 @@ export class MenuManager {
             if (result.winner) {
                 winnerText.textContent = `🏆 ${result.winner.name} Wins!`;
                 winnerText.style.color = result.winner.color;
+                globalAudioManager.playTheme('victory');
             } else {
                 winnerText.textContent = '🤝 Draw!';
                 winnerText.style.color = '#f1c40f';
+                globalAudioManager.playTheme('defeat');
             }
         }
 

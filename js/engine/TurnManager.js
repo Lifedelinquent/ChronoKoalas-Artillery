@@ -1,4 +1,5 @@
 import { EventEmitter } from '../utils/EventEmitter.js';
+import { globalAudioManager } from './AudioManager.js';
 
 export class TurnManager extends EventEmitter {
     constructor(game) {
@@ -44,7 +45,8 @@ export class TurnManager extends EventEmitter {
             timerEl.classList.remove('low-time', 'retreat-mode');
         }
 
-        // Play turn start sound
+        // Play turn start sound and reset theme to battle
+        globalAudioManager.playTheme('battle');
         this.game.audioManager.playTurnStart();
 
         // Switch to current team's inventory
@@ -197,6 +199,7 @@ export class TurnManager extends EventEmitter {
 
             if (this.turnTimer <= 5 && !timerEl.classList.contains('low-time')) {
                 timerEl.classList.add('low-time');
+                globalAudioManager.playTheme('suddenDeath');
             }
         }
 

@@ -11,7 +11,7 @@ import { WeaponManager } from '../weapons/WeaponManager.js';
 import { Projectile } from '../weapons/Projectile.js';
 import { InputManager } from './InputManager.js';
 import { EventEmitter } from '../utils/EventEmitter.js';
-import { AudioManager } from './AudioManager.js';
+import { AudioManager, globalAudioManager } from './AudioManager.js';
 import { LootManager } from './LootManager.js';
 import { SpatialGrid } from './SpatialGrid.js';
 import { DOMCache } from '../utils/DOMCache.js';
@@ -38,7 +38,7 @@ export class Game extends EventEmitter {
         this.renderer = new Renderer(this);
         this.weaponManager = new WeaponManager(this);
         this.inputManager = new InputManager(this);
-        this.audioManager = new AudioManager();
+        this.audioManager = globalAudioManager;
 
         // Spatial partitioning for efficient collision detection
         // Cell size of 100px works well for our entity sizes

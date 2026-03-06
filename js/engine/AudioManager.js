@@ -12,7 +12,20 @@ export class AudioManager {
 
         // Background Music
         this.music = null;
+        this.currentTheme = null;
         this.musicVolume = 0.05; // Lowered to 5% as 20% was reported too loud
+
+        // Define audio tracks
+        this.themes = {
+            menu: 'menu_theme.mp3',
+            battle: 'battle_theme.mp3',
+            suddenDeath: 'sudden_death.mp3',
+            victory: 'victory_fanfare.mp3',
+            defeat: 'defeat_theme.mp3'
+        };
+
+        // Track Audio objects
+        this.audioElements = {};
     }
 
     /**
@@ -40,15 +53,81 @@ export class AudioManager {
      * Initialize background music
      */
     initMusic() {
-        if (this.music) return;
+        if (this.isInitializedTheme) return;
 
-        this.music = new Audio('01. Worms - Armageddon - Original Mix.mp3');
-        this.music.loop = true;
-        this.music.volume = this.musicVolume;
+        // Preload themes
+        for (const [key, src] of Object.entries(this.themes)) {
+            const audio = new Audio(src);
 
-        // Start playing when initialized (browsers require user interaction first,
-        // which will have happened for init() to be called)
-        this.playMusic();
+            // Victory and Defeat shouldn't loop
+            if (key !== 'victory' && key !== 'defeat') {
+                audio.loop = true;
+            }
+
+            audio.volume = this.musicVolume;
+            this.audioElements[key] = audio;
+        }
+
+        // Fallback original track for battle if custom track fails
+        this.audioElements.fallback = new Audio('01. Worms - Armageddon - Original Mix.mp3');
+        this.audioElements.fallback.loop = true;
+        this.audioElements.fallback.volume = this.musicVolume;
+
+        this.isInitializedTheme = true;
+    }
+
+    /**
+     * Play a specific music theme
+     */
+    playTheme(themeName) {
+        if (!this.isInitializedTheme) {
+            this.initMusic();
+        }
+
+        if (this.currentTheme === themeName) {
+            this.playMusic();
+
+            // Ensure timeout is still applied if called again
+            if (themeName === 'victory' || themeName === 'defeat') {
+                if (this.themeTimeout) clearTimeout(this.themeTimeout);
+                this.themeTimeout = setTimeout(() => {
+                    if (this.currentTheme === themeName && this.music) {
+                        this.music.pause();
+                    }
+                }, 10000);
+            }
+            return;
+        }
+
+        // Clear any existing theme timeout
+        if (this.themeTimeout) {
+            clearTimeout(this.themeTimeout);
+            this.themeTimeout = null;
+        }
+
+        // Pause current music
+        if (this.music) {
+            this.music.pause();
+            this.music.currentTime = 0; // Reset
+        }
+
+        // Set new music
+        this.music = this.audioElements[themeName] || this.audioElements.fallback;
+        this.currentTheme = themeName;
+
+        if (this.music) {
+            this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
+            this.playMusic();
+
+            // Limit victory and defeat themes to 10 seconds
+            if (themeName === 'victory' || themeName === 'defeat') {
+                this.themeTimeout = setTimeout(() => {
+                    if (this.currentTheme === themeName && this.music) {
+                        this.music.pause();
+                    }
+                }, 10000);
+            }
+        }
     }
 
     /**
@@ -56,7 +135,22 @@ export class AudioManager {
      */
     playMusic() {
         if (this.music && this.music.paused) {
-            this.music.play().catch(e => console.warn('Music playback failed:', e));
+            this.music.play().catch(e => {
+                // If it's a browser layout policy blocking it, wait for interaction
+                if (e.name === 'NotAllowedError') {
+                    console.log('Audio autoplay prevented. Waiting for user interaction.');
+                    return;
+                }
+
+                // If the custom theme fails (e.g., file doesn't exist yet),
+                // fallback to the original track if it's supposed to be battle/menu music.
+                console.warn(`Could not play theme ${this.currentTheme}:`, e);
+                if (this.currentTheme === 'battle' || this.currentTheme === 'menu' || this.currentTheme === 'suddenDeath') {
+                    console.log('Falling back to original soundtrack for', this.currentTheme);
+                    this.music = this.audioElements.fallback;
+                    this.music.play().catch(fallbackErr => console.warn('Fallback failed:', fallbackErr));
+                }
+            });
         }
     }
 
@@ -101,7 +195,7 @@ export class AudioManager {
             this.masterGain.gain.value = this.isMuted ? 0 : this.volume;
         }
         if (this.music) {
-            this.music.volume = this.isMuted ? 0 : this.musicVolume;
+            this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
         }
         return this.isMuted;
     }
@@ -730,3 +824,6 @@ export class AudioManager {
         return whiteNoise;
     }
 }
+
+// Export a singleton instance for global use across Menu and Game
+export const globalAudioManager = new AudioManager();

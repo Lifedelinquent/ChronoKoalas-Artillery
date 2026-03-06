@@ -19,6 +19,11 @@ export class NetworkManager extends EventEmitter {
 
         // Connection state
         this.connectionState = 'disconnected'; // disconnected, connecting, connected
+
+        // Queuing and reconnection
+        this.outboundQueue = [];
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
     }
 
     /**
@@ -181,6 +186,20 @@ export class NetworkManager extends EventEmitter {
                 isHost: this.isHost,
                 playerId: this.playerId
             });
+
+            // Flush offline queue if any
+            if (this.outboundQueue.length > 0) {
+                console.log(`📤 Flushing ${this.outboundQueue.length} queued messages...`);
+                while (this.outboundQueue.length > 0) {
+                    const data = this.outboundQueue.shift();
+                    conn.send(data);
+                }
+            }
+
+            // If we are a guest that just reconnected, request state sync
+            if (!this.isHost && this.reconnectAttempts > 0) {
+                this.send({ type: 'requestStateSync' });
+            }
         });
 
         conn.on('data', (data) => {
@@ -192,6 +211,7 @@ export class NetworkManager extends EventEmitter {
             this.isConnected = false;
             this.connectionState = 'disconnected';
             this.emit('disconnected', { reason: 'Connection closed' });
+            this.attemptReconnect();
         });
 
         conn.on('error', (err) => {
@@ -274,6 +294,10 @@ export class NetworkManager extends EventEmitter {
                 this.emit('remoteStateSync', data);
                 break;
 
+            case 'requestStateSync':
+                this.emit('remoteRequestStateSync', data);
+                break;
+
             case 'crateSpawn':
                 this.emit('remoteCrateSpawn', data);
                 break;
@@ -295,9 +319,58 @@ export class NetworkManager extends EventEmitter {
             this.connection.send(data);
             return true;
         } else {
-            console.warn('Cannot send - not connected');
+            console.warn('⚠️ Cannot send - not connected. Queueing message:', data.type);
+            this.outboundQueue.push(data);
             return false;
         }
+    }
+
+    /**
+     * Attempt to reconnect to the game
+     */
+    attemptReconnect() {
+        if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+            console.error('❌ Max reconnect attempts reached');
+            this.emit('error', { message: 'Lost connection to game and could not reconnect.' });
+            return;
+        }
+
+        if (!this.roomCode) return; // Not currently in a game
+
+        this.reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000); // Expon backoff max 10s
+
+        console.log(`🔄 Attempting to reconnect (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+        this.connectionState = 'connecting';
+
+        setTimeout(() => {
+            if (this.isHost) {
+                // Host just needs to make sure its peer is ready to accept connections
+                if (this.peer && this.peer.disconnected && !this.peer.destroyed) {
+                    this.peer.reconnect();
+                }
+            } else {
+                // Guest needs to establish a new data channel to the host
+                if (this.peer && !this.peer.destroyed) {
+                    if (this.peer.disconnected) {
+                        this.peer.reconnect();
+                    }
+
+                    const connectToHost = () => {
+                        console.log('📡 Reconnecting to host:', this.roomCode);
+                        this.connection = this.peer.connect(this.roomCode, { reliable: true });
+                        this.setupConnectionHandlers(this.connection);
+                    };
+
+                    if (this.peer.open) {
+                        connectToHost();
+                    } else {
+                        // Wait for peer to re-establish signaling connection before connecting
+                        this.peer.once('open', connectToHost);
+                    }
+                }
+            }
+        }, delay);
     }
 
     /**

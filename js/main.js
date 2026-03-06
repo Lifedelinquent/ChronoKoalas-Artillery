@@ -505,6 +505,12 @@ function setupMenuHandlers() {
         }
     });
 
+    networkManager.on('remoteRequestStateSync', (data) => {
+        if (game && game.sendFullStateSync) {
+            game.sendFullStateSync();
+        }
+    });
+
     networkManager.on('remoteCrateSpawn', (data) => {
         if (game) {
             game.lootManager.handleRemoteCrateSpawn(data);

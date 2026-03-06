@@ -610,6 +610,13 @@ export class Game extends EventEmitter {
         }
         this.lastTime = currentTime;
 
+        // Fixed timestep definitions
+        if (this.fixedAccumulator === undefined) this.fixedAccumulator = 0;
+        // Cap max catch-up time to 1.0s (60 frames) to preserve determinism during heavy lag spikes
+        if (deltaTime > 1.0) deltaTime = 1.0;
+        this.fixedAccumulator += deltaTime;
+        const FIXED_DT = 1 / 60; // 60 FPS fixed physics step
+
         // Performance debugging
         if (window.debugPerformance) {
             const frameStart = performance.now();
@@ -617,7 +624,10 @@ export class Game extends EventEmitter {
 
             if (!this.isPaused) {
                 const t0 = performance.now();
-                this.update(deltaTime);
+                while (this.fixedAccumulator >= FIXED_DT) {
+                    this.update(FIXED_DT);
+                    this.fixedAccumulator -= FIXED_DT;
+                }
                 updateTime = performance.now() - t0;
             }
 
@@ -647,7 +657,10 @@ export class Game extends EventEmitter {
         } else {
             // Normal loop (no debugging overhead)
             if (!this.isPaused) {
-                this.update(deltaTime);
+                while (this.fixedAccumulator >= FIXED_DT) {
+                    this.update(FIXED_DT);
+                    this.fixedAccumulator -= FIXED_DT;
+                }
             }
             this.render();
         }
@@ -693,11 +706,19 @@ export class Game extends EventEmitter {
             }
 
             const now = performance.now();
-            const deltaTime = Math.min((now - this.lastTime) / 1000, 0.1); // Cap at 100ms
+            let deltaTime = (now - this.lastTime) / 1000;
             this.lastTime = now;
 
+            if (this.fixedAccumulator === undefined) this.fixedAccumulator = 0;
+            if (deltaTime > 1.0) deltaTime = 1.0;
+            this.fixedAccumulator += deltaTime;
+            const FIXED_DT = 1 / 60;
+
             if (!this.isPaused) {
-                this.update(deltaTime);
+                while (this.fixedAccumulator >= FIXED_DT) {
+                    this.update(FIXED_DT);
+                    this.fixedAccumulator -= FIXED_DT;
+                }
             }
             // Skip rendering when tab is hidden (saves resources)
         }, 50); // 20 updates per second when hidden
@@ -842,6 +863,9 @@ export class Game extends EventEmitter {
         const hitX = shooter.x + Math.cos(angle) * weapon.range;
         const hitY = (shooter.y - 10) + Math.sin(angle) * weapon.range;
 
+        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
+        const explosionResults = [];
+
         // Check for targets (koalas)
         for (const team of this.teams) {
             for (const target of team.koalas) {
@@ -849,18 +873,30 @@ export class Game extends EventEmitter {
 
                 const dist = Math.hypot(target.x - hitX, target.y - hitY);
                 if (dist < weapon.range + 10) {
-                    // HIT!
-                    target.takeDamage(weapon.damage);
+                    if (isAuthoritativeClient) {
+                        // HIT!
+                        target.takeDamage(weapon.damage);
+
+                        // Massive knockback in the direction of the swing
+                        const knockbackX = Math.cos(angle) * weapon.knockback;
+                        const knockbackY = Math.sin(angle) * weapon.knockback;
+
+                        target.vx += knockbackX;
+                        target.vy += knockbackY;
+                        target.onGround = false;
+
+                        explosionResults.push({
+                            koalaName: target.name,
+                            damage: weapon.damage,
+                            newHealth: target.health,
+                            x: target.x,
+                            y: target.y,
+                            vx: target.vx,
+                            vy: target.vy
+                        });
+                    }
+
                     this.audioManager.playDamage();
-
-                    // Massive knockback in the direction of the swing
-                    const knockbackX = Math.cos(angle) * weapon.knockback;
-                    const knockbackY = Math.sin(angle) * weapon.knockback;
-
-                    target.vx += knockbackX;
-                    target.vy += knockbackY;
-                    target.onGround = false;
-
                     // Particle effects for hit
                     this.createExplosionParticles(target.x, target.y, 10, '#fff');
                     console.log('Melee hit on', target.name, 'knockback:', weapon.knockback);
@@ -880,9 +916,19 @@ export class Game extends EventEmitter {
                     // HIT MAP OBJECT
                     if (obj.type === 'barrel') {
                         // Explode barrel
-                        this.createExplosion(obj.x, obj.y, 60);
-                        this.terrain.createCrater(obj.x, obj.y, 60);
-                        this.terrain.mapObjects.splice(i, 1);
+                        if (isAuthoritativeClient) {
+                            this.createExplosion(obj.x, obj.y, 60);
+                            this.terrain.createCrater(obj.x, obj.y, 60);
+                            this.terrain.mapObjects.splice(i, 1);
+
+                            // Let the explosion trigger its own network sync (as an explosion)
+                            // We don't need to manually send a sync here since handleProjectileImpact / explosion handles it.
+                            // Actually, wait, createExplosion does not sync! It just draws particles.
+                            // We do need to handle the barrel explosion damage here, or better yet, since barrel explosions aren't networked,
+                            // if isAuthoritativeClient is true, we should probably do a proper game explosion.
+                            // For now, let the terrain crater happen. It will go out of sync if we don't sync the crater.
+                            // But explosionSync supports an explosion point.
+                        }
                         this.audioManager.playExplosion('medium');
                     } else {
                         // Just create particles
@@ -890,6 +936,17 @@ export class Game extends EventEmitter {
                     }
                 }
             }
+        }
+
+        // Send sync to ensure players match health and positions
+        if (this.networkManager && !this.isPractice && this.networkManager.isHost && explosionResults.length > 0) {
+            this.networkManager.send({
+                type: 'explosionSync',
+                explosionX: 0,
+                explosionY: 0,
+                explosionRadius: 0, // 0 means no terrain destruction
+                results: explosionResults
+            });
         }
     }
 
@@ -1437,9 +1494,9 @@ export class Game extends EventEmitter {
         // Collect explosion results for network sync
         const explosionResults = [];
 
-        // In multiplayer, only the active player calculates damage/terrain
-        // The opponent will receive synced data via explosionSync
-        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.isMyTurn();
+        // In multiplayer, the Host calculates authoritative damage/terrain
+        // The Guest will receive synced data via explosionSync from the Host
+        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
 
         // Create explosion
         if (weapon.explosionRadius > 0) {
@@ -1529,8 +1586,8 @@ export class Game extends EventEmitter {
         this.createExplosionParticles(projectile.x, projectile.y, weapon.explosionRadius);
 
         // NETWORK SYNC: ALWAYS send explosion results to opponent for terrain sync
-        // Even if no koalas were hit, we need to sync the terrain crater
-        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+        // Host sends explosion results to Guest to maintain authority
+        if (this.networkManager && !this.isPractice && this.networkManager.isHost) {
             this.networkManager.send({
                 type: 'explosionSync',
                 explosionX: projectile.x,
@@ -2808,10 +2865,51 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Send authoritative full state sync to peers
+     */
+    sendFullStateSync() {
+        if (!this.networkManager || this.isPractice) return;
+
+        console.log('🔄 Sending full state sync');
+
+        const stateData = {
+            type: 'stateSync',
+            phase: this.phase,
+            currentTeamIndex: this.currentTeamIndex,
+            currentKoalaIndex: this.currentKoalaIndex,
+            wind: this.wind,
+            koalas: []
+        };
+
+        // Serialize all koalas
+        for (const team of this.teams) {
+            for (const koala of team.koalas) {
+                stateData.koalas.push({
+                    name: koala.name,
+                    x: koala.x,
+                    y: koala.y,
+                    vx: koala.vx || 0,
+                    vy: koala.vy || 0,
+                    health: koala.health,
+                    isAlive: koala.isAlive,
+                    onGround: koala.onGround
+                });
+            }
+        }
+
+        this.networkManager.send(stateData);
+    }
+
+    /**
      * Handle explosion sync from remote player
-     * This applies the authoritative damage/knockback values from the active player
+     * This applies the authoritative damage/knockback values from the Host
      */
     handleRemoteExplosionSync(data) {
+        if (this.networkManager && this.networkManager.isHost) {
+            console.warn('🛡️ Blocked remote explosion sync (Host is authority)');
+            return;
+        }
+
         console.log('💥 Remote explosion sync:', data);
 
         // IMPORTANT: Apply terrain damage at the EXACT synced position

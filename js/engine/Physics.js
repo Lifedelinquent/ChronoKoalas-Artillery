@@ -77,7 +77,9 @@ export class Physics {
 
                     // If this is the current player's koala, end their turn
                     const currentKoala = this.game.getCurrentKoala();
-                    if (entity === currentKoala && this.game.phase === 'aiming') {
+                    const interactivePhase = this.game.phase === 'aiming' ||
+                        this.game.phase === 'firing' || this.game.phase === 'armed';
+                    if (entity === currentKoala && interactivePhase) {
                         console.log('🛑 Fall damage ends turn!');
                         this.game.endTurn();
                     }

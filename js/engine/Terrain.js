@@ -1087,42 +1087,48 @@ export class Terrain {
      * Scan the entire map for all valid spawn points (ground with air above).
      * This ensures the top half and multi-layered areas are all considered.
      */
-    getAllSpawnPoints() {
+    getAllSpawnPoints(options = {}) {
         const points = [];
         if (!this.imageData) return points;
+        options = options || {};
 
-        const data = this.imageData.data;
-        const width = this.width;
-        const height = this.height;
+        // Respect map bounds so we never seed spawns in the dead zone above an
+        // imported map, nor in/below the water line.
+        const topLimit = Math.max(1, Math.floor(options.topY || 0));
+        const waterLevel = options.waterLevel !== undefined
+            ? options.waterLevel
+            : this.height - 60;
 
-        // Scan columns within map bounds
-        for (let x = 100; x < width - 100; x += 10) {
-            // Scan from top to absolute bottom (covering 100% of height)
-            for (let y = 1; y < height - 10; y++) {
-                const idx = (y * width + x) * 4;
-                const aboveIdx = ((y - 1) * width + x) * 4;
+        // Adaptive horizontal margins (fall back to a small inset on full maps).
+        const minX = Math.max(20, Math.floor(options.minX ?? 20));
+        const maxX = Math.min(this.width - 20, Math.floor(options.maxX ?? (this.width - 20)));
 
-                const isSolid = data[idx + 3] > 128;
-                const isAirAbove = data[aboveIdx + 3] < 128;
+        const KOALA_CLEARANCE = 40; // vertical air a koala needs to stand
 
-                if (isSolid && isAirAbove) {
-                    // This is a top surface.
-                    // Check if there is enough vertical clearance above for a koala (approx 40px)
-                    let clearance = true;
-                    for (let checkY = y - 1; checkY > y - 40 && checkY > 0; checkY--) {
-                        const cIdx = (Math.floor(checkY) * width + x) * 4;
-                        if (data[cIdx + 3] > 128) {
-                            clearance = false;
-                            break;
-                        }
-                    }
+        // Scan columns across the map. We reuse getVisualGroundY() so the spawn
+        // scan detects surfaces with the EXACT same logic the snap/physics path
+        // uses (getGroundBelow). This keeps the two halves of the pipeline in
+        // agreement and naturally surfaces every distinct level on multi-level
+        // maps (no arbitrary vertical skipping).
+        for (let x = minX; x <= maxX; x += 10) {
+            const surfaces = this.getVisualGroundY(x);
 
-                    if (clearance) {
-                        points.push({ x, y: y - 20 });
-                        // Skip ahead to avoid multiple points too close together on the same vertical stack
-                        y += 50;
+            for (const surfaceY of surfaces) {
+                // Skip surfaces above the real map top or at/below the water line.
+                if (surfaceY < topLimit) continue;
+                if (surfaceY >= waterLevel) continue;
+
+                // Require enough headroom for the koala's body to stand here.
+                let clearance = true;
+                for (let cy = surfaceY - 1; cy > surfaceY - KOALA_CLEARANCE && cy > 0; cy--) {
+                    if (this.checkCollision(x, cy)) {
+                        clearance = false;
+                        break;
                     }
                 }
+                if (!clearance) continue;
+
+                points.push({ x, y: surfaceY - 20 });
             }
         }
 

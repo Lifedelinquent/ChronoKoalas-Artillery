@@ -9,7 +9,8 @@ export class TurnManager extends EventEmitter {
         this.currentTeamIndex = 0;
         this.currentKoalaIndex = 0;
 
-        this.turnTime = 30;
+        this.defaultTurnTime = 30;
+        this.turnTime = this.defaultTurnTime;
         this.turnTimer = this.turnTime;
 
         this.phase = 'waiting'; // waiting, aiming, firing, projectile, retreat, damage, nextTurn
@@ -20,33 +21,57 @@ export class TurnManager extends EventEmitter {
 
         // Grace period after firing
         this.projectileGraceTimer = 0;
+
+        // Sudden death: after this many full rounds, the gloves come off.
+        // The roundNumber/lastTeamIndex pair is advanced deterministically in
+        // startTurn() so it stays in sync across networked clients.
+        this.suddenDeathRound = 8;
+        this.suddenDeathHealthCap = 25;
+        this.suddenDeathActive = false;
+        this.roundNumber = 1;
+        this.lastTeamIndex = -1;
     }
 
     reset() {
         this.currentTeamIndex = 0;
         this.currentKoalaIndex = 0;
+        this.turnTime = this.defaultTurnTime;
         this.turnTimer = this.turnTime;
         this.phase = 'waiting';
         this.countdownTimer = 0;
         this.retreatTimer = 0;
         this.projectileGraceTimer = 0;
+        this.suddenDeathActive = false;
+        this.roundNumber = 1;
+        this.lastTeamIndex = -1;
     }
 
     startTurn() {
         this.phase = 'aiming';
+
+        // Advance the round counter and trigger sudden death if it's time.
+        // Done before turnTimer is set so a freshly-activated sudden death can
+        // shorten this very turn.
+        this.trackRoundProgress();
+
         this.turnTimer = this.turnTime;
         this.game.randomizeWind();
         this.game.shotgunShotsRemaining = 0; // Reset multi-shot counter
 
         // Update timer display
-        const timerEl = document.getElementById('turn-timer');
+        const timerEl = this.game.dom.elements.turnTimer;
         if (timerEl) {
             timerEl.textContent = Math.ceil(this.turnTimer);
             timerEl.classList.remove('low-time', 'retreat-mode');
         }
 
-        // Play turn start sound and reset theme to battle
-        globalAudioManager.playTheme('battle');
+        // Keep the soundtrack matched to the current game mode. This is the
+        // single source of truth for in-game music: battle normally, sudden
+        // death once it kicks in.
+        const desiredTheme = this.suddenDeathActive ? 'suddenDeath' : 'battle';
+        if (globalAudioManager.currentTheme !== desiredTheme) {
+            globalAudioManager.playTheme(desiredTheme);
+        }
         this.game.audioManager.playTurnStart();
 
         // Switch to current team's inventory
@@ -87,6 +112,52 @@ export class TurnManager extends EventEmitter {
         if (this.game.isPractice || (this.game.networkManager && this.game.networkManager.isHost)) {
             this.game.lootManager.onTurnStart();
         }
+    }
+
+    /**
+     * Advance the round counter and flip on sudden death once enough rounds
+     * have been played. Runs on every client from startTurn() — both the local
+     * and remote turn paths reach startTurn with currentTeamIndex already set —
+     * so the count stays identical across the network.
+     */
+    trackRoundProgress() {
+        // A round completes whenever play wraps back to an earlier team slot
+        // (e.g. last team -> first team). Dead teams are skipped, but the index
+        // only ever decreases on a wrap, so this still holds.
+        if (this.currentTeamIndex <= this.lastTeamIndex) {
+            this.roundNumber++;
+        }
+        this.lastTeamIndex = this.currentTeamIndex;
+
+        if (!this.suddenDeathActive && this.roundNumber >= this.suddenDeathRound) {
+            this.activateSuddenDeath();
+        }
+    }
+
+    /**
+     * Kick off sudden death: shorter turns, every survivor knocked down to the
+     * health cap, music switch (handled by startTurn) and an on-screen banner.
+     */
+    activateSuddenDeath() {
+        this.suddenDeathActive = true;
+        console.log(`💀 SUDDEN DEATH! (round ${this.roundNumber})`);
+
+        // Turns get shorter from here on — no more stalling.
+        this.turnTime = Math.min(this.turnTime, 20);
+
+        // Knock every surviving koala down to the sudden-death cap. This is
+        // deterministic (same koalas, same cap on every client), and the active
+        // player's full-state sync later in startTurn confirms the same values.
+        for (const team of this.game.teams) {
+            for (const koala of team.koalas) {
+                if (koala.isAlive && koala.health > this.suddenDeathHealthCap) {
+                    koala.health = this.suddenDeathHealthCap;
+                }
+            }
+        }
+        this.game.updateTeamHealth();
+
+        this.game.announceSuddenDeath();
     }
 
     selectNextKoala() {
@@ -143,7 +214,6 @@ export class TurnManager extends EventEmitter {
 
     nextTurn() {
         this.nextTeam();
-        this.selectNextKoala();
         this.startTurn();
     }
 
@@ -237,13 +307,16 @@ export class TurnManager extends EventEmitter {
         this.turnTimer -= dt;
 
         // Update UI
-        const timerEl = document.getElementById('turn-timer');
+        const timerEl = this.game.dom.elements.turnTimer;
         if (timerEl) {
             timerEl.textContent = Math.ceil(this.turnTimer);
 
             if (this.turnTimer <= 5 && !timerEl.classList.contains('low-time')) {
                 timerEl.classList.add('low-time');
-                globalAudioManager.playTheme('suddenDeath');
+                // Note: this is just the per-turn "last 5 seconds" warning. The visual
+                // low-time class plus the per-second beep (Game.playTimerTick) convey it.
+                // Do NOT switch the background theme here — doing so flipped the soundtrack
+                // between battle and sudden-death on every turn.
             }
         }
 
@@ -259,7 +332,7 @@ export class TurnManager extends EventEmitter {
         this.retreatTimer = this.retreatTime;
 
         // Update UI
-        const timerEl = document.getElementById('turn-timer');
+        const timerEl = this.game.dom.elements.turnTimer;
         if (timerEl) {
             timerEl.classList.add('retreat-mode');
             timerEl.textContent = Math.ceil(this.retreatTimer);
@@ -274,7 +347,7 @@ export class TurnManager extends EventEmitter {
         this.retreatTimer -= dt;
 
         // Update UI
-        const timerEl = document.getElementById('turn-timer');
+        const timerEl = this.game.dom.elements.turnTimer;
         if (timerEl) {
             timerEl.textContent = Math.ceil(this.retreatTimer);
         }

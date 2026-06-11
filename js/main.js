@@ -389,18 +389,7 @@ function setupMenuHandlers() {
         }
     });
 
-    // Mute toggle - registered ONCE here; registering per-game stacked
-    // listeners and made the button toggle multiple times per click
-    const muteBtn = document.getElementById('mute-toggle');
-    if (muteBtn) {
-        muteBtn.addEventListener('click', () => {
-            if (!game) return;
-            const isMuted = game.audioManager.toggleMute();
-            muteBtn.textContent = isMuted ? '🔇' : '🔊';
-            muteBtn.classList.toggle('muted', isMuted);
-            game.audioManager.playClick(); // Play click if just unmuted
-        });
-    }
+
 
     // Main menu
     btnMainMenu.addEventListener('click', () => {

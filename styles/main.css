@@ -717,6 +717,23 @@ body {
     transition: width 0.05s linear;
 }
 
+/* Locked-in (armed) state: power is committed and waiting for the fire click */
+#power-bar-container.locked #power-bar {
+    border-color: #ffd54a;
+    box-shadow: 0 0 14px rgba(255, 213, 74, 0.85);
+    animation: power-lock-pulse 0.9s ease-in-out infinite;
+}
+
+#power-bar-container.locked #power-fill {
+    background: linear-gradient(90deg, #ffb300, #ffd54a, #fff3c0);
+    transition: none;
+}
+
+@keyframes power-lock-pulse {
+    0%, 100% { box-shadow: 0 0 10px rgba(255, 213, 74, 0.6); }
+    50%      { box-shadow: 0 0 20px rgba(255, 213, 74, 1); }
+}
+
 /* Team Health */
 #team-health {
     position: fixed;

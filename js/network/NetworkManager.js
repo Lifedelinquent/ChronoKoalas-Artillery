@@ -174,6 +174,7 @@ export class NetworkManager extends EventEmitter {
             console.log('✅ Data channel open!');
             this.isConnected = true;
             this.connectionState = 'connected';
+            this.reconnectAttempts = 0; // Reset attempts on successful connection
 
             this.emit('connected', {
                 isHost: this.isHost,
@@ -424,12 +425,13 @@ export class NetworkManager extends EventEmitter {
     /**
      * Send movement update
      */
-    sendMove(x, y, facingLeft) {
+    sendMove(x, y, facingLeft, blowtorchDigging) {
         this.send({
             type: 'move',
             x,
             y,
             facingLeft,
+            blowtorchDigging,
             timestamp: Date.now()
         });
     }

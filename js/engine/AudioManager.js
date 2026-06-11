@@ -18,7 +18,7 @@ export class AudioManager {
         // Define audio tracks
         this.themes = {
             menu: 'menu_theme.mp3',
-            battle: 'battle_theme.mp3',
+            battle: '01. Worms - Armageddon - Original Mix.mp3', // Main in-game song
             suddenDeath: 'sudden_death.mp3',
             victory: 'victory_fanfare.mp3',
             defeat: 'defeat_theme.mp3'
@@ -108,7 +108,12 @@ export class AudioManager {
         // Pause current music
         if (this.music) {
             this.music.pause();
-            this.music.currentTime = 0; // Reset
+            // Only reset currentTime to 0 for non-looping/one-shot themes (victory/defeat)
+            // or when switching back to menu. This allows battle and suddenDeath themes
+            // to resume from where they were paused, preventing track restarts.
+            if (this.currentTheme === 'victory' || this.currentTheme === 'defeat' || themeName === 'menu') {
+                this.music.currentTime = 0; // Reset
+            }
         }
 
         // Set new music
@@ -127,6 +132,16 @@ export class AudioManager {
                     }
                 }, 10000);
             }
+        }
+    }
+
+    /**
+     * Reset a theme's playback time to 0
+     */
+    resetTheme(themeName) {
+        const audio = this.audioElements[themeName] || this.audioElements.fallback;
+        if (audio) {
+            audio.currentTime = 0;
         }
     }
 
@@ -832,6 +847,35 @@ export class AudioManager {
             gain.connect(this.masterGain);
             osc.start(start);
             osc.stop(start + 0.2);
+        });
+    }
+
+    /**
+     * Crisp two-tone "lock-on" confirmation played when the aim is locked in.
+     */
+    playAimLock() {
+        if (!this.isInitialized || this.isMuted) return;
+        this.resume();
+
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+
+        // Two quick rising blips — a satisfying targeting-lock tick
+        [880, 1320].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            osc.type = 'square';
+            osc.frequency.value = freq;
+
+            const gain = ctx.createGain();
+            const start = now + i * 0.05;
+            gain.gain.setValueAtTime(0.0001, start);
+            gain.gain.exponentialRampToValueAtTime(0.12, start + 0.01);
+            gain.gain.exponentialRampToValueAtTime(0.001, start + 0.07);
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start(start);
+            osc.stop(start + 0.08);
         });
     }
 

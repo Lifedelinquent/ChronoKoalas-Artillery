@@ -101,6 +101,13 @@ export class Game extends EventEmitter {
     async start() {
         // Initialize audio (requires user interaction)
         this.audioManager.init();
+        this.audioManager.resetTheme?.('battle');
+
+        // Reset per-match turn / sudden-death state so a rematch starts fresh
+        this.turnManager.suddenDeathActive = false;
+        this.turnManager.roundNumber = 1;
+        this.turnManager.lastTeamIndex = -1;
+        this.turnManager.turnTime = this.turnManager.defaultTurnTime;
 
         // Get game seed for multiplayer sync (or generate random for practice)
         const initialState = this.options.initialState;
@@ -174,10 +181,16 @@ export class Game extends EventEmitter {
      * Create a seeded random number generator for multiplayer sync
      */
     createSeededRandom(seed) {
-        let s = seed;
+        // mulberry32: fast, well-distributed PRNG with a full 32-bit state.
+        // Deterministic for a given seed so all multiplayer clients agree,
+        // and far less biased than the old Math.sin() approach.
+        let s = (Math.floor(seed) || 1) >>> 0;
         return () => {
-            s = Math.sin(s) * 10000;
-            return s - Math.floor(s);
+            s = (s + 0x6D2B79F5) >>> 0;
+            let t = s;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
         };
     }
 
@@ -248,7 +261,7 @@ export class Game extends EventEmitter {
         // STEP 1: Pre-scan the entire map for valid spawn points
         // This must happen AFTER the map is loaded (which it is, since start() awaits loadCustomMap)
         console.log('🗺️ Scanning map for valid spawn points...');
-        this.validSpawnPoints = this.terrain.getAllSpawnPoints();
+        this.validSpawnPoints = this.terrain.getAllSpawnPoints(this.getSpawnScanBounds());
         console.log(`✅ Found ${this.validSpawnPoints.length} valid spawn points on map`);
 
         // Track all spawned positions to avoid overlap
@@ -262,6 +275,28 @@ export class Game extends EventEmitter {
                 (customSpawns.team2 && customSpawns.team2.length > 0));
 
         console.log('🎯 Custom spawn markers:', hasCustomSpawns ? JSON.stringify(customSpawns) : 'None');
+
+        // Bias teams toward opposite sides of the map for fairer starts.
+        // Use the actual horizontal extent of standable terrain (custom maps may
+        // not fill the world width), then randomly assign each team a side using
+        // seeded RNG so all multiplayer clients agree. Only affects the random
+        // (markerless) spawn path — explicit markers always win.
+        const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
+        let midX = this.worldWidth / 2;
+        if (this.validSpawnPoints.length > 0) {
+            let minX = Infinity, maxX = -Infinity;
+            for (const p of this.validSpawnPoints) {
+                if (p.x < minX) minX = p.x;
+                if (p.x > maxX) maxX = p.x;
+            }
+            midX = (minX + maxX) / 2;
+        }
+        const team1OnLeft = rand() < 0.5;
+        const teamSides = [
+            team1OnLeft ? 'left' : 'right',
+            team1OnLeft ? 'right' : 'left'
+        ];
+        console.log(`⚔️ Team sides → ${teamConfigs[0].name}: ${teamSides[0]}, ${teamConfigs[1].name}: ${teamSides[1]} (midX=${Math.round(midX)})`);
 
         teamConfigs.forEach((config, teamIndex) => {
             const team = new Team(config.name, config.color);
@@ -286,14 +321,33 @@ export class Game extends EventEmitter {
                 }
                 // PRIORITY 2: No markers - use random valid spawn
                 else {
-                    pos = this.findRandomSpawnPosition(spawnedPositions, minSpawnDistance);
-                    console.log(`🐨 ${config.name} Koala ${i + 1}: Random spawn → (${pos?.x}, ${pos?.y})`);
+                    pos = this.findRandomSpawnPosition(spawnedPositions, minSpawnDistance, {
+                        preferredSide: teamSides[teamIndex],
+                        midX
+                    });
+                    console.log(`🐨 ${config.name} Koala ${i + 1}: Random spawn (${teamSides[teamIndex]}) → (${pos?.x}, ${pos?.y})`);
                 }
 
                 if (pos) {
-                    // BUGFIX: Snap to ground if close, to prevent falling through terrain on first frame
-                    const groundY = this.terrain.getGroundBelow(pos.x, pos.y);
-                    if (groundY < this.worldHeight && Math.abs(groundY - pos.y) < 100) {
+                    // Snap the koala onto the first solid ground BELOW the spawn
+                    // point so it never free-falls through lower levels on a
+                    // multi-level map. If the only ground below is underwater (or
+                    // there's none at all), the marker is over a gap/water — fall
+                    // back to the nearest scanned valid spawn point instead.
+                    const waterLevel = this.mapBounds?.waterLevel ?? (this.worldHeight - 60);
+                    let groundY = this.terrain.getGroundBelow(pos.x, pos.y);
+
+                    if (groundY >= waterLevel) {
+                        const nearest = this.findNearestValidSpawn(pos.x, pos.y, spawnedPositions);
+                        if (nearest) {
+                            console.log(`   ⚠️ Spawn over gap/water at (${pos.x}, ${pos.y}), relocating to (${nearest.x}, ${nearest.y})`);
+                            pos.x = nearest.x;
+                            pos.y = nearest.y;
+                            groundY = this.terrain.getGroundBelow(pos.x, pos.y);
+                        }
+                    }
+
+                    if (groundY < waterLevel) {
                         console.log(`   ✨ Snapping Koala to ground: ${pos.y} -> ${groundY - 15}`);
                         pos.y = groundY - 15; // Place feet on ground (-15 is half height)
                     }
@@ -346,6 +400,17 @@ export class Game extends EventEmitter {
         }
 
         this.spatialGrid.rebuild(entities);
+    }
+
+    /**
+     * Build the bounds passed to the terrain spawn scan so it respects the
+     * real map area (no dead zone above imported maps, no underwater surfaces).
+     */
+    getSpawnScanBounds() {
+        return {
+            topY: this.mapBounds?.topY || 0,
+            waterLevel: this.mapBounds?.waterLevel ?? (this.worldHeight - 60),
+        };
     }
 
     /**
@@ -455,14 +520,14 @@ export class Game extends EventEmitter {
      * Uses a pre-calculated list of every valid standing surface to ensure
      * that characters can spawn in caves, on islands, and in the top half of the map.
      */
-    findRandomSpawnPosition(existingPositions, minDistance) {
+    findRandomSpawnPosition(existingPositions, minDistance, options = {}) {
         // Helper: use seeded random if available (multiplayer sync)
         const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
 
         // 1. Get ALL potentially valid spawn points from the terrain engine
         // This scans the entire map once per game start
         if (!this.validSpawnPoints || this.validSpawnPoints.length === 0) {
-            this.validSpawnPoints = this.terrain.getAllSpawnPoints();
+            this.validSpawnPoints = this.terrain.getAllSpawnPoints(this.getSpawnScanBounds());
         }
 
         // If the map is completely empty or the scan failed, use a safety fallback
@@ -474,12 +539,32 @@ export class Game extends EventEmitter {
         // 2. Use all valid points found in the scan
         const safePoints = this.validSpawnPoints;
 
-        // 3. Shuffle the points for random selection (using seeded random for sync)
-        const shuffledPoints = [...(safePoints.length > 0 ? safePoints : this.validSpawnPoints)]
-            .sort(() => rand() - 0.5);
+        // 3. Shuffle the points for random selection (using seeded random for sync).
+        // Fisher-Yates produces an unbiased, deterministic permutation — unlike
+        // Array.sort with a random comparator, which is biased and unstable.
+        const shuffledPoints = [...(safePoints.length > 0 ? safePoints : this.validSpawnPoints)];
+        for (let i = shuffledPoints.length - 1; i > 0; i--) {
+            const j = Math.floor(rand() * (i + 1));
+            [shuffledPoints[i], shuffledPoints[j]] = [shuffledPoints[j], shuffledPoints[i]];
+        }
+
+        // 3b. Bias toward the team's side of the map: put preferred-side points
+        // first (still randomly ordered within the side), with the rest kept as
+        // fallback so we never fail to place a koala on cramped maps.
+        let orderedPoints = shuffledPoints;
+        if (options.preferredSide && options.midX !== undefined) {
+            const near = [], far = [];
+            for (const p of shuffledPoints) {
+                const onSide = options.preferredSide === 'left'
+                    ? p.x <= options.midX
+                    : p.x >= options.midX;
+                (onSide ? near : far).push(p);
+            }
+            orderedPoints = near.concat(far);
+        }
 
         // 4. Try to find a point that satisfies distance and Line-of-Sight requirements
-        for (const point of shuffledPoints) {
+        for (const point of orderedPoints) {
             let invalidSpot = false;
             for (const pos of existingPositions) {
                 const dist = Math.hypot(point.x - pos.x, point.y - pos.y);
@@ -508,7 +593,7 @@ export class Game extends EventEmitter {
 
         // 5. Relax requirements if no perfect spot found (ignore Line of Sight)
         console.log('Relaxing spawn requirements (ignoring Line-of-Sight)...');
-        for (const point of shuffledPoints) {
+        for (const point of orderedPoints) {
             let tooClose = false;
             for (const pos of existingPositions) {
                 if (Math.hypot(point.x - pos.x, point.y - pos.y) < 100) {
@@ -520,8 +605,8 @@ export class Game extends EventEmitter {
         }
 
         // 6. Hard fallback: Just pick any valid point from the list (using seeded random)
-        const randomIndex = Math.floor(rand() * shuffledPoints.length);
-        const randomPoint = shuffledPoints[randomIndex];
+        const randomIndex = Math.floor(rand() * orderedPoints.length);
+        const randomPoint = orderedPoints[randomIndex];
         return { ...randomPoint };
     }
 
@@ -759,6 +844,11 @@ export class Game extends EventEmitter {
             case 'firing':
                 this.updateTurnTimer(dt);
                 this.updateFiring(dt);
+                break;
+            case 'armed':
+                // Aim is locked in; player can still fine-tune aim before firing
+                this.updateTurnTimer(dt);
+                this.updateAiming(dt);
                 break;
             case 'blowtorch':
                 this.updateTurnTimer(dt);
@@ -1014,8 +1104,8 @@ export class Game extends EventEmitter {
             return;
         }
 
-        // Check if mouse button is held down to dig
-        const isDigging = this.inputManager.mouse.down;
+        // Check if mouse button is held down to dig (or synced dig state if passive client)
+        const isDigging = this.isMyTurn() ? this.inputManager.mouse.down : koala.blowtorchDigging;
         koala.blowtorchDigging = isDigging;
 
         // Only deplete meter when actively digging
@@ -1123,6 +1213,11 @@ export class Game extends EventEmitter {
             this.dom.elements.powerFill.style.width = '0%';
         }
 
+        // NETWORK SYNC: Send turn end/retreat to remote player
+        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+            this.sendTurnEnd();
+        }
+
         this.startRetreat();
     }
 
@@ -1158,8 +1253,9 @@ export class Game extends EventEmitter {
      * is force-ended, so the power bar doesn't stay stuck on screen
      */
     cleanupTurnInputState() {
-        // Cancel power charging
+        // Cancel power charging / locked aim
         this.inputManager.isCharging = false;
+        this.inputManager.lockedPower = null;
         this.weaponManager.isCharging = false;
         this.weaponManager.power = 0;
 
@@ -1173,6 +1269,7 @@ export class Game extends EventEmitter {
         // Hide power bar
         if (this.dom.elements.powerBarContainer) {
             this.dom.elements.powerBarContainer.classList.add('hidden');
+            this.dom.elements.powerBarContainer.classList.remove('locked');
         }
         if (this.dom.elements.powerFill) {
             this.dom.elements.powerFill.style.width = '0%';
@@ -1800,6 +1897,43 @@ export class Game extends EventEmitter {
     /**
      * Create floating text (for damage numbers, healing, etc.)
      */
+    /**
+     * Flash a big "SUDDEN DEATH" banner over the battlefield. Built and animated
+     * entirely in JS (Web Animations API) so it needs no extra HTML/CSS, and
+     * auto-removes itself so rematches don't stack banners.
+     */
+    announceSuddenDeath() {
+        const screen = document.getElementById('game-screen');
+        if (!screen) return;
+
+        const banner = document.createElement('div');
+        banner.textContent = '💀 SUDDEN DEATH 💀';
+        banner.style.cssText = [
+            'position:absolute',
+            'top:38%',
+            'left:50%',
+            'transform:translate(-50%,-50%)',
+            'font-size:64px',
+            'font-weight:900',
+            'color:#ff3b30',
+            'text-shadow:0 0 20px rgba(255,0,0,0.8),0 4px 8px rgba(0,0,0,0.6)',
+            'letter-spacing:4px',
+            'white-space:nowrap',
+            'pointer-events:none',
+            'z-index:50'
+        ].join(';');
+        screen.appendChild(banner);
+
+        banner.animate([
+            { opacity: 0, transform: 'translate(-50%,-50%) scale(0.6)' },
+            { opacity: 1, transform: 'translate(-50%,-50%) scale(1.15)', offset: 0.2 },
+            { opacity: 1, transform: 'translate(-50%,-50%) scale(1)', offset: 0.8 },
+            { opacity: 0, transform: 'translate(-50%,-50%) scale(1)' }
+        ], { duration: 3000, easing: 'ease-out' });
+
+        setTimeout(() => banner.remove(), 3000);
+    }
+
     createFloatingText(x, y, text, color = '#fff') {
         this.addParticle({
             type: 'floatingText',
@@ -1912,6 +2046,11 @@ export class Game extends EventEmitter {
                 weapon.ammo--;
                 this.updateWeaponUI();
             }
+
+            // NETWORK SYNC: Send swing to opponent
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
             return;
         }
 
@@ -1923,6 +2062,11 @@ export class Game extends EventEmitter {
             if (weapon.ammo !== Infinity) {
                 weapon.ammo--;
                 this.updateWeaponUI();
+            }
+
+            // NETWORK SYNC: Send blowtorch activation to opponent
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
             }
             return;
         }
@@ -2761,6 +2905,9 @@ export class Game extends EventEmitter {
         koala.x = data.x;
         koala.y = data.y;
         koala.facingLeft = data.facingLeft;
+        if (data.blowtorchDigging !== undefined) {
+            koala.blowtorchDigging = data.blowtorchDigging;
+        }
     }
 
     /**
@@ -2817,6 +2964,11 @@ export class Game extends EventEmitter {
             return;
         }
 
+        if (this.phase === 'blowtorch') {
+            this.endBlowtorch();
+            return;
+        }
+
         // Sync team/koala index if provided
         if (data.nextTeam !== undefined) {
             this.currentTeamIndex = data.nextTeam;
@@ -2829,90 +2981,7 @@ export class Game extends EventEmitter {
         this.startTurn();
     }
 
-    /**
-     * Handle full state sync from remote player
-     */
-    handleRemoteStateSync(data) {
-        console.log('🔄 Remote state sync:', data);
-
-        if (this.isMyTurn() && !this.isPractice) {
-            console.warn('Blocked remote state sync during local turn');
-            return;
-        }
-
-        const state = data.state;
-        if (!state) return;
-
-        // Sync turn manager state
-        this.currentTeamIndex = state.currentTeamIndex;
-        this.currentKoalaIndex = state.currentKoalaIndex;
-        this.turnTimer = state.turnTimer;
-        this.phase = state.phase;
-        this.wind = state.wind;
-
-        // Sync all koalas
-        if (state.teams) {
-            state.teams.forEach(teamData => {
-                teamData.koalas.forEach(koalaData => {
-                    const koala = this.findKoalaByName(koalaData.name);
-                    if (koala) {
-                        koala.x = koalaData.x;
-                        koala.y = koalaData.y;
-                        koala.vx = koalaData.vx;
-                        koala.vy = koalaData.vy;
-                        koala.health = koalaData.health;
-
-                        if (koalaData.isAlive !== koala.isAlive) {
-                            if (koalaData.isAlive) {
-                                // Resurrect? (unlikely in normal gameplay but good for sync)
-                                koala.isAlive = true;
-                            } else {
-                                koala.die();
-                            }
-                        }
-                    }
-                });
-            });
-        }
-
-        // Add visual indicator of sync
-        if (this.turnManager) {
-            this.updateTurnIndicator();
-        }
-    }
-
-    /**
-     * Send full state sync to network
-     */
-    sendFullStateSync() {
-        if (!this.networkManager || this.isPractice) return;
-
-        const state = {
-            currentTeamIndex: this.currentTeamIndex,
-            currentKoalaIndex: this.currentKoalaIndex,
-            turnTimer: this.turnTimer,
-            phase: this.phase,
-            wind: this.wind,
-            teams: this.teams.map(team => ({
-                color: team.color,
-                koalas: team.koalas.map(k => ({
-                    name: k.name,
-                    x: k.x,
-                    y: k.y,
-                    vx: k.vx,
-                    vy: k.vy,
-                    health: k.health,
-                    isAlive: k.isAlive
-                }))
-            }))
-        };
-
-        this.networkManager.send({
-            type: 'stateSync',
-            state: state,
-            timestamp: Date.now()
-        });
-    }
+    // (Obsolete duplicate declarations of handleRemoteStateSync and sendFullStateSync removed)
 
     /**
      * Send local fire action to network

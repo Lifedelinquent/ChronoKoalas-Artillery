@@ -39,10 +39,7 @@ export class Projectile {
         this.triggerDelay = options.weapon?.triggerDelay || 3.0;
 
         // Dud state (for mines)
-        this.isDud = false;
-        if (options.weapon?.dudChance && Math.random() < options.weapon.dudChance) {
-            this.isDud = true;
-        }
+        this.isDud = options.isDud ?? false;
 
         // Explodes on settle (for holy hand grenade)
         this.explodesOnSettle = options.weapon?.explodesOnSettle || false;

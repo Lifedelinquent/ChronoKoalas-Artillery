@@ -250,9 +250,29 @@ export class LootManager {
 
                 // Check if landed
                 if (crate.y >= crate.targetY) {
-                    crate.y = crate.targetY;
-                    crate.falling = false;
+                    // Check if ground actually exists under targetY
+                    if (this.game.terrain.checkCollision(crate.x, crate.targetY + 20)) {
+                        crate.y = crate.targetY;
+                        crate.falling = false;
+                        crate.parachuteOpen = false;
+                    } else {
+                        // Ground destroyed! Recalculate next ground level
+                        const groundY = this.game.terrain.getGroundBelow(crate.x, crate.y);
+                        crate.targetY = groundY - 20;
+                        crate.parachuteOpen = false;
+                    }
+                }
+            } else {
+                // Check if terrain below was destroyed
+                if (!this.game.terrain.checkCollision(crate.x, crate.y + 20) &&
+                    !this.game.terrain.checkCollision(crate.x, crate.y + 25)) {
+                    
+                    crate.falling = true;
+                    crate.fallSpeed = 0;
                     crate.parachuteOpen = false;
+                    
+                    const groundY = this.game.terrain.getGroundBelow(crate.x, crate.y);
+                    crate.targetY = groundY - 20;
                 }
             }
 

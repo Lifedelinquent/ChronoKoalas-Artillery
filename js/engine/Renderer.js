@@ -559,7 +559,8 @@ export class Renderer {
      * Draw aiming indicator
      */
     drawAimingIndicator() {
-        if (this.game.phase !== 'aiming' && this.game.phase !== 'firing') return;
+        const phase = this.game.phase;
+        if (phase !== 'aiming' && phase !== 'firing' && phase !== 'armed') return;
 
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
@@ -576,16 +577,20 @@ export class Renderer {
         // Regular aiming indicator
         // aimAngle is now the world angle directly (full 360)
         const worldAngle = koala.aimAngle;
+        const armed = phase === 'armed';
 
         const length = 50;
-
         const startX = koala.x;
         const startY = koala.y - 10;
         const endX = startX + Math.cos(worldAngle) * length;
         const endY = startY + Math.sin(worldAngle) * length;
 
-        // Dotted line
-        ctx.strokeStyle = koala.team.color;
+        // When armed, the reticle glows gold and pulses to signal "ready to fire"
+        const reticleColor = armed ? '#ffd54a' : koala.team.color;
+
+        // Dotted aim line from koala
+        ctx.save();
+        ctx.strokeStyle = reticleColor;
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
         ctx.beginPath();
@@ -594,26 +599,40 @@ export class Renderer {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Crosshair at end
-        ctx.fillStyle = koala.team.color;
+        // Crosshair at end — armed gets a pulsing glowing ring
+        if (armed) {
+            const t = performance.now() / 1000;
+            const pulse = 6 + Math.sin(t * 6) * 2;
+            ctx.shadowColor = reticleColor;
+            ctx.shadowBlur = 12;
+            ctx.strokeStyle = reticleColor;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(endX, endY, pulse, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.fillStyle = reticleColor;
         ctx.beginPath();
-        ctx.arc(endX, endY, 5, 0, Math.PI * 2);
+        ctx.arc(endX, endY, 4, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
 
-        // Trajectory preview while charging power
-        if (this.game.phase === 'firing' && weapon && weapon.speed > 0 &&
+        // Trajectory preview while charging (live) or armed (locked-in)
+        if ((phase === 'firing' || armed) && weapon && weapon.speed > 0 &&
             !weapon.targetted && weapon.type !== 'melee' && weapon.type !== 'blowtorch') {
-            this.drawTrajectoryPreview(koala, weapon, worldAngle);
+            this.drawTrajectoryPreview(koala, weapon, worldAngle, armed);
         }
     }
 
     /**
-     * Draw a predicted trajectory arc while the power bar is charging.
-     * Simulates the same physics the projectile will use (gravity + wind).
+     * Draw a predicted trajectory arc while charging or armed.
+     * Simulates the same physics the projectile will use (gravity + wind),
+     * shows flowing dots along the path, and marks the predicted impact point.
      */
-    drawTrajectoryPreview(koala, weapon, angle) {
+    drawTrajectoryPreview(koala, weapon, angle, armed) {
         const ctx = this.ctx;
         const wm = this.game.weaponManager;
+        // While armed the power is locked; renderer still reads it from wm.power
         const power = Math.max(0.2, wm.power / wm.maxPower);
         const speed = weapon.speed * power;
 
@@ -626,33 +645,120 @@ export class Renderer {
         const gravity = this.game.physics.gravity * (weapon.gravity ?? 1);
         const windForce = (weapon.affectedByWind !== false) ? this.game.wind * 100 : 0;
 
-        const step = 1 / 30;
-        const maxSteps = 60; // ~2 seconds of flight preview
+        const step = 1 / 60;
+        const maxSteps = 240; // ~4 seconds of flight, but usually cut short by terrain
 
-        ctx.save();
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-
+        // Collect the path so we can render flowing dots + an impact marker
+        const points = [];
+        let impactX = null, impactY = null;
         for (let i = 0; i < maxSteps; i++) {
             vy += gravity * step;
             vx += windForce * step;
             x += vx * step;
             y += vy * step;
 
-            // Stop the preview at terrain
-            if (this.game.terrain.checkCollision(x, y)) break;
-            if (y > this.game.worldHeight) break;
+            if (this.game.terrain.checkCollision(x, y)) { impactX = x; impactY = y; break; }
+            if (y > this.game.worldHeight) { impactX = x; impactY = y; break; }
+            if (x < 0 || x > this.game.worldWidth) break;
 
-            // Draw every other step as a fading dot
-            if (i % 2 === 0) {
-                const alpha = 0.8 * (1 - i / maxSteps);
-                ctx.globalAlpha = alpha;
-                ctx.beginPath();
-                ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-                ctx.fill();
+            points.push(x, y);
+        }
+
+        ctx.save();
+
+        // Brighter, fuller arc once the shot is locked in
+        const baseColor = armed ? '255, 213, 74' : '255, 255, 255';
+        const dotSpacing = 5;        // draw a dot every N samples
+        const flow = Math.floor(performance.now() / 45); // marching offset for "flow"
+
+        for (let p = 0; p < points.length / 2; p++) {
+            if ((p + flow) % dotSpacing !== 0) continue;
+            const px = points[p * 2];
+            const py = points[p * 2 + 1];
+            const progress = p / (points.length / 2);
+            const alpha = (armed ? 0.95 : 0.8) * (1 - progress * 0.6);
+            const radius = armed ? 3 : 2.5;
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = `rgba(${baseColor}, 1)`;
+            ctx.beginPath();
+            ctx.arc(px, py, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Predicted impact marker
+        if (impactX != null) {
+            const t = performance.now() / 1000;
+            ctx.globalAlpha = 1;
+            ctx.strokeStyle = armed ? '#ff4d4d' : 'rgba(255,255,255,0.7)';
+            ctx.lineWidth = 2;
+            if (armed) {
+                ctx.shadowColor = '#ff4d4d';
+                ctx.shadowBlur = 10;
             }
+            const ring = (armed ? 9 : 6) + Math.sin(t * 6) * (armed ? 2.5 : 1.5);
+            ctx.beginPath();
+            ctx.arc(impactX, impactY, ring, 0, Math.PI * 2);
+            ctx.stroke();
+            // Center cross
+            ctx.beginPath();
+            ctx.moveTo(impactX - ring, impactY);
+            ctx.lineTo(impactX + ring, impactY);
+            ctx.moveTo(impactX, impactY - ring);
+            ctx.lineTo(impactX, impactY + ring);
+            ctx.stroke();
         }
 
         ctx.restore();
+
+        // Floating "CLICK TO FIRE" prompt above the reticle when armed
+        if (armed) {
+            this.drawFirePrompt(koala, angle);
+        }
+    }
+
+    /**
+     * Floating, pulsing "CLICK TO FIRE" prompt shown while a shot is armed.
+     */
+    drawFirePrompt(koala, angle) {
+        const ctx = this.ctx;
+        const t = performance.now() / 1000;
+        const alpha = 0.7 + Math.sin(t * 5) * 0.3;
+
+        const px = koala.x;
+        const py = koala.y - 55;
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = 'bold 13px Outfit, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const text = 'CLICK TO FIRE';
+        const w = ctx.measureText(text).width + 16;
+
+        // Pill background
+        ctx.globalAlpha = alpha * 0.85;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        this._roundRect(ctx, px - w / 2, py - 11, w, 22, 11);
+        ctx.fill();
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#ffd54a';
+        ctx.fillText(text, px, py);
+        ctx.restore();
+    }
+
+    /**
+     * Small helper: trace a rounded rectangle path.
+     */
+    _roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
     }
 
     /**

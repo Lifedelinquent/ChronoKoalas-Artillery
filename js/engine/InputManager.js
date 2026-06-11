@@ -10,6 +10,7 @@ export class InputManager {
         this.keys = {};
         this.mouse = { x: 0, y: 0, down: false, rightDown: false, lastMoveTime: 0 };
         this.isCharging = false;
+        this.lockedPower = null; // Power captured when aim is locked (armed phase)
         this.lastActivityTime = 0;
         this.isWeaponBarHidden = false;
 
@@ -137,6 +138,12 @@ export class InputManager {
         if (e.code === 'Space') {
             e.preventDefault(); // Prevent spacebar from triggering focused buttons
 
+            // If aim is locked (armed), space confirms the shot
+            if (this.game.phase === 'armed') {
+                this.confirmFire();
+                return;
+            }
+
             if (this.game.phase === 'aiming') {
                 const weapon = this.game.weaponManager.currentWeapon;
                 // Instant activation for melee and blowtorch
@@ -172,9 +179,9 @@ export class InputManager {
     handleKeyUp(e) {
         this.keys[e.code] = false;
 
-        // Release space to fire
+        // Release space to lock in the shot (then press again to fire)
         if (e.code === 'Space' && this.isCharging) {
-            this.releaseCharge();
+            this.lockAim();
         }
     }
 
@@ -189,7 +196,7 @@ export class InputManager {
         this.mouse.y = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
 
         // Update aim angle based on mouse position
-        if (this.game.phase === 'aiming' || this.game.phase === 'firing') {
+        if (this.game.phase === 'aiming' || this.game.phase === 'firing' || this.game.phase === 'armed') {
             this.updateAimFromMouse();
         }
 
@@ -224,6 +231,12 @@ export class InputManager {
                 return;
             }
 
+            // Aim is locked and waiting for confirmation — this click fires
+            if (this.game.phase === 'armed') {
+                this.confirmFire();
+                return;
+            }
+
             if (this.game.phase === 'aiming') {
                 const weapon = this.game.weaponManager.currentWeapon;
 
@@ -251,8 +264,8 @@ export class InputManager {
         } else if (e.button === 2) { // Right click
             this.mouse.rightDown = true;
 
-            // Cancel charging if currently charging (only if it's our turn)
-            if (this.isCharging && this.game.isMyTurn()) {
+            // Cancel a charging or locked-in shot so the player can re-aim
+            if ((this.game.phase === 'firing' || this.game.phase === 'armed') && this.game.isMyTurn()) {
                 this.cancelCharge();
             }
         }
@@ -265,8 +278,10 @@ export class InputManager {
         if (e.button === 0) {
             this.mouse.down = false;
 
+            // Releasing the button locks in the power and shows the committed
+            // trajectory; the player clicks again to actually fire.
             if (this.isCharging) {
-                this.releaseCharge();
+                this.lockAim();
             }
         } else if (e.button === 2) {
             this.mouse.rightDown = false;
@@ -308,7 +323,7 @@ export class InputManager {
      * Update zoom level display
      */
     updateZoomDisplay() {
-        const zoomEl = document.getElementById('zoom-level');
+        const zoomEl = this.game.dom.elements.zoomLevel;
         if (zoomEl) {
             const percentage = Math.round(this.game.camera.zoom * 100);
             zoomEl.textContent = percentage + '%';
@@ -360,6 +375,14 @@ export class InputManager {
      */
     update(dt) {
         this.updateWeaponBarVisibility(dt);
+
+        // Premium touch: show a crosshair cursor while we can aim/fire
+        const canAim = this.game.isMyTurn() &&
+            (this.game.phase === 'aiming' || this.game.phase === 'firing' || this.game.phase === 'armed');
+        const desiredCursor = canAim ? 'crosshair' : 'default';
+        if (this.game.canvas.style.cursor !== desiredCursor) {
+            this.game.canvas.style.cursor = desiredCursor;
+        }
     }
 
     /**
@@ -436,13 +459,23 @@ export class InputManager {
             koala.facingLeft = Math.abs(koala.aimAngle) > Math.PI / 2;
         }
 
+        // Blowtorch movement sync
+        if (koala.blowtorchActive && koala.blowtorchDigging) {
+            positionChanged = true;
+        }
+
         // NETWORK SYNC: Send position and aim updates to opponent (throttled)
         if (this.game.networkManager && !this.game.isPractice) {
             const now = performance.now();
 
             // Throttle position updates to 20 times per second (every 50ms)
             if (positionChanged && (!this.lastMoveSync || now - this.lastMoveSync > 50)) {
-                this.game.networkManager.sendMove(koala.x, koala.y, koala.facingLeft);
+                this.game.networkManager.sendMove(
+                    koala.x, 
+                    koala.y, 
+                    koala.facingLeft, 
+                    koala.blowtorchActive ? this.mouse.down : undefined
+                );
                 this.lastMoveSync = now;
             }
 
@@ -523,47 +556,89 @@ export class InputManager {
         this.game.weaponManager.startCharge();
 
         // Show power bar
-        document.getElementById('power-bar-container').classList.remove('hidden');
+        const powerBarContainer = this.game.dom.elements.powerBarContainer;
+        if (powerBarContainer) {
+            powerBarContainer.classList.remove('hidden');
+        }
     }
 
     /**
-     * Release charge and fire
+     * Lock in the current power and enter the "armed" phase. The trajectory
+     * stays on screen and the player can keep fine-tuning the aim with the
+     * mouse before committing with a second click.
      */
-    releaseCharge() {
+    lockAim() {
+        if (!this.isCharging) return;
         this.isCharging = false;
+
+        const wm = this.game.weaponManager;
+        // Capture the charged power (0-1) before it gets reset anywhere
+        this.lockedPower = wm.power / wm.maxPower;
+        wm.isCharging = false;
+
+        this.game.phase = 'armed';
+
+        // Premium feedback: a crisp "lock-on" confirmation tone + bar glow
+        this.game.audioManager.playAimLock();
+
+        const powerBarContainer = this.game.dom.elements.powerBarContainer;
+        if (powerBarContainer) {
+            powerBarContainer.classList.remove('hidden');
+            powerBarContainer.classList.add('locked');
+        }
+    }
+
+    /**
+     * Commit the locked-in shot and actually fire.
+     */
+    confirmFire() {
+        if (this.game.phase !== 'armed') return;
 
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
 
-        const power = this.game.weaponManager.getPower();
+        const power = (this.lockedPower != null)
+            ? this.lockedPower
+            : this.game.weaponManager.power / this.game.weaponManager.maxPower;
+        this.lockedPower = null;
 
-        // aimAngle is now the world angle directly (full 360)
+        // aimAngle is the world angle directly (full 360)
         console.log('Firing - angle:', koala.aimAngle.toFixed(2), 'radians,',
-            (koala.aimAngle * 180 / Math.PI).toFixed(1), 'degrees');
+            (koala.aimAngle * 180 / Math.PI).toFixed(1), 'degrees, power:', power.toFixed(2));
 
+        this._hidePowerBar();
         this.game.fireWeapon(koala.aimAngle, power);
-
-        // Hide power bar
-        document.getElementById('power-bar-container').classList.add('hidden');
-        document.getElementById('power-fill').style.width = '0%';
     }
 
     /**
-     * Cancel charging without firing
+     * Cancel a charging or locked shot without firing, returning to aiming.
      */
     cancelCharge() {
-        if (!this.isCharging) return;
+        if (this.game.phase !== 'firing' && this.game.phase !== 'armed') return;
 
         this.isCharging = false;
+        this.lockedPower = null;
         this.game.phase = 'aiming';
         this.game.weaponManager.power = 0;
         this.game.weaponManager.isCharging = false;
 
-        // Hide power bar
-        document.getElementById('power-bar-container').classList.add('hidden');
-        document.getElementById('power-fill').style.width = '0%';
+        this._hidePowerBar();
+        this.game.audioManager.playClick();
 
-        console.log('🚫 Charge cancelled');
+        console.log('🚫 Shot cancelled — re-aim');
+    }
+
+    /**
+     * Hide and reset the power bar UI (shared by fire/cancel paths).
+     */
+    _hidePowerBar() {
+        const powerBarContainer = this.game.dom.elements.powerBarContainer;
+        const powerFill = this.game.dom.elements.powerFill;
+        if (powerBarContainer) {
+            powerBarContainer.classList.add('hidden');
+            powerBarContainer.classList.remove('locked');
+        }
+        if (powerFill) powerFill.style.width = '0%';
     }
 
     /**

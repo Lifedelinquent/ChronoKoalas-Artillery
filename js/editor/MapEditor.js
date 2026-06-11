@@ -100,6 +100,7 @@ export class MapEditor {
         this.handleMouseUp = this.handleMouseUp.bind(this);
         this.handleWheel = this.handleWheel.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
+        this.handleResize = this.handleResize.bind(this);
         this.render = this.render.bind(this);
     }
 
@@ -109,7 +110,7 @@ export class MapEditor {
     init() {
         // Setup canvas size
         this.handleResize();
-        window.addEventListener('resize', () => this.handleResize());
+        window.addEventListener('resize', this.handleResize);
 
         // Mouse events
         this.canvas.addEventListener('mousemove', this.handleMouseMove);
@@ -1212,5 +1213,6 @@ export class MapEditor {
         this.canvas.removeEventListener('mouseup', this.handleMouseUp);
         this.canvas.removeEventListener('wheel', this.handleWheel);
         window.removeEventListener('keydown', this.handleKeyDown);
+        window.removeEventListener('resize', this.handleResize);
     }
 }

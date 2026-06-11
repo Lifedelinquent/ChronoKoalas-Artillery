@@ -305,7 +305,6 @@ export class WeaponManager {
             projectile.startX = undefined;
             projectile.startY = undefined;
         } else {
-            // Pool is empty, create new projectile
             projectile = new Projectile({
                 x,
                 y,
@@ -319,7 +318,8 @@ export class WeaponManager {
                 affectedByWind: weapon.affectedByWind !== false,
                 bounces: weapon.bounces || false,
                 bounciness: weapon.bounciness || 0.5,
-                triggeredByProximity: weapon.triggeredByProximity || false
+                triggeredByProximity: weapon.triggeredByProximity || false,
+                isDud: isDud
             });
             projectile.isDud = isDud;
         }

@@ -160,9 +160,21 @@ export class Renderer {
         this.drawSky();
 
         // Apply camera transform
+        // IMPORTANT: scale THEN translate so screen = (world - camera) * zoom,
+        // matching the input mapping (world = screen / zoom + camera)
         ctx.save();
-        ctx.translate(-camera.x, -camera.y);
+
+        // Screen shake offset (decays in Game.updateCamera)
+        let shakeX = 0, shakeY = 0;
+        const shake = this.game.camera.shake;
+        if (shake && shake.time > 0) {
+            const falloff = shake.time / shake.duration;
+            shakeX = (Math.random() - 0.5) * 2 * shake.intensity * falloff;
+            shakeY = (Math.random() - 0.5) * 2 * shake.intensity * falloff;
+        }
+
         ctx.scale(camera.zoom, camera.zoom);
+        ctx.translate(-camera.x + shakeX, -camera.y + shakeY);
 
         // Draw clouds (parallax)
         this.drawClouds();
@@ -587,6 +599,60 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(endX, endY, 5, 0, Math.PI * 2);
         ctx.fill();
+
+        // Trajectory preview while charging power
+        if (this.game.phase === 'firing' && weapon && weapon.speed > 0 &&
+            !weapon.targetted && weapon.type !== 'melee' && weapon.type !== 'blowtorch') {
+            this.drawTrajectoryPreview(koala, weapon, worldAngle);
+        }
+    }
+
+    /**
+     * Draw a predicted trajectory arc while the power bar is charging.
+     * Simulates the same physics the projectile will use (gravity + wind).
+     */
+    drawTrajectoryPreview(koala, weapon, angle) {
+        const ctx = this.ctx;
+        const wm = this.game.weaponManager;
+        const power = Math.max(0.2, wm.power / wm.maxPower);
+        const speed = weapon.speed * power;
+
+        const spawnOffset = 30;
+        let x = koala.x + Math.cos(angle) * spawnOffset;
+        let y = (koala.y - 10) + Math.sin(angle) * spawnOffset;
+        let vx = Math.cos(angle) * speed;
+        let vy = Math.sin(angle) * speed;
+
+        const gravity = this.game.physics.gravity * (weapon.gravity ?? 1);
+        const windForce = (weapon.affectedByWind !== false) ? this.game.wind * 100 : 0;
+
+        const step = 1 / 30;
+        const maxSteps = 60; // ~2 seconds of flight preview
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+
+        for (let i = 0; i < maxSteps; i++) {
+            vy += gravity * step;
+            vx += windForce * step;
+            x += vx * step;
+            y += vy * step;
+
+            // Stop the preview at terrain
+            if (this.game.terrain.checkCollision(x, y)) break;
+            if (y > this.game.worldHeight) break;
+
+            // Draw every other step as a fading dot
+            if (i % 2 === 0) {
+                const alpha = 0.8 * (1 - i / maxSteps);
+                ctx.globalAlpha = alpha;
+                ctx.beginPath();
+                ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        ctx.restore();
     }
 
     /**
@@ -1135,6 +1201,26 @@ export class Renderer {
                 ctx.fillStyle = p.color;
                 ctx.beginPath();
                 ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            } else if (p.type === 'smoke') {
+                const progress = p.time / p.lifetime;
+                const alpha = (1 - progress) * 0.6;
+                const size = p.size * (1 + progress); // Expand as it dissipates
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = p.color || '#888';
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            } else if (p.type === 'splash') {
+                const alpha = 1 - (p.time / p.lifetime);
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.fillStyle = p.color || 'rgba(120, 190, 255, 0.9)';
+                ctx.beginPath();
+                ctx.ellipse(p.x, p.y, p.size, p.size * 1.4, 0, 0, Math.PI * 2);
                 ctx.fill();
                 ctx.restore();
             }

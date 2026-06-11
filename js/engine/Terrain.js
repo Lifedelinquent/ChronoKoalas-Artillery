@@ -47,7 +47,7 @@ export class Terrain {
      * Get a random number (uses seeded random if available)
      */
     random() {
-        return this._seededRandom ? this._seededRandom() : this.random();
+        return this._seededRandom ? this._seededRandom() : Math.random();
     }
 
     /**

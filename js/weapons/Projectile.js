@@ -13,7 +13,8 @@ export class Projectile {
         this.weapon = options.weapon;
 
         this.rotation = Math.atan2(this.vy, this.vx);
-        this.gravityMultiplier = options.gravityMultiplier || 1;
+        // Use ?? so an explicit gravityMultiplier of 0 is respected (shotgun pellets, rope)
+        this.gravityMultiplier = options.gravityMultiplier ?? 1;
         this.affectedByWind = options.affectedByWind !== false;
 
         // Bouncing
@@ -48,12 +49,14 @@ export class Projectile {
         this.settleVelocityThreshold = options.weapon?.settleVelocityThreshold || 100;
         this.settleTime = 0; // Time spent below threshold
         this.settleRequiredTime = 0.3; // Must be slow for 0.3 seconds
+        this.hasTouchedTerrain = false; // Settle check only counts after first bounce
     }
 
     /**
      * Called when projectile first hits terrain - starts the timer
      */
     onTerrainHit() {
+        this.hasTouchedTerrain = true;
         if (!this.timerStarted && this.timer !== null) {
             this.timerStarted = true;
             this.timeOnGround = 0;
@@ -65,8 +68,9 @@ export class Projectile {
      */
     update(dt, wind) {
         // Handle settle-based explosion (Holy Hand Grenade)
-        // Check velocity ALWAYS, not just when stationary
-        if (this.explodesOnSettle) {
+        // Only after touching terrain - otherwise a slow apex on a vertical
+        // throw would falsely trigger a mid-air explosion
+        if (this.explodesOnSettle && (this.hasTouchedTerrain || this.stationary)) {
             const speed = Math.hypot(this.vx, this.vy);
             if (speed < this.settleVelocityThreshold) {
                 this.settleTime += dt;
@@ -87,6 +91,9 @@ export class Projectile {
                     // Dud doesn't explode, just returns special state
                     if (!this.dudActivated) {
                         this.dudActivated = true;
+                        // Clear triggered state so the dud no longer blocks
+                        // the projectile-phase -> retreat transition
+                        this.isTriggered = false;
                         return 'dud'; // Signal for dud effect
                     }
                     return false; // Dud stays there

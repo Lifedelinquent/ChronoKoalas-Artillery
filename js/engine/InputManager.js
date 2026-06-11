@@ -14,7 +14,7 @@ export class InputManager {
         this.isWeaponBarHidden = false;
 
         // Movement settings
-        this.moveSpeed = 12;
+        this.moveSpeed = 45; // px/s - was 12, which felt unresponsively slow
         this.aimSpeed = 2;
 
         // Bind event handlers
@@ -36,15 +36,18 @@ export class InputManager {
         // Track window focus to prevent accidental firing
         this.windowFocused = true;
         this.focusTimeout = null;
-        window.addEventListener('blur', () => {
+        this.handleBlur = () => {
             this.windowFocused = false;
-        });
-        window.addEventListener('focus', () => {
+        };
+        this.handleFocus = () => {
             // Brief delay before accepting clicks after refocus
+            clearTimeout(this.focusTimeout);
             this.focusTimeout = setTimeout(() => {
                 this.windowFocused = true;
             }, 200);
-        });
+        };
+        window.addEventListener('blur', this.handleBlur);
+        window.addEventListener('focus', this.handleFocus);
 
         // Weapon selection
         this.setupWeaponSelection();
@@ -276,10 +279,24 @@ export class InputManager {
     handleWheel(e) {
         const zoomSpeed = 0.1;
         const direction = e.deltaY > 0 ? -1 : 1;
+        const camera = this.game.camera;
 
-        this.game.camera.zoom = Math.max(0.5, Math.min(2,
-            this.game.camera.zoom + direction * zoomSpeed
-        ));
+        const oldZoom = camera.zoom;
+        camera.zoom = Math.max(0.5, Math.min(2, camera.zoom + direction * zoomSpeed));
+
+        // Zoom toward the cursor so the point under the mouse stays put
+        if (camera.zoom !== oldZoom) {
+            const rect = this.game.canvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const worldX = sx / oldZoom + camera.x;
+            const worldY = sy / oldZoom + camera.y;
+
+            camera.x = worldX - sx / camera.zoom;
+            camera.y = worldY - sy / camera.zoom;
+            camera.targetX = camera.x;
+            camera.targetY = camera.y;
+        }
 
         // Update zoom display
         this.updateZoomDisplay();
@@ -607,9 +624,13 @@ export class InputManager {
     destroy() {
         window.removeEventListener('keydown', this.handleKeyDown);
         window.removeEventListener('keyup', this.handleKeyUp);
+        window.removeEventListener('blur', this.handleBlur);
+        window.removeEventListener('focus', this.handleFocus);
+        clearTimeout(this.focusTimeout);
         this.game.canvas.removeEventListener('mousemove', this.handleMouseMove);
         this.game.canvas.removeEventListener('mousedown', this.handleMouseDown);
         this.game.canvas.removeEventListener('mouseup', this.handleMouseUp);
+        this.game.canvas.removeEventListener('wheel', this.handleWheel);
         if (this.weaponBar && this.handleWeaponClick) {
             this.weaponBar.removeEventListener('click', this.handleWeaponClick);
         }

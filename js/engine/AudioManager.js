@@ -764,6 +764,78 @@ export class AudioManager {
     }
 
     /**
+     * Play water splash sound
+     */
+    playSplash() {
+        if (!this.isInitialized || this.isMuted) return;
+        this.resume();
+
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+
+        // Filtered noise burst - "plunk" into water
+        const noise = this._createNoise(0.4);
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.setValueAtTime(1200, now);
+        filter.frequency.exponentialRampToValueAtTime(300, now + 0.35);
+
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.35, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+
+        noise.connect(filter);
+        filter.connect(gain);
+        gain.connect(this.masterGain);
+        noise.start(now);
+        noise.stop(now + 0.4);
+
+        // Low "bloop"
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(80, now + 0.2);
+
+        const oscGain = ctx.createGain();
+        oscGain.gain.setValueAtTime(0.25, now);
+        oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+
+        osc.connect(oscGain);
+        oscGain.connect(this.masterGain);
+        osc.start(now);
+        osc.stop(now + 0.2);
+    }
+
+    /**
+     * Play crate/powerup pickup chime
+     */
+    playPowerup() {
+        if (!this.isInitialized || this.isMuted) return;
+        this.resume();
+
+        const ctx = this.audioContext;
+        const now = ctx.currentTime;
+
+        // Quick ascending sparkle: C-E-G
+        [523.25, 659.25, 783.99].forEach((freq, i) => {
+            const osc = ctx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+
+            const gain = ctx.createGain();
+            const start = now + i * 0.07;
+            gain.gain.setValueAtTime(0, start);
+            gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.01, start + 0.2);
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+            osc.start(start);
+            osc.stop(start + 0.2);
+        });
+    }
+
+    /**
      * Play missile drop sound (for airstrike)
      */
     playMissileDrop() {

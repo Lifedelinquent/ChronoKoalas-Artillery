@@ -211,8 +211,8 @@ export class LootManager {
             category,
             item,
             x,
-            y,
-            spawnY: y - 200, // Start above and fall down
+            y: y - 200, // Start above and parachute down
+            spawnY: y - 200,
             targetY: y,
             falling: true,
             fallSpeed: 0,
@@ -295,7 +295,7 @@ export class LootManager {
             // Heal the koala
             const healAmount = crate.item.healAmount;
             const oldHealth = koala.health;
-            koala.health = Math.min(100, koala.health + healAmount);
+            koala.health = Math.min(koala.maxHealth, koala.health + healAmount);
             const actualHeal = koala.health - oldHealth;
 
             console.log(`❤️ ${koala.name} collected ${crate.item.name}: +${actualHeal} HP`);
@@ -304,14 +304,18 @@ export class LootManager {
             this.game.createFloatingText?.(crate.x, crate.y - 30, `+${actualHeal}`, '#4ade80');
 
         } else {
-            // Give weapon ammo to the TEAM (not just this koala)
-            const weapon = this.game.weaponManager.getWeapon(crate.item.id);
+            // Give weapon ammo to the COLLECTOR's team inventory
+            // (weaponManager.weapons points at whichever team's turn it is,
+            // which is not necessarily the team that walked into the crate)
+            const weapon = team.weapons?.[crate.item.id];
             if (weapon) {
-                weapon.ammo = (weapon.ammo || 0) + crate.item.ammo;
+                weapon.ammo = (weapon.ammo === Infinity ? Infinity : (weapon.ammo || 0) + crate.item.ammo);
                 console.log(`💣 ${team.name} collected ${crate.item.name}: +${crate.item.ammo} ${weapon.name}`);
 
-                // Update weapon UI
-                this.game.updateWeaponUI();
+                // Refresh the weapon bar if the collector's inventory is the active one
+                if (this.game.weaponManager.weapons === team.weapons) {
+                    this.game.updateWeaponUI();
+                }
 
                 // Create floating text
                 this.game.createFloatingText?.(crate.x, crate.y - 30, `+${crate.item.ammo} ${weapon.name}`, this.rarityColors[crate.rarity]);
@@ -358,7 +362,7 @@ export class LootManager {
      */
     renderCrate(ctx, crate) {
         const x = crate.x;
-        const y = crate.falling ? crate.spawnY + (crate.y - crate.spawnY) : crate.y;
+        const y = crate.y;
 
         // Bob animation when landed
         const bobY = crate.falling ? 0 : Math.sin(crate.lifetime * 2 + crate.bobOffset) * 3;

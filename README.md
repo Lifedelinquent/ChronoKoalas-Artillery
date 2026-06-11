@@ -18,6 +18,14 @@ A fast-paced, Worms-style artillery game featuring destructible terrain, various
 
 ### 🆕 Recent Updates
 
+- **Trajectory Preview:** While charging a shot, a fading dotted arc shows the predicted flight path (gravity and wind included).
+- **Screen Shake:** Explosions kick the camera proportionally to blast size for extra impact.
+- **Floating Damage Numbers:** Every hit shows exactly how much damage was dealt, on both clients in multiplayer.
+- **Water Splashes:** Koalas and projectiles that hit the water now splash with sound.
+- **Smoke Trails:** Bazooka rockets and airstrike missiles leave dissipating smoke trails.
+- **Smarter Turn Handover:** The next turn waits until knocked-back koalas actually land instead of switching mid-flight.
+- **Zoom to Cursor:** Mouse-wheel zoom now anchors on the point under the cursor.
+- **Falling Explosives:** Mines and dynamite resting on terrain fall when the ground beneath them is destroyed.
 - **Dead Koala Ghosts:** When a koala dies, they appear as a faded ghost sprite with a floating golden halo. Dead bodies remain on the battlefield and can be flung around by explosions!
 - **Biased Explosion Knockback:** Characters now fly "up and out" from explosions instead of sliding sideways. The explosion force origin is shifted down for more dramatic launches.
 - **Instant Water Death:** Koalas die immediately when touching water - no waiting for turn end.

@@ -885,6 +885,9 @@ export class Game extends EventEmitter {
                         target.vy += knockbackY;
                         target.onGround = false;
 
+                        this.createFloatingText(target.x, target.y - 40, `-${weapon.damage}`, '#ff5544');
+                        shooter.damageDealt = (shooter.damageDealt || 0) + weapon.damage;
+
                         explosionResults.push({
                             koalaName: target.name,
                             damage: weapon.damage,
@@ -1151,6 +1154,32 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Clean up any in-progress input state (charging, blowtorch) when a turn
+     * is force-ended, so the power bar doesn't stay stuck on screen
+     */
+    cleanupTurnInputState() {
+        // Cancel power charging
+        this.inputManager.isCharging = false;
+        this.weaponManager.isCharging = false;
+        this.weaponManager.power = 0;
+
+        // Clear blowtorch state
+        const koala = this.getCurrentKoala();
+        if (koala) {
+            koala.blowtorchActive = false;
+            koala.blowtorchDigging = false;
+        }
+
+        // Hide power bar
+        if (this.dom.elements.powerBarContainer) {
+            this.dom.elements.powerBarContainer.classList.add('hidden');
+        }
+        if (this.dom.elements.powerFill) {
+            this.dom.elements.powerFill.style.width = '0%';
+        }
+    }
+
+    /**
      * Start retreat phase after firing
      */
     startRetreat() {
@@ -1194,6 +1223,11 @@ export class Game extends EventEmitter {
         const proj = this.projectiles[index];
         if (proj) {
             proj.destroyed = true;
+            // Stop camera tracking before the object is recycled,
+            // otherwise a pooled reuse could re-attach the camera
+            if (this.followingProjectile === proj) {
+                this.followingProjectile = null;
+            }
             // Return to pool for reuse
             this.returnProjectileToPool(proj);
         }
@@ -1285,6 +1319,26 @@ export class Game extends EventEmitter {
             // Apply physics to move the projectile FIRST
             if (!proj.stationary) {
                 this.physics.updateProjectile(proj, dt);
+
+                // Smoke trail for rockets and airstrike missiles
+                if ((proj.type === 'bazooka' || proj.type === 'airstrike') &&
+                    this.particles.length < this.maxParticles - 10) {
+                    proj.trailAccum = (proj.trailAccum || 0) + dt;
+                    if (proj.trailAccum > 0.03) {
+                        proj.trailAccum = 0;
+                        this.addParticle({
+                            type: 'smoke',
+                            x: proj.x - Math.cos(proj.rotation) * 14,
+                            y: proj.y - Math.sin(proj.rotation) * 14,
+                            vx: (Math.random() - 0.5) * 20,
+                            vy: (Math.random() - 0.5) * 20,
+                            lifetime: 0.6,
+                            time: 0,
+                            color: '#bbb',
+                            size: 3 + Math.random() * 2
+                        });
+                    }
+                }
             }
 
             // Check pellet max range (shotgun pellets disappear after distance)
@@ -1299,8 +1353,8 @@ export class Game extends EventEmitter {
             // Update timer and check for timer-based explosion
             const shouldExplode = proj.update(dt, this.wind);
 
-            // Check mine proximity
-            if (proj.triggeredByProximity && proj.stationary && !proj.isTriggered) {
+            // Check mine proximity (duds stay inert once activated)
+            if (proj.triggeredByProximity && proj.stationary && !proj.isTriggered && !proj.dudActivated) {
                 const target = this.findNearbyKoala(proj.x, proj.y, 65);
                 if (target) {
                     proj.isTriggered = true;
@@ -1315,17 +1369,17 @@ export class Game extends EventEmitter {
                     // Create dud smoke effect
                     for (let i = 0; i < 15; i++) {
                         this.addParticle({
+                            type: 'smoke',
                             x: proj.x,
                             y: proj.y - 10,
                             vx: (Math.random() - 0.5) * 50,
                             vy: -Math.random() * 100 - 50,
-                            life: 1.5,
-                            maxLife: 1.5,
+                            lifetime: 1.5,
+                            time: 0,
                             color: '#666',
                             size: 4
                         });
                     }
-                    // TODO: Play dud sound
                     console.log('💨 Mine was a DUD!');
                     // Don't remove - dud stays on map
                 } else {
@@ -1336,8 +1390,15 @@ export class Game extends EventEmitter {
                 continue;
             }
 
-            // If stationary, no need for collision detection
-            if (proj.stationary) continue;
+            // If stationary, check whether the ground beneath was blown away
+            // (mines/dynamite resting on terrain should fall when it's destroyed)
+            if (proj.stationary) {
+                if (!this.terrain.checkCollision(proj.x, proj.y + 4) &&
+                    !this.terrain.checkCollision(proj.x, proj.y + 8)) {
+                    proj.stationary = false;
+                }
+                continue;
+            }
 
             // Ray-casting Continuous Collision Detection (CCD) to prevent tunneling
             // We check both terrain AND koalas in the SAME progressive raycast to find the earliest hit
@@ -1475,6 +1536,14 @@ export class Game extends EventEmitter {
                 }
             }
 
+            // Splash and sink when hitting the water surface
+            if (proj.y > this.worldHeight - 60 && proj.x > 0 && proj.x < this.worldWidth) {
+                this.createSplash(proj.x, this.worldHeight - 60);
+                this.audioManager.playSplash();
+                this.removeProjectile(i);
+                continue;
+            }
+
             // Check out of bounds (left, right, bottom, and FAR above screen)
             // Note: Using a large margin for top (-500) to allow high arcing shots
             if (proj.x < -100 || proj.x > this.worldWidth + 100 ||
@@ -1505,6 +1574,11 @@ export class Game extends EventEmitter {
             this.audioManager.playExplosion(size);
 
             this.createExplosion(projectile.x, projectile.y, weapon.explosionRadius);
+
+            // Screen shake scaled to explosion size (skip tiny pellet hits)
+            if (weapon.explosionRadius >= 30) {
+                this.addScreenShake(weapon.explosionRadius / 8, 0.35);
+            }
 
             // Damage terrain - ONLY on authoritative client
             // Non-active player will receive terrain sync via explosionSync
@@ -1543,6 +1617,11 @@ export class Game extends EventEmitter {
                         // Play damage sound
                         if (damage > 0) {
                             this.audioManager.playDamage();
+                            // Floating damage number + stat attribution
+                            this.createFloatingText(koala.x, koala.y - 40, `-${damage}`, '#ff5544');
+                            if (projectile.shooter && projectile.shooter !== koala) {
+                                projectile.shooter.damageDealt = (projectile.shooter.damageDealt || 0) + damage;
+                            }
                         }
 
                         // Record for sync
@@ -1561,9 +1640,15 @@ export class Game extends EventEmitter {
         }
 
         // Direct hit bonus - ONLY on authoritative client
-        if (directHitKoala && isAuthoritativeClient) {
-            const directDamage = weapon.directDamage || weapon.damage;
+        // Use ?? so weapons with an explicit directDamage of 0 (bazooka etc.)
+        // don't get a phantom double-damage bonus on direct hits
+        const directDamage = weapon.directDamage ?? weapon.damage;
+        if (directHitKoala && isAuthoritativeClient && directDamage > 0) {
             directHitKoala.takeDamage(directDamage);
+            this.createFloatingText(directHitKoala.x, directHitKoala.y - 55, `-${directDamage}`, '#ff5544');
+            if (projectile.shooter && projectile.shooter !== directHitKoala) {
+                projectile.shooter.damageDealt = (projectile.shooter.damageDealt || 0) + directDamage;
+            }
 
             // Add to sync results if not already there from AoE
             const existing = explosionResults.find(r => r.koalaName === directHitKoala.name);
@@ -1615,7 +1700,7 @@ export class Game extends EventEmitter {
     /**
      * Create explosion particles
      */
-    createExplosionParticles(x, y, radius) {
+    createExplosionParticles(x, y, radius, color = null) {
         const count = Math.floor(radius / 2);
         // Limit particle count for performance
         const particlesToAdd = Math.min(count, this.maxParticles - this.particles.length);
@@ -1628,7 +1713,7 @@ export class Game extends EventEmitter {
                 vx: Math.cos(angle) * speed,
                 vy: Math.sin(angle) * speed - 50,
                 size: 2 + Math.random() * 4,
-                color: Math.random() > 0.5 ? '#654321' : '#8B4513',
+                color: color || (Math.random() > 0.5 ? '#654321' : '#8B4513'),
                 lifetime: 1 + Math.random(),
                 time: 0
             });
@@ -1636,7 +1721,58 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Add a particle with limit enforcement and object pooling
+     * Soul-departing sparkle burst when a koala dies
+     */
+    createDeathEffect(koala) {
+        for (let i = 0; i < 12; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 30 + Math.random() * 60;
+            this.addParticle({
+                type: 'spark',
+                x: koala.x,
+                y: koala.y - 10,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 80, // Drift upward
+                color: Math.random() > 0.5 ? '#ffd700' : '#ffffff',
+                size: 2 + Math.random() * 3,
+                lifetime: 1 + Math.random() * 0.5,
+                time: 0
+            });
+        }
+    }
+
+    /**
+     * Water splash effect (entity or projectile falls into water)
+     */
+    createSplash(x, waterY) {
+        for (let i = 0; i < 14; i++) {
+            this.addParticle({
+                type: 'splash',
+                x: x + (Math.random() - 0.5) * 20,
+                y: waterY,
+                vx: (Math.random() - 0.5) * 160,
+                vy: -120 - Math.random() * 220,
+                size: 2 + Math.random() * 3,
+                lifetime: 0.8 + Math.random() * 0.4,
+                time: 0
+            });
+        }
+    }
+
+    /**
+     * Trigger a camera shake (intensity in world px, duration in seconds)
+     */
+    addScreenShake(intensity, duration = 0.3) {
+        // Keep the stronger shake if one is already running
+        if (this.camera.shake && this.camera.shake.time > 0 &&
+            this.camera.shake.intensity > intensity) {
+            return;
+        }
+        this.camera.shake = { intensity, duration, time: duration };
+    }
+
+    /**
+     * Add a particle with limit enforcement
      */
     addParticle(particleData) {
         // Remove oldest particles if at limit
@@ -1710,6 +1846,15 @@ export class Game extends EventEmitter {
                 p.vy += 100 * dt; // Light gravity
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
+            } else if (p.type === 'smoke') {
+                p.vx *= 0.97;
+                p.vy -= 30 * dt; // Drift upward
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+            } else if (p.type === 'splash') {
+                p.vy += 500 * dt; // Heavy gravity - water falls back down
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
             }
         }
     }
@@ -1765,6 +1910,7 @@ export class Game extends EventEmitter {
             // Decrement ammo
             if (weapon.ammo !== Infinity) {
                 weapon.ammo--;
+                this.updateWeaponUI();
             }
             return;
         }
@@ -1776,6 +1922,7 @@ export class Game extends EventEmitter {
             // Decrement ammo
             if (weapon.ammo !== Infinity) {
                 weapon.ammo--;
+                this.updateWeaponUI();
             }
             return;
         }
@@ -1818,8 +1965,7 @@ export class Game extends EventEmitter {
 
             console.log(`🔫 Shotgun blast! ${pelletCount} pellets, ${this.shotgunShotsRemaining} shots remaining`);
 
-            // Play fire sound
-            this.audioManager.playFire(weapon.id);
+            // (fire sound already played at the top of fireWeapon)
 
             // Network sync
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
@@ -1839,6 +1985,7 @@ export class Game extends EventEmitter {
         // Decrement ammo
         if (weapon.ammo !== Infinity) {
             weapon.ammo--;
+            this.updateWeaponUI();
         }
 
         // Spawn projectile away from koala in the firing direction
@@ -2031,8 +2178,7 @@ export class Game extends EventEmitter {
         this.createTeleportEffect(targetX, dropY);
 
         // Move camera to new position
-        this.camera.targetX = targetX - this.canvas.width / 2;
-        this.camera.targetY = dropY - this.canvas.height / 2;
+        this.centerCameraOn(targetX, dropY);
 
         // End turn after teleport
         this.phase = 'damage';
@@ -2122,23 +2268,22 @@ export class Game extends EventEmitter {
         }
 
         // Move camera to target area (center on impact point)
-        this.camera.targetX = targetX - this.canvas.width / 2;
-        this.camera.targetY = targetY - this.canvas.height / 2;
+        this.centerCameraOn(targetX, targetY);
     }
 
     /**
      * Create teleport visual effect
      */
     createTeleportEffect(x, y) {
-        // ... handled by particle system mostly, but could add here
         for (let i = 0; i < 10; i++) {
-            this.particles.push({
+            this.addParticle({
                 type: 'smoke',
                 x: x,
                 y: y,
                 vx: (Math.random() - 0.5) * 100,
                 vy: (Math.random() - 0.5) * 100,
-                life: 1,
+                lifetime: 1,
+                time: 0,
                 color: '#3498db',
                 size: 5 + Math.random() * 5
             });
@@ -2199,10 +2344,14 @@ export class Game extends EventEmitter {
      * Update camera position
      */
     updateCamera(dt) {
+        // Decay screen shake
+        if (this.camera.shake && this.camera.shake.time > 0) {
+            this.camera.shake.time -= dt;
+        }
+
         // Follow projectile if tracking one (O(1) check using destroyed flag)
         if (this.followingProjectile && !this.followingProjectile.destroyed) {
-            this.camera.targetX = this.followingProjectile.x - this.canvas.width / 2;
-            this.camera.targetY = this.followingProjectile.y - this.canvas.height / 2;
+            this.centerCameraOn(this.followingProjectile.x, this.followingProjectile.y);
         } else if (this.followingProjectile) {
             // Projectile is destroyed, stop tracking
             this.followingProjectile = null;
@@ -2217,6 +2366,14 @@ export class Game extends EventEmitter {
         const viewHeight = this.canvas.height / this.camera.zoom;
         this.camera.x = Math.max(0, Math.min(this.worldWidth - viewWidth, this.camera.x));
         this.camera.y = Math.max(0, Math.min(this.worldHeight - viewHeight, this.camera.y));
+    }
+
+    /**
+     * Center the camera target on a world position (zoom-aware)
+     */
+    centerCameraOn(x, y) {
+        this.camera.targetX = x - this.canvas.width / (2 * this.camera.zoom);
+        this.camera.targetY = y - this.canvas.height / (2 * this.camera.zoom);
     }
 
     /**
@@ -2486,87 +2643,9 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Update powerups (spawning and collection)
-     */
-    updatePowerups(dt) {
-        // Handle spawning timer
-        this.powerupSpawnTimer -= dt;
-        if (this.powerupSpawnTimer <= 0) {
-            this.powerupSpawnTimer = 300; // Reset to 5 mins
-            if (this.powerups.length < this.maxPowerupsOnMap) {
-                this.spawnPowerup();
-            }
-        }
-
-        // Check for collection
-        for (let i = this.powerups.length - 1; i >= 0; i--) {
-            const powerup = this.powerups[i];
-
-            for (const team of this.teams) {
-                for (const koala of team.koalas) {
-                    if (!koala.isAlive) continue;
-
-                    const dx = koala.x - powerup.x;
-                    const dy = koala.y - powerup.y;
-                    const dist = Math.hypot(dx, dy);
-
-                    if (dist < 25) { // Collection radius
-                        // Heal koala
-                        const healAmount = 25;
-                        koala.health = Math.min(100, koala.health + healAmount);
-
-                        // Visual effects
-                        this.createExplosionParticles(powerup.x, powerup.y, 10, '#2ecc71');
-
-                        // Play a heal sound (using turn start as placeholder or damage?)
-                        // Let's use gain chime if available
-                        this.audioManager.playTurnStart();
-
-                        // Remove powerup
-                        this.powerups.splice(i, 1);
-
-                        this.updateTeamHealth();
-                        console.log(koala.name, 'picked up health!');
-                        return; // Exit both loops for this powerup
-                    }
-                }
-            }
-        }
-    }
-
-    /**
-     * Spawn a health powerup on the map
-     */
-    spawnPowerup() {
-        // Helper: use seeded random if available (multiplayer sync)
-        const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
-
-        // Try to find a valid spot
-        for (let attempt = 0; attempt < 100; attempt++) {
-            const x = 200 + rand() * (this.worldWidth - 400);
-            const surfaces = this.terrain.getVisualGroundY(x);
-
-            if (surfaces.length > 0) {
-                // Pick a random surface (using seeded random)
-                const y = surfaces[Math.floor(rand() * surfaces.length)];
-
-                // Add the powerup
-                this.powerups.push({
-                    x,
-                    y: y - 10, // Slightly above visual ground
-                    type: 'health',
-                    id: 'powerup_' + Date.now()
-                });
-
-                console.log('Health powerup spawned at:', x, y);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * Reset game for rematch
+     * Re-runs the same initialization path as start() so custom maps,
+     * countdown, loot state etc. all behave like a fresh game.
      */
     reset() {
         console.log('Resetting game...');
@@ -2577,40 +2656,31 @@ export class Game extends EventEmitter {
             this.animationId = null;
         }
 
-        // Reset game state
+        // Clear all transient state
         this.teams = [];
         this.projectiles = [];
+        this.projectilePool = [];
         this.particles = [];
+        this.delayedActions = []; // Stale callbacks from the old game must not fire
+        this.followingProjectile = null;
         this.currentTeamIndex = 0;
         this.currentKoalaIndex = 0;
         this.isGameOver = false;
         this.isPaused = false;
         this.phase = 'waiting';
         this.turnTimer = this.turnTime;
+        this.shotgunShotsRemaining = 0;
+        this.lootManager.reset();
+        this.spatialGrid.clear();
 
-        // Regenerate terrain
-        this.terrain.generate();
-
-        // Create new teams
-        this.createTeams();
-
-        // Reset wind
-        this.randomizeWind();
-
-        // Reset weapon manager
-        // Reset weapon manager
+        // Reset weapon manager and input state
         this.weaponManager.reset();
-        this.updateWeaponUI();
-
-        // Reset input manager state
         this.inputManager.isCharging = false;
+        this.cleanupTurnInputState();
 
-        // Start first turn
-        this.startTurn();
-
-        // Restart game loop
-        this.lastTime = performance.now();
-        this.gameLoop();
+        // start() regenerates terrain (or reloads the custom map), creates
+        // teams, randomizes wind, runs the countdown and restarts the loop
+        this.start();
 
         console.log('Game reset complete!');
     }
@@ -2621,7 +2691,14 @@ export class Game extends EventEmitter {
     destroy() {
         if (this.animationId) {
             cancelAnimationFrame(this.animationId);
+            this.animationId = null;
         }
+
+        this.isGameOver = true; // Stops any in-flight gameLoop callback
+
+        // Stop music - each Game owns an AudioManager, so a leftover instance
+        // would keep playing on top of the next game's music
+        this.audioManager.stopMusic();
 
         // Stop background timer
         this.stopFallbackTimer();
@@ -2932,9 +3009,15 @@ export class Game extends EventEmitter {
                 koala.vx = result.vx;
                 koala.vy = result.vy;
 
+                // Show the same damage feedback the active player sees
+                if (result.damage > 0) {
+                    this.createFloatingText(koala.x, koala.y - 40, `-${result.damage}`, '#ff5544');
+                }
+
                 // Check for death
                 if (koala.health <= 0 && koala.isAlive) {
                     koala.die();
+                    this.createDeathEffect(koala);
                 }
 
                 console.log(`   ${koala.name}: HP=${koala.health}, pos=(${koala.x.toFixed(0)}, ${koala.y.toFixed(0)})`);

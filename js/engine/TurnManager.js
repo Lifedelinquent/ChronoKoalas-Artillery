@@ -134,6 +134,9 @@ export class TurnManager extends EventEmitter {
     }
 
     endTurn() {
+        // Clear any in-progress charging/blowtorch so the power bar
+        // doesn't stay stuck on screen when a turn ends mid-action
+        this.game.cleanupTurnInputState();
         this.phase = 'damage';
         this.processDamage();
     }
@@ -151,6 +154,7 @@ export class TurnManager extends EventEmitter {
                 if (koala.health <= 0 && koala.isAlive) {
                     koala.die();
                     this.game.audioManager.playDeath();
+                    this.game.createDeathEffect(koala);
                     anyDied = true;
                 }
             }
@@ -164,10 +168,50 @@ export class TurnManager extends EventEmitter {
             return;
         }
 
-        this.game.scheduleDelayedAction(anyDied ? 1000 : 300, () => {
+        // Wait for knocked-back koalas to actually land before handing over
+        // the turn (with a hard timeout), instead of switching mid-flight
+        this.settleWaitElapsed = 0;
+        this.game.scheduleDelayedAction(anyDied ? 1000 : 300, () => this.waitForSettle());
+    }
+
+    /**
+     * Poll until all koalas have settled (or a timeout passes), then next turn
+     */
+    waitForSettle() {
+        if (this.game.isGameOver) return;
+
+        const worldHeight = this.game.worldHeight;
+        const allSettled = this.game.teams.every(team =>
+            team.koalas.every(k => !k.isAlive || k.onGround || k.y > worldHeight - 60)
+        );
+
+        this.settleWaitElapsed = (this.settleWaitElapsed || 0) + 0.25;
+
+        if (allSettled || this.settleWaitElapsed > 3) {
             this.applyFallDamage();
+
+            // Late fall damage / drowning during settling may have killed someone
+            for (const team of this.game.teams) {
+                for (const koala of team.koalas) {
+                    if (koala.health <= 0 && koala.isAlive) {
+                        koala.die();
+                        this.game.audioManager.playDeath();
+                        this.game.createDeathEffect(koala);
+                    }
+                }
+            }
+            this.game.updateTeamHealth();
+
+            const aliveTeams = this.game.teams.filter(t => t.isAlive());
+            if (aliveTeams.length <= 1) {
+                this.game.endGame(aliveTeams[0] || null);
+                return;
+            }
+
             this.nextTurn();
-        });
+        } else {
+            this.game.scheduleDelayedAction(250, () => this.waitForSettle());
+        }
     }
 
     applyFallDamage() {

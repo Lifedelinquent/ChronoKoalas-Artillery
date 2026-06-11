@@ -259,6 +259,10 @@ export class WeaponManager {
 
         console.log('Creating projectile - weapon:', weapon.name, 'speed:', speed, 'power:', actualPower, 'timer:', projectileTimer);
 
+        // Roll dud chance once, using seeded random so multiplayer clients agree
+        const rand = this.game.seededRandom || Math.random;
+        const isDud = !!(weapon.dudChance && rand() < weapon.dudChance);
+
         // Try to get from pool first
         let projectile = this.game.getProjectileFromPool();
 
@@ -271,7 +275,7 @@ export class WeaponManager {
             projectile.type = weapon.type;
             projectile.weapon = weapon;
             projectile.rotation = Math.atan2(projectile.vy, projectile.vx);
-            projectile.gravityMultiplier = weapon.gravity || 1;
+            projectile.gravityMultiplier = weapon.gravity ?? 1;
             projectile.affectedByWind = weapon.affectedByWind !== false;
             projectile.bounces = weapon.bounces || false;
             projectile.bounciness = weapon.bounciness || 0.5;
@@ -284,12 +288,13 @@ export class WeaponManager {
             projectile.isTriggered = false;
             projectile.triggerTimer = 0;
             projectile.triggerDelay = weapon.triggerDelay || 3.0;
-            projectile.isDud = weapon.dudChance && Math.random() < weapon.dudChance;
+            projectile.isDud = isDud;
             projectile.dudActivated = false;
             projectile.explodesOnSettle = weapon.explodesOnSettle || false;
             projectile.settleVelocityThreshold = weapon.settleVelocityThreshold || 100;
             projectile.settleTime = 0;
             projectile.settleRequiredTime = 0.3;
+            projectile.hasTouchedTerrain = false;
             projectile.stationary = false;
             projectile.destroyed = false;
             projectile.shooter = null;
@@ -310,12 +315,13 @@ export class WeaponManager {
                 weapon: weapon,
                 timer: projectileTimer,
                 timerStartsOnThrow: weapon.timerStartsOnThrow || false,
-                gravityMultiplier: weapon.gravity || 1,
+                gravityMultiplier: weapon.gravity ?? 1,
                 affectedByWind: weapon.affectedByWind !== false,
                 bounces: weapon.bounces || false,
                 bounciness: weapon.bounciness || 0.5,
                 triggeredByProximity: weapon.triggeredByProximity || false
             });
+            projectile.isDud = isDud;
         }
 
         return projectile;

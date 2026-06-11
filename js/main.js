@@ -374,11 +374,33 @@ function setupMenuHandlers() {
 
     // Rematch
     btnRematch.addEventListener('click', () => {
-        if (game) {
+        if (!game) return;
+
+        if (game.isPractice || !networkManager.isConnected) {
+            // Local rematch - reset in place
             game.reset();
+            menuManager.showScreen('game-screen');
+        } else if (networkManager.isHost) {
+            // Multiplayer rematch must go through the host so both clients
+            // restart with the same fresh seed (local reset would desync)
+            networkManager.startGame({ customMap: window.selectedMap });
+        } else {
+            alert('Only the host can start a rematch.');
         }
-        menuManager.showScreen('game-screen');
     });
+
+    // Mute toggle - registered ONCE here; registering per-game stacked
+    // listeners and made the button toggle multiple times per click
+    const muteBtn = document.getElementById('mute-toggle');
+    if (muteBtn) {
+        muteBtn.addEventListener('click', () => {
+            if (!game) return;
+            const isMuted = game.audioManager.toggleMute();
+            muteBtn.textContent = isMuted ? '🔇' : '🔊';
+            muteBtn.classList.toggle('muted', isMuted);
+            game.audioManager.playClick(); // Play click if just unmuted
+        });
+    }
 
     // Main menu
     btnMainMenu.addEventListener('click', () => {
@@ -525,6 +547,12 @@ function setupMenuHandlers() {
  */
 function startGame(isPractice = false, networkState = null, customMap = null) {
     const canvas = document.getElementById('game-canvas');
+
+    // Destroy any previous game so we don't leak loops and input listeners
+    if (game) {
+        game.destroy();
+        game = null;
+    }
 
     // Create game instance
     game = new Game(canvas, {
@@ -703,41 +731,7 @@ function testPlayMap() {
  * Start a game with a custom map from the editor
  */
 function startGameWithCustomMap(mapData) {
-    const canvas = document.getElementById('game-canvas');
-
-    // Create game instance with custom map option
-    game = new Game(canvas, {
-        isPractice: true,
-        networkManager: null,
-        initialState: null,
-        customMap: mapData  // Pass the custom map data
-    });
-
-    // Expose game instance globally
-    window.game = game;
-
-    // Show game screen
-    menuManager.showScreen('game-screen');
-
-    // Start the game
-    game.start();
-
-    // Set up mute toggle
-    const muteBtn = document.getElementById('mute-toggle');
-    if (muteBtn) {
-        muteBtn.addEventListener('click', () => {
-            const isMuted = game.audioManager.toggleMute();
-            muteBtn.textContent = isMuted ? '🔇' : '🔊';
-            muteBtn.classList.toggle('muted', isMuted);
-            game.audioManager.playClick();
-        });
-    }
-
-    // Game over handler - return to editor
-    game.on('gameOver', (result) => {
-        // After game over, allow returning to editor
-        menuManager.showGameOver(result);
-    });
+    startGame(true, null, mapData);
 }
 
 /**

@@ -99,8 +99,9 @@ export class Physics {
         const waterLevel = this.game.worldHeight - 60;
         if (entity.isAlive && (entity.y > waterLevel || entity.x < -100 || entity.x > this.game.worldWidth + 100)) {
             entity.die();
-            // Play splash sound if available
-            if (this.game.audioManager && this.game.audioManager.playDeath) {
+            this.game.createSplash(entity.x, waterLevel);
+            if (this.game.audioManager) {
+                this.game.audioManager.playSplash();
                 this.game.audioManager.playDeath();
             }
         }
@@ -115,6 +116,7 @@ export class Physics {
      */
     resolveTerrainCollision(entity) {
         const terrain = this.game.terrain;
+        const wasOnGround = entity.onGround;
         entity.onGround = false;
 
         // Check feet
@@ -128,7 +130,7 @@ export class Physics {
 
         // Check 5 pixels range normally, but 10 pixels DOWN if we were already grounded
         // This "Sticky Feet" logic prevents vibrating off slopes or falling through thin floors
-        const searchDown = entity.onGround ? 10 : 3;
+        const searchDown = wasOnGround ? 10 : 3;
 
         for (let offset = -2; offset <= searchDown; offset++) {
             if (terrain.checkCollision(entity.x, footY + offset)) {

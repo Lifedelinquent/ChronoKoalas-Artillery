@@ -21,6 +21,12 @@ export class DOMCache {
         this.elements.windFill = document.getElementById('wind-fill');
         this.elements.zoomLevel = document.getElementById('zoom-level');
 
+        // Active Weapon Card
+        this.elements.activeWeaponCard = document.getElementById('active-weapon-card');
+        this.elements.activeWeaponIconContainer = document.getElementById('active-weapon-icon-container');
+        this.elements.activeWeaponName = document.getElementById('active-weapon-name');
+        this.elements.activeWeaponAmmo = document.getElementById('active-weapon-ammo');
+
         // Power Bar
         this.elements.powerBarContainer = document.getElementById('power-bar-container');
         this.elements.powerFill = document.getElementById('power-fill');

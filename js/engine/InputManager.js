@@ -15,7 +15,7 @@ export class InputManager {
         this.isCharging = false;
         this.lockedPower = null; // Power captured when aim is locked (armed phase)
         this.lastActivityTime = 0;
-        this.isWeaponBarHidden = false;
+        this.isWeaponMenuOpen = false;
 
         // Movement settings
         this.moveSpeed = 45; // px/s - was 12, which felt unresponsively slow
@@ -59,17 +59,39 @@ export class InputManager {
 
     setupWeaponSelection() {
         this.weaponBar = document.getElementById('weapon-bar');
-        if (!this.weaponBar) return;
+        this.activeWeaponCard = document.getElementById('active-weapon-card');
+        this.isWeaponMenuOpen = false;
 
-        this.handleWeaponClick = (e) => {
-            const weaponEl = e.target.closest('.weapon');
-            if (weaponEl && !weaponEl.classList.contains('disabled')) {
-                const weaponId = weaponEl.dataset.weapon;
-                this.selectWeapon(weaponId);
+        if (this.weaponBar) {
+            this.handleWeaponClick = (e) => {
+                const weaponEl = e.target.closest('.weapon');
+                if (weaponEl && !weaponEl.classList.contains('disabled')) {
+                    const weaponId = weaponEl.dataset.weapon;
+                    this.selectWeapon(weaponId);
+                    this.closeWeaponMenu();
+                }
+            };
+            this.weaponBar.addEventListener('click', this.handleWeaponClick);
+        }
+
+        if (this.activeWeaponCard) {
+            this.handleCardClick = (e) => {
+                e.stopPropagation(); // Prevent document click handler from immediately closing it
+                this.toggleWeaponMenu();
+            };
+            this.activeWeaponCard.addEventListener('click', this.handleCardClick);
+        }
+
+        // Click outside handler to close the menu
+        this.handleOutsideClick = (e) => {
+            if (!this.isWeaponMenuOpen) return;
+            // If click is not inside the weapon bar and not inside the active weapon card
+            if (this.weaponBar && !this.weaponBar.contains(e.target) &&
+                this.activeWeaponCard && !this.activeWeaponCard.contains(e.target)) {
+                this.closeWeaponMenu();
             }
         };
-
-        this.weaponBar.addEventListener('click', this.handleWeaponClick);
+        document.addEventListener('click', this.handleOutsideClick);
     }
 
     /**
@@ -122,6 +144,19 @@ export class InputManager {
 
         // Block game actions if it's not our turn or during countdown
         if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
+            return;
+        }
+
+        // Tab or Backquote (tilde) to toggle weapon selection menu
+        if (e.code === 'Tab' || e.code === 'Backquote') {
+            e.preventDefault();
+            this.toggleWeaponMenu();
+            return;
+        }
+
+        // Escape to close weapon selection menu
+        if (e.code === 'Escape') {
+            this.closeWeaponMenu();
             return;
         }
 
@@ -208,6 +243,11 @@ export class InputManager {
 
         // Drag camera with right mouse button
         if (this.mouse.rightDown) {
+            const dx = e.clientX - this.mouse.rightStartX;
+            const dy = e.clientY - this.mouse.rightStartY;
+            if (Math.hypot(dx, dy) > 5) {
+                this.mouse.rightHasDragged = true;
+            }
             this.game.camera.targetX -= e.movementX / this.game.camera.zoom;
             this.game.camera.targetY -= e.movementY / this.game.camera.zoom;
         }
@@ -262,6 +302,9 @@ export class InputManager {
             }
         } else if (e.button === 2) { // Right click
             this.mouse.rightDown = true;
+            this.mouse.rightStartX = e.clientX;
+            this.mouse.rightStartY = e.clientY;
+            this.mouse.rightHasDragged = false;
 
             // Cancel a charging or locked-in shot so the player can re-aim
             if ((this.game.phase === 'firing' || this.game.phase === 'armed') && this.game.isMyTurn()) {
@@ -284,6 +327,9 @@ export class InputManager {
             }
         } else if (e.button === 2) {
             this.mouse.rightDown = false;
+            if (!this.mouse.rightHasDragged && this.game.isMyTurn() && (this.game.phase === 'aiming' || this.game.phase === 'retreat')) {
+                this.toggleWeaponMenu();
+            }
         }
     }
 
@@ -373,7 +419,7 @@ export class InputManager {
      * Update loop for input-related UI or states
      */
     update(dt) {
-        this.updateWeaponBarVisibility(dt);
+        this.updateWeaponMenuDOM();
 
         // Premium touch: show a crosshair cursor while we can aim/fire
         const canAim = this.game.isMyTurn() &&
@@ -503,60 +549,47 @@ export class InputManager {
     }
 
     /**
-     * Handle auto-hiding of the weapon bar
+     * Toggle the weapon menu open/close
      */
-    updateWeaponBarVisibility(dt) {
+    toggleWeaponMenu() {
+        if (this.game.phase !== 'aiming' && this.game.phase !== 'retreat') return;
+        if (!this.game.isMyTurn()) return;
+
+        this.isWeaponMenuOpen = !this.isWeaponMenuOpen;
+        this.updateWeaponMenuDOM();
+    }
+
+    /**
+     * Close the weapon menu
+     */
+    closeWeaponMenu() {
+        if (this.isWeaponMenuOpen) {
+            this.isWeaponMenuOpen = false;
+            this.updateWeaponMenuDOM();
+        }
+    }
+
+    /**
+     * Update the visibility/classes of the weapon menu based on its open state
+     */
+    updateWeaponMenuDOM() {
         if (!this.weaponBar) return;
 
-        // 1. Mouse Hover Check (Highest Priority)
-        let isMouseOverBar = false;
-        const rect = this.weaponBar.getBoundingClientRect();
-        isMouseOverBar = (
-            this.mouse.screenX >= rect.left &&
-            this.mouse.screenX <= rect.right &&
-            this.mouse.screenY >= rect.top &&
-            this.mouse.screenY <= rect.bottom
-        );
-
-        if (isMouseOverBar && (this.game.phase === 'aiming' || this.game.phase === 'retreat')) {
-            this.weaponBar.classList.remove('minimized', 'faded');
-            this.isWeaponBarHidden = false;
-            return;
-        }
-
-        // 2. Character Movement (Makes bar DISAPPEAR)
+        // Auto-close menu if moving
         const moveKeys = ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Enter', 'Backspace'];
         const isMoving = moveKeys.some(key => this.keys[key]);
-
-        // 3. Looking/Aiming/Charging (Makes bar TRANSPARENT)
-        const aimKeys = ['ArrowUp', 'ArrowDown', 'KeyW', 'KeyS', 'Space'];
-        const isAiming = aimKeys.some(key => this.keys[key]);
-        const isFiring = this.isCharging;
-        const isPanning = this.mouse.rightDown;
-        const mouseMovedRecently = (performance.now() - this.mouse.lastMoveTime) < 1500;
-
-        const shouldFade = isAiming || isFiring || isPanning || mouseMovedRecently;
-
-        // 4. Phase check
-        if (this.game.phase !== 'aiming' && this.game.phase !== 'retreat') {
-            this.weaponBar.classList.add('minimized');
-            this.weaponBar.classList.remove('faded');
-            this.isWeaponBarHidden = true;
-            return;
+        if (isMoving) {
+            this.isWeaponMenuOpen = false;
         }
 
-        // Apply classes
-        if (isMoving) {
-            this.weaponBar.classList.add('minimized');
-            this.weaponBar.classList.remove('faded');
-            this.isWeaponBarHidden = true;
-        } else if (shouldFade) {
-            this.weaponBar.classList.add('faded');
-            this.weaponBar.classList.remove('minimized');
-            this.isWeaponBarHidden = false; // It's still there, just transparent
-        } else {
+        const isAimingPhase = this.game.phase === 'aiming' || this.game.phase === 'retreat';
+        if (this.isWeaponMenuOpen && isAimingPhase && this.game.isMyTurn()) {
+            this.weaponBar.classList.add('open');
             this.weaponBar.classList.remove('minimized', 'faded');
-            this.isWeaponBarHidden = false;
+        } else {
+            this.weaponBar.classList.remove('open');
+            this.weaponBar.classList.add('minimized');
+            this.isWeaponMenuOpen = false;
         }
     }
 
@@ -755,6 +788,12 @@ export class InputManager {
         this.game.canvas.removeEventListener('wheel', this.handleWheel);
         if (this.weaponBar && this.handleWeaponClick) {
             this.weaponBar.removeEventListener('click', this.handleWeaponClick);
+        }
+        if (this.activeWeaponCard && this.handleCardClick) {
+            this.activeWeaponCard.removeEventListener('click', this.handleCardClick);
+        }
+        if (this.handleOutsideClick) {
+            document.removeEventListener('click', this.handleOutsideClick);
         }
     }
 }

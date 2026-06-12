@@ -241,7 +241,7 @@
         </div>
 
         <!-- Weapon Selector (categorized arsenal) -->
-        <div id="weapon-bar">
+        <div id="weapon-bar" class="minimized">
             <div class="weapon-row" data-category="launchers">
                 <span class="weapon-row-label">Launchers</span>
                 <div class="weapon" data-weapon="bazooka" title="Bazooka">
@@ -365,6 +365,20 @@
                     <span class="weapon-icon">🏳️</span>
                 </div>
             </div>
+        </div>
+
+        <!-- Active Weapon HUD Card -->
+        <div id="active-weapon-card">
+            <div class="active-weapon-content">
+                <div id="active-weapon-icon-container">
+                    <span class="weapon-icon">🚀</span>
+                </div>
+                <div class="active-weapon-details">
+                    <span id="active-weapon-name">Bazooka</span>
+                    <span id="active-weapon-ammo">Ammo: ∞</span>
+                </div>
+            </div>
+            <div class="active-weapon-hint">Press [Tab] or click to change</div>
         </div>
 
         <!-- Power Bar -->

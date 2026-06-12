@@ -3648,6 +3648,50 @@ export class Game extends EventEmitter {
                 }
             }
         }
+
+        // Update active weapon card
+        const currentWeapon = this.weaponManager.currentWeapon;
+        if (currentWeapon) {
+            const cardEl = this.dom.elements.activeWeaponCard;
+            const iconContainer = this.dom.elements.activeWeaponIconContainer;
+            const nameEl = this.dom.elements.activeWeaponName;
+            const ammoEl = this.dom.elements.activeWeaponAmmo;
+
+            if (cardEl && iconContainer && nameEl && ammoEl) {
+                // Set weapon name
+                nameEl.textContent = currentWeapon.name;
+
+                // Set ammo
+                if (currentWeapon.ammo === Infinity) {
+                    ammoEl.textContent = "Ammo: ∞";
+                } else {
+                    ammoEl.textContent = `Ammo: ${currentWeapon.ammo}`;
+                }
+
+                // Set icon/image
+                const matchEl = weaponEls.find(el => el.dataset.weapon === currentWeapon.id);
+                if (matchEl) {
+                    const imgEl = matchEl.querySelector('img');
+                    const iconEl = matchEl.querySelector('.weapon-icon');
+                    if (imgEl) {
+                        iconContainer.innerHTML = `<img src="${imgEl.getAttribute('src')}" alt="${currentWeapon.name}" style="width: 30px; height: 30px; object-fit: contain; image-rendering: pixelated;">`;
+                    } else if (iconEl) {
+                        iconContainer.innerHTML = `<span class="weapon-icon" style="font-size: 1.4rem;">${iconEl.textContent}</span>`;
+                    } else {
+                        iconContainer.innerHTML = ``;
+                    }
+                } else {
+                    iconContainer.innerHTML = currentWeapon.icon ? `<span class="weapon-icon" style="font-size: 1.4rem;">${currentWeapon.icon}</span>` : '';
+                }
+
+                // Gray out active weapon card if ammo is 0
+                if (currentWeapon.ammo !== Infinity && currentWeapon.ammo <= 0) {
+                    cardEl.classList.add('out-of-ammo');
+                } else {
+                    cardEl.classList.remove('out-of-ammo');
+                }
+            }
+        }
     }
 
     /**

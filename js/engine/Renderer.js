@@ -14,6 +14,9 @@ export class Renderer {
 
         // Water animation
         this.waterOffset = 0;
+        // Eased water-surface Y, lerped toward game.waterLevel so sudden-death
+        // rises glide up instead of snapping. Initialized on first draw.
+        this.renderWaterY = null;
 
         // Load Sprites
         this.sprites = {
@@ -1350,7 +1353,15 @@ export class Renderer {
     drawWater() {
         const ctx = this.ctx;
         const waterHeight = 200; // Extra tall to cover gaps below
-        const waterY = this.game.worldHeight - 60; // Water surface position
+
+        // Water surface position — ease toward the logical (possibly rising) level
+        const targetWaterY = this.game.waterLevel ?? (this.game.worldHeight - 60);
+        if (this.renderWaterY === null) {
+            this.renderWaterY = targetWaterY;
+        } else {
+            this.renderWaterY += (targetWaterY - this.renderWaterY) * 0.08;
+        }
+        const waterY = this.renderWaterY;
 
         // Animate water
         this.waterOffset += 0.02;

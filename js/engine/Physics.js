@@ -124,7 +124,8 @@ export class Physics {
         }
 
         // INSTANT DEATH - check if entity touched water OR went out of side bounds (Ring Out)
-        const waterLevel = this.game.worldHeight - 60;
+        // waterLevel rises during sudden death, so read the live value off the game.
+        const waterLevel = this.game.waterLevel;
         if (entity.isAlive && (entity.y > waterLevel || entity.x < -100 || entity.x > this.game.worldWidth + 100)) {
             entity.die();
             this.game.createSplash(entity.x, waterLevel);

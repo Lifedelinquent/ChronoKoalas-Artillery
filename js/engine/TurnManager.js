@@ -22,12 +22,17 @@ export class TurnManager extends EventEmitter {
         // Grace period after firing
         this.projectileGraceTimer = 0;
 
-        // Sudden death: after this many full rounds, the gloves come off.
-        // The roundNumber/lastTeamIndex pair is advanced deterministically in
-        // startTurn() so it stays in sync across networked clients.
-        this.suddenDeathRound = 8;
-        this.suddenDeathHealthCap = 25;
+        // Sudden death: once enough game time has elapsed AND every team has had
+        // an equal number of turns (a full round just completed), the gloves come
+        // off. elapsedGameTime is advanced in fixed steps from Game.update() and
+        // the trigger is evaluated in startTurn(), so it stays in sync across
+        // networked clients (the active player also confirms it via full state sync).
+        this.suddenDeathTime = 180;        // seconds of active play before it can start
+        this.suddenDeathHealthCap = 25;    // initial HP cap applied on activation
+        this.suddenDeathDecay = 5;         // HP every surviving koala loses each turn
+        this.waterRisePerTurn = 12;        // px the water surface climbs each turn
         this.suddenDeathActive = false;
+        this.elapsedGameTime = 0;
         this.roundNumber = 1;
         this.lastTeamIndex = -1;
     }
@@ -42,6 +47,7 @@ export class TurnManager extends EventEmitter {
         this.retreatTimer = 0;
         this.projectileGraceTimer = 0;
         this.suddenDeathActive = false;
+        this.elapsedGameTime = 0;
         this.roundNumber = 1;
         this.lastTeamIndex = -1;
     }
@@ -123,13 +129,18 @@ export class TurnManager extends EventEmitter {
     trackRoundProgress() {
         // A round completes whenever play wraps back to an earlier team slot
         // (e.g. last team -> first team). Dead teams are skipped, but the index
-        // only ever decreases on a wrap, so this still holds.
-        if (this.currentTeamIndex <= this.lastTeamIndex) {
+        // only ever decreases on a wrap, so this still holds. When it happens,
+        // every team has had the same number of turns this round.
+        const roundCompleted = this.currentTeamIndex <= this.lastTeamIndex;
+        if (roundCompleted) {
             this.roundNumber++;
         }
         this.lastTeamIndex = this.currentTeamIndex;
 
-        if (!this.suddenDeathActive && this.roundNumber >= this.suddenDeathRound) {
+        // Start sudden death only at a round boundary (so everyone has had equal
+        // turns) once the predetermined amount of game time has elapsed.
+        if (!this.suddenDeathActive && roundCompleted &&
+            this.elapsedGameTime >= this.suddenDeathTime) {
             this.activateSuddenDeath();
         }
     }
@@ -140,7 +151,7 @@ export class TurnManager extends EventEmitter {
      */
     activateSuddenDeath() {
         this.suddenDeathActive = true;
-        console.log(`💀 SUDDEN DEATH! (round ${this.roundNumber})`);
+        console.log(`💀 SUDDEN DEATH! (round ${this.roundNumber}, ${Math.floor(this.elapsedGameTime)}s elapsed)`);
 
         // Turns get shorter from here on — no more stalling.
         this.turnTime = Math.min(this.turnTime, 20);
@@ -158,6 +169,31 @@ export class TurnManager extends EventEmitter {
         this.game.updateTeamHealth();
 
         this.game.announceSuddenDeath();
+    }
+
+    /**
+     * Ongoing sudden-death pressure, applied once per turn from processDamage():
+     * the water creeps up the map and every surviving koala takes poison damage.
+     * Any deaths that result are handled by the normal death sweep that follows
+     * in processDamage(), and drowning from the risen water is caught during the
+     * settle wait — so this only needs to mutate health and the water level.
+     */
+    applySuddenDeathEscalation() {
+        // Water surface climbs (smaller Y = higher water), down to a floor so a
+        // long stalemate never swallows the entire map.
+        const waterFloor = this.game.worldHeight * 0.4;
+        this.game.waterLevel = Math.max(waterFloor, this.game.waterLevel - this.waterRisePerTurn);
+
+        // Poison: drain a little health from everyone still standing.
+        for (const team of this.game.teams) {
+            for (const koala of team.koalas) {
+                if (koala.isAlive) {
+                    koala.health = Math.max(0, koala.health - this.suddenDeathDecay);
+                    this.game.createFloatingText(koala.x, koala.y - 40, `-${this.suddenDeathDecay}`, '#9be36b');
+                }
+            }
+        }
+        this.game.updateTeamHealth();
     }
 
     selectNextKoala() {
@@ -218,6 +254,12 @@ export class TurnManager extends EventEmitter {
     }
 
     processDamage() {
+        // Sudden death tightens the screws each turn (poison + rising water)
+        // before we tally up who died this turn.
+        if (this.suddenDeathActive) {
+            this.applySuddenDeathEscalation();
+        }
+
         let anyDied = false;
         for (const team of this.game.teams) {
             for (const koala of team.koalas) {
@@ -250,9 +292,9 @@ export class TurnManager extends EventEmitter {
     waitForSettle() {
         if (this.game.isGameOver) return;
 
-        const worldHeight = this.game.worldHeight;
+        const waterLevel = this.game.waterLevel;
         const allSettled = this.game.teams.every(team =>
-            team.koalas.every(k => !k.isAlive || k.onGround || k.y > worldHeight - 60)
+            team.koalas.every(k => !k.isAlive || k.onGround || k.y > waterLevel)
         );
 
         this.settleWaitElapsed = (this.settleWaitElapsed || 0) + 0.25;

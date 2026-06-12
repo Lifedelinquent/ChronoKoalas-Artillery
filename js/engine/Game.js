@@ -29,6 +29,11 @@ export class Game extends EventEmitter {
         this.worldWidth = 2400;
         this.worldHeight = 1200;
 
+        // Current water-surface Y. Constant during normal play; sudden death
+        // raises it (decreasing Y) each turn. Single source of truth for
+        // drowning (Physics), rendering (Renderer) and turn-settle checks.
+        this.waterLevel = this.worldHeight - 60;
+
         // Resize canvas
         this.handleResize();
 
@@ -108,6 +113,8 @@ export class Game extends EventEmitter {
         this.turnManager.roundNumber = 1;
         this.turnManager.lastTeamIndex = -1;
         this.turnManager.turnTime = this.turnManager.defaultTurnTime;
+        this.turnManager.elapsedGameTime = 0;
+        this.waterLevel = this.worldHeight - 60;
 
         // Get game seed for multiplayer sync (or generate random for practice)
         const initialState = this.options.initialState;
@@ -835,6 +842,12 @@ export class Game extends EventEmitter {
     update(dt) {
         // Cap delta time to prevent physics issues (also clamp negative values)
         dt = Math.max(0, Math.min(dt, 0.05));
+
+        // Accumulate elapsed match time (drives the sudden-death trigger). Excludes
+        // the opening countdown so the clock starts when play actually begins.
+        if (this.phase !== 'countdown' && !this.isGameOver) {
+            this.turnManager.elapsedGameTime += dt;
+        }
 
         // Detailed profiling when debugging
         const profile = window.debugPerformance && window.debugPerformanceDetail;
@@ -1646,8 +1659,8 @@ export class Game extends EventEmitter {
             }
 
             // Splash and sink when hitting the water surface
-            if (proj.y > this.worldHeight - 60 && proj.x > 0 && proj.x < this.worldWidth) {
-                this.createSplash(proj.x, this.worldHeight - 60);
+            if (proj.y > this.waterLevel && proj.x > 0 && proj.x < this.worldWidth) {
+                this.createSplash(proj.x, this.waterLevel);
                 this.audioManager.playSplash();
                 this.removeProjectile(i);
                 continue;
@@ -3049,6 +3062,14 @@ export class Game extends EventEmitter {
             currentTeamIndex: this.currentTeamIndex,
             currentKoalaIndex: this.currentKoalaIndex,
             wind: this.wind,
+            // Sudden-death state — active player is authoritative so guests stay
+            // in lockstep on when it triggers, how high the water is, etc.
+            suddenDeathActive: this.turnManager.suddenDeathActive,
+            roundNumber: this.turnManager.roundNumber,
+            lastTeamIndex: this.turnManager.lastTeamIndex,
+            turnTime: this.turnManager.turnTime,
+            elapsedGameTime: this.turnManager.elapsedGameTime,
+            waterLevel: this.waterLevel,
             koalas: []
         };
 
@@ -3226,6 +3247,16 @@ export class Game extends EventEmitter {
             this.wind = data.wind;
             this.updateWindDisplay();
         }
+
+        // Sudden-death state is authoritative from the active player
+        if (data.suddenDeathActive !== undefined) {
+            this.turnManager.suddenDeathActive = data.suddenDeathActive;
+        }
+        if (data.roundNumber !== undefined) this.turnManager.roundNumber = data.roundNumber;
+        if (data.lastTeamIndex !== undefined) this.turnManager.lastTeamIndex = data.lastTeamIndex;
+        if (data.turnTime !== undefined) this.turnManager.turnTime = data.turnTime;
+        if (data.elapsedGameTime !== undefined) this.turnManager.elapsedGameTime = data.elapsedGameTime;
+        if (data.waterLevel !== undefined) this.waterLevel = data.waterLevel;
 
         this.updateTeamHealth();
         this.updateTurnIndicator();

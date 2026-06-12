@@ -27,11 +27,12 @@ A fast-paced, Worms-style artillery game featuring destructible terrain, various
 - **Zoom to Cursor:** Mouse-wheel zoom now anchors on the point under the cursor.
 - **Falling Explosives:** Mines and dynamite resting on terrain fall when the ground beneath them is destroyed.
 - **Dead Koala Ghosts:** When a koala dies, they appear as a faded ghost sprite with a floating golden halo. Dead bodies remain on the battlefield and can be flung around by explosions!
-- **Biased Explosion Knockback:** Characters now fly "up and out" from explosions instead of sliding sideways. The explosion force origin is shifted down for more dramatic launches.
+- **Worms-Style Knockback:** Explosion launch speed scales with the damage dealt — heavy weapons fling koalas across the map while grazes just nudge. Characters fly "up and out" from a force origin shifted down for dramatic launches.
+- **Stick or Slide Landings:** Land on walkable ground (up to ~60° slopes) and you plant where you touch down; land on anything steeper and you skid downhill until it flattens out (or you hit water). Only koalas launched by a hit bounce and skip across terrain — jumps always plant.
 - **Instant Water Death:** Koalas die immediately when touching water - no waiting for turn end.
 - **Improved Terrain Walking:** Characters can step up over bumps up to 8 pixels high and stick to terrain when walking down slopes (up to 16 pixels). Larger walls block movement.
 - **Fall Damage System:** Falls over 260 pixels cause damage. Taking fall damage during your turn ends it immediately!
-- **Forward Hop Jump:** Regular jump (Enter) now moves forward in the facing direction for tactical repositioning.
+- **Worms-Style Jumps:** Four committed ballistic jumps with no mid-air steering — Enter for a forward hop, Enter twice for a backward hop, Backspace for a high jump, Backspace twice for a backflip. Only the parachute lets you steer in the air.
 
 ## 🎮 Controls
 
@@ -39,8 +40,8 @@ A fast-paced, Worms-style artillery game featuring destructible terrain, various
 | Key | Action |
 |-----|--------|
 | **Arrow Keys / WASD** | Move Koala |
-| **Enter** | Forward Hop (jumps in facing direction) |
-| **Backspace** | High Jump / Backflip |
+| **Enter** | Forward Jump (tap twice for a backward hop) |
+| **Backspace** | High Jump (tap twice for a backflip) |
 | **Space / Left Click** | (Hold) Charge Weapon Power |
 | **Right Click** | Cancel Charge (before releasing) |
 | **Digits 1-5** | Set Weapon Timer (for Grenades) |

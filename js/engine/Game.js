@@ -18,6 +18,10 @@ import { DOMCache } from '../utils/DOMCache.js';
 import { TurnManager } from './TurnManager.js';
 
 export class Game extends EventEmitter {
+    // Phases during which the active player is in control of their koala. If that
+    // koala dies during one of these (e.g. drowns), the turn is handed over.
+    static LIVE_TURN_PHASES = ['aiming', 'armed', 'firing', 'blowtorch', 'drill'];
+
     constructor(canvas, options = {}) {
         super();
 
@@ -865,6 +869,19 @@ export class Game extends EventEmitter {
             this.turnManager.elapsedGameTime += dt;
         }
 
+        // If the koala whose turn it is has died mid-turn — usually by walking,
+        // jumping or drilling into the water — don't let the timer keep ticking on
+        // a corpse the player can still nudge around. Hand the turn over right
+        // away. This runs deterministically on every client (same model as the
+        // turn-timer expiry in TurnManager), so no extra network message is needed.
+        if (!this.isGameOver && Game.LIVE_TURN_PHASES.includes(this.phase)) {
+            const activeKoala = this.getCurrentKoala();
+            if (activeKoala && !activeKoala.isAlive) {
+                this.endTurn();
+                return;
+            }
+        }
+
         // Detailed profiling when debugging
         const profile = window.debugPerformance && window.debugPerformanceDetail;
         let t0, t1;
@@ -1027,7 +1044,9 @@ export class Game extends EventEmitter {
                         }
 
                         // Knockback direction depends on the weapon:
-                        // Fire Punch launches skyward, Dragon Ball sends them flat,
+                        // Fire Punch launches skyward, Dragon Ball sends them
+                        // flat, Prod is a pure WA-style nudge (no lift, no
+                        // tumble — just enough to walk someone off a ledge),
                         // everything else follows the swing angle
                         let kbX, kbY;
                         if (weapon.verticalKnockback) {
@@ -1036,11 +1055,14 @@ export class Game extends EventEmitter {
                         } else if (weapon.flatKnockback) {
                             kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
                             kbY = -0.3 * weapon.knockback;
+                        } else if (weapon.pushKnockback) {
+                            kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
+                            kbY = 0;
                         } else {
                             kbX = Math.cos(angle) * weapon.knockback;
                             kbY = Math.sin(angle) * weapon.knockback;
                         }
-                        target.applyKnockback(kbX, kbY);
+                        target.applyKnockback(kbX, kbY, { tumble: !weapon.pushKnockback });
 
                         explosionResults.push({
                             koalaName: target.name,
@@ -1072,21 +1094,29 @@ export class Game extends EventEmitter {
                 if (dist < weapon.range + 20) {
                     // HIT MAP OBJECT
                     if (obj.type === 'barrel') {
-                        // Explode barrel
-                        if (isAuthoritativeClient) {
-                            this.createExplosion(obj.x, obj.y, 60);
-                            this.terrain.createCrater(obj.x, obj.y, 60);
-                            this.terrain.mapObjects.splice(i, 1);
-
-                            // Let the explosion trigger its own network sync (as an explosion)
-                            // We don't need to manually send a sync here since handleProjectileImpact / explosion handles it.
-                            // Actually, wait, createExplosion does not sync! It just draws particles.
-                            // We do need to handle the barrel explosion damage here, or better yet, since barrel explosions aren't networked,
-                            // if isAuthoritativeClient is true, we should probably do a proper game explosion.
-                            // For now, let the terrain crater happen. It will go out of sync if we don't sync the crater.
-                            // But explosionSync supports an explosion point.
-                        }
+                        // Remove the barrel on EVERY client. Both compute the
+                        // same hit geometry from the synced shooter position/angle
+                        // (handleRemoteFire sets x/y/aimAngle before replaying the
+                        // swing), so this stays deterministic and the barrel
+                        // disappears on both sides.
+                        this.terrain.mapObjects.splice(i, 1);
+                        this.createExplosion(obj.x, obj.y, 60); // visual only
                         this.audioManager.playExplosion('medium');
+
+                        // Terrain destruction is host-authoritative and synced so
+                        // both clients carve an identical crater.
+                        if (isAuthoritativeClient) {
+                            this.terrain.createCrater(obj.x, obj.y, 60);
+                            if (this.networkManager && !this.isPractice) {
+                                this.networkManager.send({
+                                    type: 'explosionSync',
+                                    explosionX: obj.x,
+                                    explosionY: obj.y,
+                                    explosionRadius: 60,
+                                    results: []
+                                });
+                            }
+                        }
                     } else {
                         // Just create particles
                         this.createExplosionParticles(obj.x, obj.y, 5, '#ccc');
@@ -1146,6 +1176,9 @@ export class Game extends EventEmitter {
         koala.blowtorchDigRadius = weapon.digRadius;
         koala.blowtorchDrainRate = 33; // Meter per second when digging (~3 seconds total)
         koala.blowtorchDigging = false; // Not digging until mouse pressed
+        // Passive-client carve anchor (see updateBlowtorch) — reset each use
+        koala._btCarveX = koala.x;
+        koala._btCarveY = koala.y;
 
         // Show power bar as blowtorch meter at 100%
         if (this.dom.elements.powerBarContainer) {
@@ -1168,8 +1201,38 @@ export class Game extends EventEmitter {
             return;
         }
 
-        // Check if mouse button is held down to dig (or synced dig state if passive client)
-        const isDigging = this.isMyTurn() ? this.inputManager.mouse.down : koala.blowtorchDigging;
+        const myTurn = this.isMyTurn();
+
+        // PASSIVE CLIENT: we don't own this koala. Its position arrives via
+        // remote 'move' messages and the active player is the sole authority on
+        // when the blowtorch ends (we leave it on the 'turnEnd' message in
+        // handleRemoteTurnEnd). Carve terrain along the path the koala actually
+        // travels so both clients dig identical tunnels — driving movement from
+        // OUR local mouse here would dig in a totally different direction.
+        if (!myTurn && !this.isPractice) {
+            const isDigging = koala.blowtorchDigging;
+            if (koala._btCarveX === undefined) {
+                koala._btCarveX = koala.x;
+                koala._btCarveY = koala.y;
+            }
+            if (isDigging) {
+                const moved = Math.hypot(koala.x - koala._btCarveX, koala.y - koala._btCarveY);
+                if (moved >= 4) {
+                    koala._btCarveX = koala.x;
+                    koala._btCarveY = koala.y;
+                    this.terrain.createCrater(koala.x, koala.y, koala.blowtorchDigRadius);
+                }
+            } else {
+                // Keep the carve anchor on the koala while idle so we don't
+                // carve a long gash the instant digging resumes.
+                koala._btCarveX = koala.x;
+                koala._btCarveY = koala.y;
+            }
+            return;
+        }
+
+        // ACTIVE CLIENT (or practice): mouse-driven digging.
+        const isDigging = myTurn ? this.inputManager.mouse.down : koala.blowtorchDigging;
         koala.blowtorchDigging = isDigging;
 
         // Only deplete meter when actively digging
@@ -1825,7 +1888,16 @@ export class Game extends EventEmitter {
                     if (entity.isAlive === undefined) continue;
 
                     const koala = entity;
-                    const knockback = weapon.knockback * (1 - distance / weapon.explosionRadius);
+
+                    // Worms Armageddon-style knockback: launch speed is
+                    // proportional to the damage this hit would deal (same
+                    // distance falloff, double-damage buff included). Big
+                    // weapons fling koalas across the map, grazes just nudge.
+                    // Dead bodies use the same would-be damage so ragdolls
+                    // still fly.
+                    const falloff = 1 - distance / weapon.explosionRadius;
+                    const launchDamage = weapon.damage * damageMultiplier * falloff;
+                    const knockback = Math.min(launchDamage * 9, 900);
 
                     // Apply knockback with biased origin (shifted down 10px)
                     // This ensures characters fly "up and out" instead of sliding sideways
@@ -1839,7 +1911,7 @@ export class Game extends EventEmitter {
 
                     // Only apply damage to alive koalas
                     if (koala.isAlive) {
-                        const damage = Math.round(weapon.damage * damageMultiplier * (1 - distance / weapon.explosionRadius));
+                        const damage = Math.round(launchDamage);
                         koala.takeDamage(damage);
 
                         // Play damage sound
@@ -2968,9 +3040,9 @@ export class Game extends EventEmitter {
             koala.onGround = false; // let physics settle them into the shaft
         }
 
-        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.sendTurnEnd();
-        }
+        // No turn-end message needed: the drill runs for a fixed duration at a
+        // fixed speed with no player input, so both clients reach endDrill on
+        // their own (the same deterministic handover used by a normal shot).
         this.startRetreat();
     }
 
@@ -3732,21 +3804,18 @@ export class Game extends EventEmitter {
             return;
         }
 
+        // A turn-end message only ever means "the active player ended a tool
+        // action (blowtorch) early." End the same action locally so this client
+        // leaves the tool phase; from there the turn hands over deterministically
+        // on BOTH clients (retreat -> settle -> nextTurn), exactly like a normal
+        // shot. We must NOT force team/koala indices or call startTurn() here —
+        // doing so fought the deterministic handover and handed the active team
+        // a second turn whenever this client had already left the tool phase.
         if (this.phase === 'blowtorch') {
             this.endBlowtorch();
-            return;
+        } else if (this.phase === 'drill') {
+            this.endDrill();
         }
-
-        // Sync team/koala index if provided
-        if (data.nextTeam !== undefined) {
-            this.currentTeamIndex = data.nextTeam;
-        }
-        if (data.nextKoala !== undefined) {
-            this.currentKoalaIndex = data.nextKoala;
-        }
-
-        // Start the next turn
-        this.startTurn();
     }
 
     // (Obsolete duplicate declarations of handleRemoteStateSync and sendFullStateSync removed)
@@ -3861,6 +3930,7 @@ export class Game extends EventEmitter {
                 if (launchSpeed > 60) {
                     koala.spinVel = (koala.vx >= 0 ? 1 : -1) * Math.min(launchSpeed / 45, 18);
                     koala.onGround = false;
+                    koala.wasLaunched = true; // guest skips on landing like the host
                 }
 
                 // Show the same damage feedback the active player sees
@@ -3927,7 +3997,10 @@ export class Game extends EventEmitter {
             koala.vy = data.vy;
             koala.facingLeft = data.facingLeft;
             koala.onGround = false;
-            koala.isBackflipping = true;
+            // Only the double-tap backflip somersaults; a plain high jump
+            // (single Backspace) stays upright. Old clients omit `flip` and
+            // get the somersault, matching their local animation.
+            koala.isBackflipping = data.flip !== false;
             koala.backflipRotation = 0;
         }
     }

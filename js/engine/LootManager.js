@@ -71,10 +71,17 @@ export class LootManager {
     }
 
     /**
-     * Get a random function (uses seeded random if available for multiplayer sync)
+     * Loot RNG. IMPORTANT: this deliberately uses Math.random() and NOT the
+     * game's shared seededRandom stream. Crate spawns are decided on the host
+     * only (onTurnStart runs solely on the host) and the chosen item/position
+     * are broadcast to the guest via the 'crateSpawn' message, so loot never
+     * needs cross-client determinism. Drawing from the shared seededRandom here
+     * would advance it a different number of times on the host than on the
+     * guest, desyncing everything else that relies on it — per-turn wind and
+     * all weapon spread (cluster, airstrike, burst, mine duds).
      */
     random() {
-        return this.game.seededRandom ? this.game.seededRandom() : Math.random();
+        return Math.random();
     }
 
     /**

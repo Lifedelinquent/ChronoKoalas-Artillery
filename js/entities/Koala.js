@@ -29,12 +29,24 @@ export class Koala {
         this.facingLeft = false;
         this.aimAngle = 0;
 
+        // Worms-style jump state: 'forward' | 'backward' | 'high' | 'backflip'.
+        // A quick second tap of the jump key converts forward->backward and
+        // high->backflip while still in the takeoff window (see InputManager).
+        this.jumpType = null;
+        this.jumpStartTime = 0;
+
+        // Worms-style slope handling: true while skidding down terrain too
+        // steep to stand on (driven by Physics.updateSliding)
+        this.isSliding = false;
+
         // Hit-reaction physics (tumble + squash/stretch). Purely visual/feel —
         // these are driven by applyKnockback() and integrated in Physics.
         this.spin = 0;          // current visual rotation from being launched (radians)
         this.spinVel = 0;       // angular velocity while tumbling (radians/sec)
         this.squash = 1;        // squash & stretch scale (1 = neutral)
         this.landingImpact = 0; // downward speed captured the frame we touch down
+        this.wasLaunched = false; // true while flying from a hit — only these
+                                  // landings skip/bounce; jumps always plant
 
         // Tracking
         this.fallDistance = 0;
@@ -61,10 +73,14 @@ export class Koala {
      * Adds the impulse and kicks off a tumble whose spin scales with how hard
      * they were hit and whose direction follows their horizontal travel.
      */
-    applyKnockback(kx, ky) {
+    applyKnockback(kx, ky, opts = {}) {
         this.vx += kx;
         this.vy += ky;
         this.onGround = false;
+        this.wasLaunched = true;
+
+        // Gentle shoves (Prod) just topple the target without a tumble
+        if (opts.tumble === false) return;
 
         const speed = Math.hypot(kx, ky);
         if (speed > 60) {

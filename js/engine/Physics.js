@@ -17,6 +17,16 @@ export class Physics {
         this.airFriction = 0.995;   // per 1/60s — negligible drag, natural arcs
         this.bounciness = 0.5;
         this.terminalVelocity = 800;
+
+        // Worms-style slope rules: terrain steeper than stickSlope (rise/run,
+        // 1.7 ≈ 60°) can't be stood on — landing there redirects momentum
+        // along the slope and the koala skids downhill. Anything gentler is
+        // standable, like Worms lets you perch on fairly steep hills. Once a
+        // skid is going it only stops below slideRelease (hysteresis, so a
+        // slide doesn't stutter on/off across bumpy pixels).
+        this.stickSlope = 1.7;
+        this.slideRelease = 1.2;
+        this.slideFriction = 0.99; // per 1/60s — barely slows a downhill skid
     }
 
     /**
@@ -71,13 +81,19 @@ export class Physics {
         entity.y += entity.vy * dt;
 
         // Apply friction (frame-rate independent). Strong on the ground so the
-        // koala stops where it lands; nearly none in the air so jumps and
-        // backflips keep their horizontal momentum and arc naturally.
-        const frictionCoeff = entity.onGround ? this.groundFriction : this.airFriction;
+        // koala stops where it lands; nearly none while skidding down a steep
+        // slope or in the air so jumps and backflips keep their momentum.
+        const frictionCoeff = entity.onGround
+            ? (entity.isSliding ? this.slideFriction : this.groundFriction)
+            : this.airFriction;
         entity.vx *= Math.pow(frictionCoeff, dt * 60);
 
         // Terrain collision
         this.resolveTerrainCollision(entity);
+
+        // Worms-style slope skid: accelerate downhill while standing on
+        // terrain too steep to stick to
+        this.updateSliding(entity, dt);
 
         // Update peakY: track the highest point (lowest numerical Y) since leaving ground
         if (entity.peakY === undefined) entity.peakY = entity.y;
@@ -116,10 +132,12 @@ export class Physics {
             entity.peakY = entity.y;
             entity.fallDistance = 0; // Legacy property cleanup
 
-            // Bouncy launches: a koala that slams down fast rebounds and keeps
+            // Bouncy launches: a koala slammed down by a hit rebounds and keeps
             // skipping like a stone instead of dead-stopping. Runs AFTER fall
             // damage so a hard fall still hurts — then bounces for flair.
-            if (entity.landingImpact > 250) {
+            // ONLY knockback launches skip (Worms-style); jumps and plain
+            // falls always plant so platforming stays predictable.
+            if (entity.wasLaunched && entity.landingImpact > 250) {
                 entity.vy = -entity.landingImpact * 0.45;
                 entity.onGround = false;
                 entity.spinVel *= 0.6; // keep tumbling, a touch calmer each bounce
@@ -130,6 +148,9 @@ export class Physics {
                         entity.x, entity.y + entity.height / 2, 6, '#d9c7a3'
                     );
                 }
+            } else {
+                // Came to rest (or never launched) — clear the hit state
+                entity.wasLaunched = false;
             }
             entity.landingImpact = 0; // consumed — don't re-bounce next frame
         } else if (entity.vy < 0) {
@@ -225,14 +246,29 @@ export class Physics {
             const impactVy = entity.vy; // downward speed at the moment of contact
             entity.vy = 0;
 
-            // Landing impact: absorb most horizontal momentum the instant we
-            // touch down so a hop/backflip doesn't carry the koala sliding off
-            // down a slope. Only on the ground->air->ground transition.
+            // Landing: Worms-style stick or slide. On walkable ground we
+            // absorb most horizontal momentum so the koala plants where it
+            // lands; on terrain steeper than stickSlope the fall is redirected
+            // along the surface and they skid downhill instead.
             if (!wasOnGround) {
-                const hard = impactVy > 250;
-                // Hard slams keep more momentum so they skip across terrain;
-                // soft landings still plant where they touch down.
-                entity.vx *= hard ? 0.7 : 0.4;
+                const slope = this.getSlopeAt(entity.x, entity.y + entity.height / 2);
+                const steep = slope !== null && Math.abs(slope) > this.stickSlope;
+
+                if (steep) {
+                    // Project incoming velocity onto the slope tangent so the
+                    // impact speed carries into the skid
+                    const t = 1 / Math.hypot(1, slope);
+                    const vAlong = entity.vx * t + impactVy * slope * t;
+                    entity.vx = vAlong * t;
+                    entity.isSliding = true;
+                } else {
+                    const hard = entity.wasLaunched && impactVy > 250;
+                    // Hard knockback slams keep more momentum so they skip
+                    // across terrain; jumps and soft landings plant where
+                    // they touch down.
+                    entity.vx *= hard ? 0.7 : 0.4;
+                    entity.isSliding = false;
+                }
 
                 // Stash the impact so updateEntity can bounce AFTER fall damage,
                 // and squash the sprite proportional to how hard they hit.
@@ -248,6 +284,7 @@ export class Physics {
             entity.isJumping = false;
             entity.isBackflipping = false;
             entity.backflipRotation = 0;
+            entity.jumpType = null;
         }
 
         // Check head (for ceilings)
@@ -282,6 +319,65 @@ export class Physics {
             }
             entity.x = wallX + entity.width / 2;
             entity.vx = -entity.vx * this.bounciness;
+        }
+    }
+
+    /**
+     * Measure the terrain slope under a point as rise/run (positive = ground
+     * falls away to the right, since Y grows downward). Samples the surface
+     * height a few pixels either side of x. Returns null when there's no
+     * surface within range on one side (e.g. standing on a ledge lip).
+     */
+    getSlopeAt(x, footY) {
+        const terrain = this.game.terrain;
+        const span = 6;
+
+        const surfaceY = (sx) => {
+            if (terrain.checkCollision(sx, footY)) {
+                // Inside terrain — walk up to the surface
+                let y = footY;
+                while (y > footY - 24 && terrain.checkCollision(sx, y - 1)) y--;
+                return y;
+            }
+            // In air — scan down a short way for the surface
+            for (let d = 1; d <= 18; d++) {
+                if (terrain.checkCollision(sx, footY + d)) return footY + d;
+            }
+            return null;
+        };
+
+        const yL = surfaceY(x - span);
+        const yR = surfaceY(x + span);
+        if (yL === null || yR === null) return null;
+        return (yR - yL) / (span * 2);
+    }
+
+    /**
+     * Worms-style slope skid: while grounded on terrain steeper than
+     * stickSlope, gravity pulls the entity downhill (slideFriction barely
+     * slows it). Once the ground flattens out the strong groundFriction
+     * takes over and they stop — i.e. you slide until you reach somewhere
+     * you can stand.
+     */
+    updateSliding(entity, dt) {
+        if (!entity.onGround) {
+            entity.isSliding = false;
+            return;
+        }
+
+        const slope = this.getSlopeAt(entity.x, entity.y + entity.height / 2);
+        // Hysteresis: it takes stickSlope (~60°) to START a skid, but an
+        // active skid keeps going until the ground eases below slideRelease
+        const threshold = entity.isSliding ? this.slideRelease : this.stickSlope;
+        const steep = slope !== null && Math.abs(slope) > threshold;
+
+        if (steep) {
+            entity.isSliding = true;
+            const downhill = slope > 0 ? 1 : -1;
+            const angle = Math.atan(Math.abs(slope));
+            entity.vx += downhill * this.gravity * Math.sin(angle) * dt;
+        } else {
+            entity.isSliding = false;
         }
     }
 

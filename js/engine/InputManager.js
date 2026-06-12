@@ -393,6 +393,13 @@ export class InputManager {
             return;
         }
 
+        // A dead koala (e.g. one that just drowned) can't be walked around while
+        // the turn winds down. handleKeyDown already blocks fresh input, but a
+        // key held down at the moment of death would otherwise keep moving it.
+        if (!koala.isAlive) {
+            return;
+        }
+
         // WASD or Arrow key movement
         let moveDir = 0;
         if (this.keys['KeyA'] || this.keys['ArrowLeft']) {
@@ -420,7 +427,7 @@ export class InputManager {
                 }
             }
 
-            if (koala.onGround) {
+            if (koala.onGround && !koala.isSliding) {
                 // Ground movement with terrain following
                 // (fast walk crate buff nearly doubles walking speed)
                 const fastWalk = this.game.getCurrentTeam()?.buffs?.fastWalk ? 1.8 : 1;
@@ -433,10 +440,12 @@ export class InputManager {
                     }
                     positionChanged = true;
                 }
-            } else {
-                // Air control - significantly reduced to match slow walk speed
-                koala.vx += moveDir * 50 * dt; // Reduced acceleration
-                koala.vx = Math.max(-40, Math.min(40, koala.vx)); // Lower air speed cap
+            } else if (koala.parachuteActive) {
+                // Worms-style: jumps and knockback arcs are committed — no
+                // mid-air steering. The parachute is the exception: you can
+                // drift it left/right while it rides the wind.
+                koala.vx += moveDir * 80 * dt;
+                koala.vx = Math.max(-90, Math.min(90, koala.vx));
                 positionChanged = true;
             }
         }
@@ -647,59 +656,88 @@ export class InputManager {
         if (powerFill) powerFill.style.width = '0%';
     }
 
+    // Window (ms) after takeoff in which a second tap of the jump key
+    // converts the jump, exactly like Worms Armageddon's double-tap jumps:
+    // Enter,Enter = backward hop, Backspace,Backspace = backflip.
+    static JUMP_CONVERT_WINDOW = 280;
+
     /**
-     * Make koala jump (forward hop)
+     * Enter: forward jump. A second tap shortly after takeoff converts it
+     * into a small backward hop (Worms-style double-tap). Jumps are committed
+     * ballistic arcs — there is no mid-air steering.
      */
     jump() {
         const koala = this.game.getCurrentKoala();
-        if (!koala || !koala.onGround) return;
+        if (!koala) return;
 
-        // Forward hop - a short, snappy arc. Air friction is now ~1.0 so this
-        // horizontal momentum is preserved through the jump (no floaty drop).
-        koala.vy = -260;
-        koala.vx = koala.facingLeft ? -135 : 135; // Forward momentum
-        koala.onGround = false;
-        koala.isJumping = true;
-
-        // NETWORK SYNC: Send jump to opponent
-        if (this.game.networkManager && !this.game.isPractice) {
-            this.game.networkManager.send({
-                type: 'jump',
-                x: koala.x,
-                y: koala.y,
-                vx: koala.vx,
-                vy: koala.vy
-            });
+        if (koala.onGround) {
+            // Forward jump - a short, snappy arc. Air friction is ~1.0 so the
+            // horizontal momentum is preserved through the jump.
+            koala.vy = -260;
+            koala.vx = koala.facingLeft ? -135 : 135; // Forward momentum
+            koala.onGround = false;
+            koala.isJumping = true;
+            koala.jumpType = 'forward';
+            koala.jumpStartTime = performance.now();
+            this._syncJump(koala, 'jump');
+        } else if (koala.jumpType === 'forward' &&
+            performance.now() - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
+            // Double-tap: convert into a small backward hop
+            koala.vx = koala.facingLeft ? 100 : -100;
+            koala.jumpType = 'backward';
+            this._syncJump(koala, 'jump');
         }
     }
 
     /**
-     * Make koala high jump / backflip
+     * Backspace: high jump straight up. A second tap shortly after takeoff
+     * converts it into a backflip — a high backward arc with one somersault
+     * (Worms-style double-tap).
      */
     highJump() {
         const koala = this.game.getCurrentKoala();
-        if (!koala || !koala.onGround) return;
+        if (!koala) return;
 
-        // Backflip - a higher jump that hops backward with one clean somersault.
-        // Height/distance toned down and the spin is now a single controlled
-        // rotation (see Game.updateKoalaAnimations) instead of 4+ wild flips.
-        koala.vy = -400;
-        koala.vx = koala.facingLeft ? 165 : -165;
-        koala.onGround = false;
-        koala.isBackflipping = true;
-        koala.backflipRotation = 0; // Start spin
-
-        // NETWORK SYNC: Send high jump to opponent
-        if (this.game.networkManager && !this.game.isPractice) {
-            this.game.networkManager.send({
-                type: 'highJump',
-                x: koala.x,
-                y: koala.y,
-                vx: koala.vx,
-                vy: koala.vy,
-                facingLeft: koala.facingLeft
-            });
+        if (koala.onGround) {
+            // High jump - straight up, no horizontal drift
+            koala.vy = -400;
+            koala.vx = 0;
+            koala.onGround = false;
+            koala.isJumping = true;
+            koala.jumpType = 'high';
+            koala.jumpStartTime = performance.now();
+            this._syncJump(koala, 'highJump', false);
+        } else if (koala.jumpType === 'high' &&
+            performance.now() - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
+            // Double-tap: backflip — kick backward and somersault once
+            // (see Game.updateKoalaAnimations for the rotation)
+            koala.vx = koala.facingLeft ? 165 : -165;
+            koala.jumpType = 'backflip';
+            koala.isBackflipping = true;
+            koala.backflipRotation = 0;
+            this._syncJump(koala, 'highJump', true);
         }
+    }
+
+    /**
+     * NETWORK SYNC: send a jump (or mid-air conversion) to the opponent.
+     * `flip` only applies to highJump messages: true = somersault animation.
+     */
+    _syncJump(koala, type, flip) {
+        if (!this.game.networkManager || this.game.isPractice) return;
+
+        const msg = {
+            type,
+            x: koala.x,
+            y: koala.y,
+            vx: koala.vx,
+            vy: koala.vy
+        };
+        if (type === 'highJump') {
+            msg.facingLeft = koala.facingLeft;
+            msg.flip = flip;
+        }
+        this.game.networkManager.send(msg);
     }
 
     /**

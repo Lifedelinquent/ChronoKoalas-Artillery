@@ -38,6 +38,10 @@ export class WeaponManager {
      * Create weapon definitions.
      * category groups weapons in the selection panel.
      * ammo: Infinity = always available, 0 = crate-only.
+     *
+     * NOTE: explosion knockback is Worms Armageddon-style — launch speed is
+     * derived from the damage dealt (see Game.handleProjectileImpact), so the
+     * `knockback` field only drives melee swings and special cases.
      */
     createWeapons() {
         return {
@@ -334,8 +338,9 @@ export class WeaponManager {
                 icon: '👉',
                 type: 'melee',
                 damage: 0,        // pure push, no damage
-                knockback: 250,
+                knockback: 120,
                 range: 28,
+                pushKnockback: true, // WA-style nudge: horizontal only, no tumble
                 ammo: Infinity
             },
             kamikaze: {

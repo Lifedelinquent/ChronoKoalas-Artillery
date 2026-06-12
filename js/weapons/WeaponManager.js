@@ -42,6 +42,10 @@ export class WeaponManager {
      * NOTE: explosion knockback is Worms Armageddon-style — launch speed is
      * derived from the damage dealt (see Game.handleProjectileImpact), so the
      * `knockback` field only drives melee swings and special cases.
+     *
+     * NOTE: explosionRadius follows WA crater proportions: radius ≈ damage × 1.4
+     * (WA's damage-to-crater ratio scaled from 16px worms to 30px koalas), so a
+     * 50hp bazooka digs a 70px hole and a 100hp Holy Grenade digs a 140px one.
      */
     createWeapons() {
         return {
@@ -54,7 +58,7 @@ export class WeaponManager {
                 type: 'bazooka',
                 damage: 50,
                 directDamage: 0,
-                explosionRadius: 50,
+                explosionRadius: 70,
                 knockback: 300,
                 speed: 900,
                 gravity: 1,
@@ -69,7 +73,7 @@ export class WeaponManager {
                 type: 'homing',
                 damage: 50,
                 directDamage: 0,
-                explosionRadius: 50,
+                explosionRadius: 70,
                 knockback: 300,
                 speed: 500,
                 gravity: 0.15,
@@ -86,7 +90,7 @@ export class WeaponManager {
                 type: 'mortar',
                 damage: 35,
                 directDamage: 0,
-                explosionRadius: 40,
+                explosionRadius: 50,
                 knockback: 250,
                 speed: 850,
                 gravity: 1,
@@ -105,7 +109,7 @@ export class WeaponManager {
                 type: 'grenade',
                 damage: 50,
                 directDamage: 0,
-                explosionRadius: 85,
+                explosionRadius: 70,
                 knockback: 300,
                 speed: 800,
                 gravity: 1,
@@ -126,7 +130,7 @@ export class WeaponManager {
                 type: 'cluster',
                 damage: 30,
                 directDamage: 0,
-                explosionRadius: 40,
+                explosionRadius: 45,
                 knockback: 220,
                 speed: 800,
                 gravity: 1,
@@ -149,7 +153,7 @@ export class WeaponManager {
                 type: 'banana',
                 damage: 75,
                 directDamage: 0,
-                explosionRadius: 60,
+                explosionRadius: 100,
                 knockback: 400,
                 speed: 800,
                 gravity: 1,
@@ -189,7 +193,7 @@ export class WeaponManager {
                 type: 'holygrenade',
                 damage: 100,
                 directDamage: 0,
-                explosionRadius: 150,
+                explosionRadius: 140,
                 knockback: 500,
                 speed: 700,
                 gravity: 1,
@@ -210,7 +214,7 @@ export class WeaponManager {
                 type: 'shotgun',
                 damage: 8,
                 directDamage: 8,
-                explosionRadius: 15,
+                explosionRadius: 18,
                 knockback: 80,
                 speed: 1200,
                 gravity: 0,
@@ -350,7 +354,7 @@ export class WeaponManager {
                 icon: '✈️',
                 type: 'kamikaze',
                 damage: 50,            // final explosion
-                explosionRadius: 75,
+                explosionRadius: 70,
                 knockback: 350,
                 dashDamage: 30,        // damage to anyone touched during the dash
                 dashSpeed: 480,
@@ -367,7 +371,7 @@ export class WeaponManager {
                 type: 'dynamite',
                 damage: 75,
                 directDamage: 0,
-                explosionRadius: 120,
+                explosionRadius: 100,
                 knockback: 400,
                 speed: 0,
                 gravity: 1,
@@ -406,7 +410,7 @@ export class WeaponManager {
                 type: 'sheep',
                 damage: 75,
                 directDamage: 0,
-                explosionRadius: 90,
+                explosionRadius: 100,
                 knockback: 400,
                 speed: 300,
                 gravity: 1,
@@ -428,7 +432,7 @@ export class WeaponManager {
                 type: 'airstrike',
                 damage: 30,
                 directDamage: 0,
-                explosionRadius: 35,
+                explosionRadius: 45,
                 knockback: 200,
                 targetted: true,
                 missiles: 5,
@@ -579,7 +583,7 @@ export class WeaponManager {
                 type: 'clusterFrag',
                 damage: 25,
                 directDamage: 0,
-                explosionRadius: 30,
+                explosionRadius: 35,
                 knockback: 180,
                 gravity: 1,
                 affectedByWind: false
@@ -590,7 +594,7 @@ export class WeaponManager {
                 type: 'banana',
                 damage: 75,
                 directDamage: 0,
-                explosionRadius: 60,
+                explosionRadius: 100,
                 knockback: 400,
                 gravity: 1,
                 affectedByWind: false
@@ -612,7 +616,7 @@ export class WeaponManager {
                 type: 'kamikaze',
                 damage: 50,
                 directDamage: 0,
-                explosionRadius: 75,
+                explosionRadius: 70,
                 knockback: 350
             }
         };

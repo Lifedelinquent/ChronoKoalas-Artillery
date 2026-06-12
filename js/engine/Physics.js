@@ -8,6 +8,10 @@ export class Physics {
 
         // Physics constants
         this.gravity = 400; // pixels per second squared
+        // Worms Armageddon-style wind: at full strength the sideways pull is a
+        // substantial fraction of gravity, enough to visibly bend a bazooka
+        // shot or blow a slow lob backwards. game.wind (-1..1) scales this.
+        this.windAccel = 240; // px/s² at |wind| = 1
         // Friction is now split between ground and air, and applied in a
         // frame-rate-independent way (see updateEntity). Air friction is nearly
         // 1.0 so jump/backflip arcs keep their horizontal momentum (no more
@@ -69,7 +73,9 @@ export class Physics {
         if (entity.parachuteActive && !entity.onGround && entity.vy > 0) {
             entity.parachuteDeployed = true;
             entity.vy = Math.min(entity.vy, 70);
-            entity.vx += this.game.wind * 60 * dt;
+            // WA parachutes ride the wind hard — drifting with a gale carries
+            // you across the map, drifting against it barely moves you
+            entity.vx += this.game.wind * 150 * dt;
             // A drifting descent shouldn't count as a damaging fall
             entity.peakY = entity.y;
         } else {
@@ -386,7 +392,7 @@ export class Physics {
      */
     updateProjectile(proj, dt) {
         // Wind affects projectiles
-        const windForce = this.game.wind * 100;
+        const windForce = this.game.wind * this.windAccel;
 
         // Apply gravity (some projectiles may have custom gravity;
         // the low-gravity crate buff floats shots too)

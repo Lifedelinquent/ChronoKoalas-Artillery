@@ -665,9 +665,10 @@ export class Renderer {
     }
 
     /**
-     * Draw a predicted trajectory arc while charging or armed.
-     * Simulates the same physics the projectile will use (gravity + wind),
-     * shows flowing dots along the path, and marks the predicted impact point.
+     * Draw a short trajectory hint while charging or armed.
+     * Worms-style: only the first stretch of the arc is shown, wind is NOT
+     * factored in, and there is no impact marker — the player judges the
+     * landing spot (and the wind) themselves.
      */
     drawTrajectoryPreview(koala, weapon, angle, armed) {
         const ctx = this.ctx;
@@ -682,23 +683,21 @@ export class Renderer {
         let vx = Math.cos(angle) * speed;
         let vy = Math.sin(angle) * speed;
 
+        // Gravity only — deliberately ignoring wind so the real flight
+        // deviates from the hint and you have to read the wind gauge
         const gravity = this.game.physics.gravity * (weapon.gravity ?? 1);
-        const windForce = (weapon.affectedByWind !== false) ? this.game.wind * 100 : 0;
 
         const step = 1 / 60;
-        const maxSteps = 240; // ~4 seconds of flight, but usually cut short by terrain
+        const maxSteps = 45; // ~0.75s of flight — just the launch direction
 
-        // Collect the path so we can render flowing dots + an impact marker
         const points = [];
-        let impactX = null, impactY = null;
         for (let i = 0; i < maxSteps; i++) {
             vy += gravity * step;
-            vx += windForce * step;
             x += vx * step;
             y += vy * step;
 
-            if (this.game.terrain.checkCollision(x, y)) { impactX = x; impactY = y; break; }
-            if (y > this.game.worldHeight) { impactX = x; impactY = y; break; }
+            if (this.game.terrain.checkCollision(x, y)) break;
+            if (y > this.game.worldHeight) break;
             if (x < 0 || x > this.game.worldWidth) break;
 
             points.push(x, y);
@@ -706,7 +705,8 @@ export class Renderer {
 
         ctx.save();
 
-        // Brighter, fuller arc once the shot is locked in
+        // Brighter once the shot is locked in; the hint fades out hard toward
+        // its end so it reads as a direction, not a destination
         const baseColor = armed ? '255, 213, 74' : '255, 255, 255';
         const dotSpacing = 5;        // draw a dot every N samples
         const flow = Math.floor(performance.now() / 45); // marching offset for "flow"
@@ -716,36 +716,13 @@ export class Renderer {
             const px = points[p * 2];
             const py = points[p * 2 + 1];
             const progress = p / (points.length / 2);
-            const alpha = (armed ? 0.95 : 0.8) * (1 - progress * 0.6);
+            const alpha = (armed ? 0.9 : 0.75) * (1 - progress * 0.95);
             const radius = armed ? 3 : 2.5;
             ctx.globalAlpha = alpha;
             ctx.fillStyle = `rgba(${baseColor}, 1)`;
             ctx.beginPath();
             ctx.arc(px, py, radius, 0, Math.PI * 2);
             ctx.fill();
-        }
-
-        // Predicted impact marker
-        if (impactX != null) {
-            const t = performance.now() / 1000;
-            ctx.globalAlpha = 1;
-            ctx.strokeStyle = armed ? '#ff4d4d' : 'rgba(255,255,255,0.7)';
-            ctx.lineWidth = 2;
-            if (armed) {
-                ctx.shadowColor = '#ff4d4d';
-                ctx.shadowBlur = 10;
-            }
-            const ring = (armed ? 9 : 6) + Math.sin(t * 6) * (armed ? 2.5 : 1.5);
-            ctx.beginPath();
-            ctx.arc(impactX, impactY, ring, 0, Math.PI * 2);
-            ctx.stroke();
-            // Center cross
-            ctx.beginPath();
-            ctx.moveTo(impactX - ring, impactY);
-            ctx.lineTo(impactX + ring, impactY);
-            ctx.moveTo(impactX, impactY - ring);
-            ctx.lineTo(impactX, impactY + ring);
-            ctx.stroke();
         }
 
         ctx.restore();

@@ -1885,8 +1885,9 @@ export class Game extends EventEmitter {
 
         // Create explosion
         if (weapon.explosionRadius > 0) {
-            // Play explosion sound based on size
-            const size = weapon.explosionRadius > 60 ? 'large' : weapon.explosionRadius < 30 ? 'small' : 'medium';
+            // Play explosion sound based on size (thresholds match the
+            // WA-proportioned radii: 100+ = dynamite class, <30 = gun chip)
+            const size = weapon.explosionRadius >= 90 ? 'large' : weapon.explosionRadius < 30 ? 'small' : 'medium';
             this.audioManager.playExplosion(size);
 
             this.createExplosion(projectile.x, projectile.y, weapon.explosionRadius);
@@ -2794,7 +2795,9 @@ export class Game extends EventEmitter {
                     proj.vx = 0;
                     proj.vy = 200;
                     proj.gravityMultiplier = 0.5;
-                    proj.affectedByWind = false;
+                    // WA-style: strike drops drift with the wind on the way
+                    // down, so you target upwind of where you want them
+                    proj.affectedByWind = true;
                     proj.triggeredByProximity = true;
                     proj.triggerDelay = 3;
                     proj.timer = 3;
@@ -2831,7 +2834,8 @@ export class Game extends EventEmitter {
                 proj.type = 'airstrike';
                 proj.weapon = weapon;
                 proj.gravityMultiplier = 0.5;
-                proj.affectedByWind = false;
+                // WA-style: missiles are blown off course by the wind
+                proj.affectedByWind = true;
                 proj.bounces = false;
                 proj.timer = null;
                 proj.timerStarted = false;
@@ -2854,7 +2858,7 @@ export class Game extends EventEmitter {
                     type: 'airstrike',
                     weapon: weapon,
                     gravityMultiplier: 0.5,
-                    affectedByWind: false,
+                    affectedByWind: true, // WA-style: wind blows missiles off course
                     bounces: false
                 });
                 // Override rotation to point downward
@@ -3228,34 +3232,42 @@ export class Game extends EventEmitter {
         const rand = this.seededRandom || Math.random;
         for (let i = 0; i < count; i++) {
             this.firePatches.push({
+                // Initial scatter leans downwind (WA napalm drifts with the gale)
                 x: x + (rand() - 0.5) * 70,
                 y: y - 10,
-                vx: (rand() - 0.5) * 140,
+                vx: (rand() - 0.5) * 140 + this.wind * 100,
                 vy: -60 - rand() * 120,
                 settled: false,
                 age: 0,
-                lifetime: 4 + rand() * 2,
+                lifetime: 5 + rand() * 3,
                 tickTimer: 0,
+                burnTimer: 0,
                 flicker: rand() * Math.PI * 2
             });
         }
     }
 
     /**
-     * Update fire patches: scatter, settle on terrain, burn anyone standing
-     * in them, then gutter out.
+     * Update fire patches: scatter (riding the wind), settle on terrain, burn
+     * anyone standing in them, eat into the ground WA-style, then gutter out.
      */
     updateFirePatches(dt) {
         if (this.firePatches.length === 0) return;
 
         const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
 
+        // Terrain the fire burns away this frame, batched into one sync
+        // message so the guest's map stays identical to the host's
+        const burnCraters = [];
+
         for (let i = this.firePatches.length - 1; i >= 0; i--) {
             const fire = this.firePatches[i];
 
             if (!fire.settled) {
-                // Ballistic scatter until it lands
+                // Ballistic scatter until it lands; flames are light, so the
+                // wind shoves them around hard (WA napalm behavior)
                 fire.vy += 400 * dt;
+                fire.vx += this.wind * this.physics.windAccel * 0.8 * dt;
                 fire.x += fire.vx * dt;
                 fire.y += fire.vy * dt;
 
@@ -3272,6 +3284,28 @@ export class Game extends EventEmitter {
                 }
             } else {
                 fire.age += dt;
+
+                // WA-style fire creep: settled flames inch downwind along the
+                // surface (blocked by walls), spreading the burn sideways
+                if (Math.abs(this.wind) > 0.15) {
+                    const nx = fire.x + this.wind * 30 * dt;
+                    if (!this.terrain.checkCollision(nx, fire.y - 3)) {
+                        fire.x = nx;
+                    }
+                }
+
+                // Burn into the terrain: every few ticks the flame eats a
+                // small pit under itself, then sinks into the hole it made —
+                // exactly how WA fire chews channels through the landscape.
+                // Terrain is host-authoritative; craters are synced below.
+                fire.burnTimer += dt;
+                if (fire.burnTimer >= 0.5) {
+                    fire.burnTimer = 0;
+                    if (isAuthoritativeClient) {
+                        this.terrain.createCrater(fire.x, fire.y + 4, 9);
+                        burnCraters.push({ x: fire.x, y: fire.y + 4, r: 9 });
+                    }
+                }
 
                 // Ground burned away beneath it?
                 if (!this.terrain.checkCollision(fire.x, fire.y + 4) &&
@@ -3320,6 +3354,19 @@ export class Game extends EventEmitter {
                     this.firePatches.splice(i, 1);
                 }
             }
+        }
+
+        // Ship this frame's burn damage to the guest in one batched message
+        // (guest fire is visual-only; its terrain comes from these craters)
+        if (burnCraters.length > 0 && this.networkManager && !this.isPractice && this.networkManager.isHost) {
+            this.networkManager.send({
+                type: 'explosionSync',
+                explosionX: 0,
+                explosionY: 0,
+                explosionRadius: 0, // no single crater — craters[] carries the burns
+                craters: burnCraters,
+                results: []
+            });
         }
     }
 
@@ -3978,6 +4025,13 @@ export class Game extends EventEmitter {
         if (data.explosionX !== undefined && data.explosionY !== undefined && data.explosionRadius > 0) {
             this.terrain.createCrater(data.explosionX, data.explosionY, data.explosionRadius);
             console.log(`   Terrain crater at (${data.explosionX.toFixed(0)}, ${data.explosionY.toFixed(0)}) radius ${data.explosionRadius}`);
+        }
+
+        // Batched craters (fire burning terrain) — apply at exact host positions
+        if (Array.isArray(data.craters)) {
+            for (const c of data.craters) {
+                this.terrain.createCrater(c.x, c.y, c.r);
+            }
         }
 
         // Apply the synced results to each affected koala

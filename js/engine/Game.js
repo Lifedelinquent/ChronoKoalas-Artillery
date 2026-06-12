@@ -442,11 +442,26 @@ export class Game extends EventEmitter {
     /**
      * Build the bounds passed to the terrain spawn scan so it respects the
      * real map area (no dead zone above imported maps, no underwater surfaces).
+     *
+     * A top-margin exclusion zone (10% of playable height) prevents characters
+     * from spawning on thin terrain edges or slivers near the very top of the
+     * map, which is a common issue with user-created maps.
      */
     getSpawnScanBounds() {
+        const rawTopY = this.mapBounds?.topY || 0;
+        const waterLevel = this.mapBounds?.waterLevel ?? (this.worldHeight - 60);
+
+        // Push the spawn ceiling down by 10% of the playable map height so
+        // characters never appear right at the top edge of the terrain.
+        const playableHeight = waterLevel - rawTopY;
+        const topMargin = Math.max(60, Math.floor(playableHeight * 0.10));
+        const adjustedTopY = rawTopY + topMargin;
+
+        console.log(`📏 Spawn scan: topY=${rawTopY} + margin=${topMargin} → effective=${adjustedTopY}, waterLevel=${waterLevel}`);
+
         return {
-            topY: this.mapBounds?.topY || 0,
-            waterLevel: this.mapBounds?.waterLevel ?? (this.worldHeight - 60),
+            topY: adjustedTopY,
+            waterLevel,
         };
     }
 
@@ -463,6 +478,17 @@ export class Game extends EventEmitter {
 
         // Helper: use seeded random if available (multiplayer sync)
         const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
+
+        // Reject markers above the spawn exclusion ceiling (top of map)
+        const spawnBounds = this.getSpawnScanBounds();
+        if (y < spawnBounds.topY) {
+            console.log(`   ⚠️ Marker (${x}, ${y}) is above spawn ceiling (${spawnBounds.topY}), relocating...`);
+            const nearest = this.findNearestValidSpawn(x, y, existingPositions);
+            if (nearest) {
+                console.log(`   ✅ Relocated to (${nearest.x}, ${nearest.y})`);
+                return nearest;
+            }
+        }
 
         // Check if marker position has valid ground nearby
         const isValidSpawn = this.isValidSpawnPoint(x, y);

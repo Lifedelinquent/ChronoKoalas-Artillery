@@ -101,6 +101,23 @@ export class Physics {
             // Reset peakY now that we landed safely or took damage
             entity.peakY = entity.y;
             entity.fallDistance = 0; // Legacy property cleanup
+
+            // Bouncy launches: a koala that slams down fast rebounds and keeps
+            // skipping like a stone instead of dead-stopping. Runs AFTER fall
+            // damage so a hard fall still hurts — then bounces for flair.
+            if (entity.landingImpact > 250) {
+                entity.vy = -entity.landingImpact * 0.45;
+                entity.onGround = false;
+                entity.spinVel *= 0.6; // keep tumbling, a touch calmer each bounce
+                entity.peakY = entity.y;
+                // Dust puff where they hit
+                if (this.game.createExplosionParticles) {
+                    this.game.createExplosionParticles(
+                        entity.x, entity.y + entity.height / 2, 6, '#d9c7a3'
+                    );
+                }
+            }
+            entity.landingImpact = 0; // consumed — don't re-bounce next frame
         } else if (entity.vy < 0) {
             // Moving up, update peak
             entity.peakY = Math.min(entity.peakY, entity.y);
@@ -120,6 +137,20 @@ export class Physics {
         // World bounds - Remove horizontal clamping so they can fly out of bounds (Ring Out)
         // Only clamp vertical top to prevent flying permanently above screen
         entity.y = Math.max(-500, Math.min(this.game.worldHeight + 100, entity.y));
+
+        // Hit-reaction tumble + squash easing (purely visual). Uses the final
+        // onGround for this frame: spin freely while airborne, settle upright
+        // once planted, and relax squash/stretch back to neutral.
+        if (entity.spin !== undefined) {
+            if (entity.onGround) {
+                entity.spinVel = 0;
+                entity.spin += (0 - entity.spin) * Math.min(1, dt * 12);
+                if (Math.abs(entity.spin) < 0.02) entity.spin = 0;
+            } else {
+                entity.spin += entity.spinVel * dt;
+            }
+            entity.squash += (1 - entity.squash) * Math.min(1, dt * 12);
+        }
     }
 
     /**
@@ -176,13 +207,24 @@ export class Physics {
                 entity.y = targetY;
             }
 
+            const impactVy = entity.vy; // downward speed at the moment of contact
             entity.vy = 0;
 
             // Landing impact: absorb most horizontal momentum the instant we
             // touch down so a hop/backflip doesn't carry the koala sliding off
             // down a slope. Only on the ground->air->ground transition.
             if (!wasOnGround) {
-                entity.vx *= 0.4;
+                const hard = impactVy > 250;
+                // Hard slams keep more momentum so they skip across terrain;
+                // soft landings still plant where they touch down.
+                entity.vx *= hard ? 0.7 : 0.4;
+
+                // Stash the impact so updateEntity can bounce AFTER fall damage,
+                // and squash the sprite proportional to how hard they hit.
+                entity.landingImpact = impactVy;
+                if (entity.squash !== undefined && impactVy > 60) {
+                    entity.squash = 1 - Math.min(impactVy / 800, 1) * 0.45;
+                }
             }
 
             entity.onGround = true;

@@ -303,6 +303,16 @@ export class Renderer {
             ctx.rotate(koala.backflipRotation);
         }
 
+        // Hit-reaction tumble: rotate the whole body when launched
+        if (koala.spin) {
+            ctx.rotate(koala.spin);
+        }
+
+        // Squash & stretch: flatten and widen on hard landings, ease back to 1
+        if (koala.squash !== undefined && koala.squash !== 1) {
+            ctx.scale(2 - koala.squash, koala.squash);
+        }
+
         // Flip based on facing direction
         // We need to know scale X for weapon rotation logic
         const scaleX = koala.facingLeft ? -1 : 1;
@@ -418,8 +428,9 @@ export class Renderer {
         // Ghost effect: semi-transparent
         ctx.globalAlpha = 0.5;
 
-        // Fallen over - tilted 90 degrees
-        ctx.rotate(Math.PI / 2);
+        // Fallen over - tilted 90 degrees. While being flung by an explosion
+        // (airborne), add the tumble spin so corpses ragdoll instead of gliding.
+        ctx.rotate(Math.PI / 2 + (koala.onGround ? 0 : (koala.spin || 0)));
 
         // Determine sprite based on team color
         let sprite = this.sprites.red;

@@ -985,9 +985,7 @@ export class Game extends EventEmitter {
                         const knockbackX = Math.cos(angle) * weapon.knockback;
                         const knockbackY = Math.sin(angle) * weapon.knockback;
 
-                        target.vx += knockbackX;
-                        target.vy += knockbackY;
-                        target.onGround = false;
+                        target.applyKnockback(knockbackX, knockbackY);
 
                         this.createFloatingText(target.x, target.y - 40, `-${weapon.damage}`, '#ff5544');
                         shooter.damageDealt = (shooter.damageDealt || 0) + weapon.damage;
@@ -1716,9 +1714,10 @@ export class Game extends EventEmitter {
                     // IMPORTANT: Apply knockback to BOTH alive AND dead koalas (ragdoll effect)
                     const biasedExplosionY = projectile.y + 10;
                     const angle = Math.atan2(koala.y - biasedExplosionY, koala.x - projectile.x);
-                    koala.vx += Math.cos(angle) * knockback;
-                    koala.vy += Math.sin(angle) * knockback * 1.3; // 30% extra upward force
-                    koala.onGround = false; // Ensure they get launched
+                    // applyKnockback adds the impulse, marks them airborne, and
+                    // starts a tumble scaled to the launch speed (works on dead
+                    // bodies too for ragdoll flinging).
+                    koala.applyKnockback(Math.cos(angle) * knockback, Math.sin(angle) * knockback * 1.3);
 
                     // Only apply damage to alive koalas
                     if (koala.isAlive) {
@@ -3103,6 +3102,15 @@ export class Game extends EventEmitter {
                 koala.y = result.y;
                 koala.vx = result.vx;
                 koala.vy = result.vy;
+
+                // Mirror the host's tumble from the synced launch velocity so
+                // the guest sees the same spin (visual only — physics authority
+                // stays with the host's vx/vy above).
+                const launchSpeed = Math.hypot(koala.vx, koala.vy);
+                if (launchSpeed > 60) {
+                    koala.spinVel = (koala.vx >= 0 ? 1 : -1) * Math.min(launchSpeed / 45, 18);
+                    koala.onGround = false;
+                }
 
                 // Show the same damage feedback the active player sees
                 if (result.damage > 0) {

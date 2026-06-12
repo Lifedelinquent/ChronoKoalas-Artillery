@@ -3,6 +3,8 @@
  * Uses pixel-based collision mask for destruction
  */
 
+import { imageHasAir, deriveTerrainFromOpaqueImage } from '../utils/TerrainMask.js';
+
 export class Terrain {
     constructor(width, height) {
         this.width = width;
@@ -202,10 +204,17 @@ export class Terrain {
         const data = imageData.data;
         const surfaces = [];
 
-        // Scan from top to bottom, find all transitions from air to solid
-        // Track previous pixel state, starting with assumption of "air above top of image"
-        let previousWasAir = true; // Assume there's air above the image boundary
-        let airStreak = 10; // Assume plenty of air above image
+        // Scan from top to bottom, find all transitions from air to solid.
+        // Start by treating the area above the image as SOLID, not air: terrain
+        // pressed flush against the top edge is the map's ceiling/border, not a
+        // surface you can stand on (there's no headroom inside the play area).
+        // Without this, a map whose top row is solid (e.g. an imported image with
+        // an opaque sky) reports a phantom surface at y=0, and characters get
+        // spawned in the empty space above the map. A normal map with a
+        // transparent sky still works: the first real air pixels build the streak
+        // and the true ground surface below is detected normally.
+        let previousWasAir = false; // Assume solid (border) above the image
+        let airStreak = 0;          // No usable air above the top edge
 
         for (let y = 0; y < this.height - 10; y++) {
             const alpha = data[y * 4 + 3];
@@ -996,6 +1005,27 @@ export class Terrain {
     }
 
     /**
+     * Safety net for custom maps saved as a fully-opaque image (before the map
+     * editor learned to auto-convert imported pictures). Such a map has no air
+     * anywhere, so every pixel is solid and there's nowhere to play. If we
+     * detect that, derive a playable terrain mask from the picture's brightness
+     * — exactly what the editor now does on import — and rebuild the collision
+     * mask. Maps that already contain air (drawn maps, silhouettes, and pictures
+     * imported with the current editor) are left untouched.
+     *
+     * @returns {boolean} true if the terrain was converted
+     */
+    ensurePlayableTerrain() {
+        const imageData = this.ctx.getImageData(0, 0, this.width, this.height);
+        if (imageHasAir(imageData.data, this.width * this.height)) return false;
+
+        deriveTerrainFromOpaqueImage(imageData.data, this.width, this.height);
+        this.ctx.putImageData(imageData, 0, 0);
+        this.updateCollisionMask();
+        return true;
+    }
+
+    /**
      * Check if a point collides with terrain
      */
     checkCollision(x, y) {
@@ -1127,6 +1157,20 @@ export class Terrain {
                     }
                 }
                 if (!clearance) continue;
+
+                // Require solid ground BENEATH the surface so we never spawn on a
+                // thin floating sliver. Editor-drawn maps often leave a 1-2px
+                // terrain detail near the top with open sky above it; that passes
+                // the headroom check and leaves "just enough" air to fit a koala,
+                // so characters end up stranded outside the playable area at the
+                // very top. A real surface is backed by a meaningful slab of solid
+                // terrain below it.
+                const GROUND_DEPTH = 12; // px of terrain expected under a surface
+                let solidBelow = 0;
+                for (let dy = 0; dy < GROUND_DEPTH && surfaceY + dy < this.height; dy++) {
+                    if (this.checkCollision(x, surfaceY + dy)) solidBelow++;
+                }
+                if (solidBelow < GROUND_DEPTH * 0.6) continue;
 
                 points.push({ x, y: surfaceY - 20 });
             }

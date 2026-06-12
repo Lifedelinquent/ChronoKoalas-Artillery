@@ -935,7 +935,7 @@ body {
 #editor-topbar {
     position: absolute;
     top: 0;
-    left: 200px;
+    left: 240px;
     /* Leave room for sidebar */
     right: 0;
     height: 50px;
@@ -983,16 +983,186 @@ body {
     filter: brightness(1.2);
 }
 
-/* Editor Sidebar (drawn on canvas, but these are for any HTML elements) */
-.editor-sidebar {
+/* Editor Sidebar (real DOM controls) */
+#editor-sidebar {
     position: absolute;
     left: 0;
     top: 0;
-    width: 200px;
+    width: 240px;
     height: 100%;
-    background: rgba(0, 0, 0, 0.85);
-    border-right: 2px solid #333;
-    z-index: 99;
+    box-sizing: border-box;
+    padding: 14px 14px 24px;
+    background: rgba(12, 14, 24, 0.94);
+    border-right: 2px solid #2c3550;
+    z-index: 101;
+    overflow-y: auto;
+    font-family: 'Outfit', sans-serif;
+    color: #e8ecf5;
+}
+
+#editor-sidebar::-webkit-scrollbar {
+    width: 8px;
+}
+
+#editor-sidebar::-webkit-scrollbar-thumb {
+    background: #3a4565;
+    border-radius: 4px;
+}
+
+.editor-sidebar-title {
+    font-family: 'Bangers', cursive;
+    font-size: 1.5rem;
+    letter-spacing: 1px;
+    color: #f1c40f;
+    margin: 0 0 12px;
+    text-align: center;
+}
+
+.editor-section {
+    margin-bottom: 16px;
+}
+
+.editor-section h3 {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #8c96b0;
+    margin: 0 0 8px;
+}
+
+.editor-tool-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+}
+
+.editor-tool {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 9px;
+    font-size: 1.1rem;
+    border: 1px solid #2f3a59;
+    border-radius: 8px;
+    background: #1b2236;
+    color: #e8ecf5;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.editor-tool span {
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.editor-tool:hover {
+    background: #232c45;
+    transform: translateY(-1px);
+}
+
+.editor-tool.active {
+    background: linear-gradient(to bottom, #3498db, #2575b0);
+    border-color: #5dade2;
+    box-shadow: 0 0 10px rgba(52, 152, 219, 0.5);
+}
+
+.editor-slider {
+    width: 100%;
+    accent-color: #3498db;
+    cursor: pointer;
+}
+
+.editor-swatch-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+}
+
+.editor-swatch-grid.bg {
+    grid-template-columns: repeat(4, 1fr);
+}
+
+.editor-swatch {
+    height: 30px;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    cursor: pointer;
+    position: relative;
+    transition: transform 0.1s;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.9);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-transform: capitalize;
+}
+
+.editor-swatch.bg {
+    height: 26px;
+}
+
+.editor-swatch:hover {
+    transform: scale(1.06);
+}
+
+.editor-swatch.active {
+    border-color: #fff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.6);
+}
+
+.editor-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+}
+
+.editor-action {
+    padding: 8px 6px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid #2f3a59;
+    border-radius: 7px;
+    background: #1b2236;
+    color: #e8ecf5;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+
+.editor-action:hover {
+    background: #232c45;
+    transform: translateY(-1px);
+}
+
+.editor-action:disabled {
+    opacity: 0.4;
+    cursor: default;
+    transform: none;
+}
+
+.editor-action.active {
+    background: linear-gradient(to bottom, #3498db, #2575b0);
+    border-color: #5dade2;
+}
+
+.editor-action.danger {
+    background: #4a1f24;
+    border-color: #6e2a30;
+    grid-column: 1 / -1;
+}
+
+.editor-action.danger:hover {
+    background: #6e2a30;
+}
+
+.editor-hint {
+    font-size: 0.7rem;
+    color: #6b748f;
+    text-align: center;
+    line-height: 1.5;
+    margin: 8px 0 0;
 }
 
 /* ========== MAP SELECTION MODAL ========== */

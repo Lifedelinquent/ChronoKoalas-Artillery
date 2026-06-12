@@ -210,17 +210,27 @@ export class Game extends EventEmitter {
                 // Update collision mask from the visual terrain
                 this.terrain.updateCollisionMask();
 
+                // Safety net: a custom map saved as a fully-opaque image (before
+                // the editor auto-converted imports) has no air to play in.
+                // Convert it to a playable mask on the fly.
+                const converted = this.terrain.ensurePlayableTerrain();
+
                 // Store custom background color
                 if (mapData.backgroundColor) {
                     this.customBackgroundColor = mapData.backgroundColor;
                 }
 
                 // Store map bounds (for teleport/spawn validation)
-                // Use provided bounds or fall back to calculating them
-                if (mapData.mapBounds) {
+                // Use provided bounds or fall back to calculating them.
+                // If we just converted an opaque map, its saved bounds describe
+                // the old (solid) terrain, so recompute them from the new mask.
+                if (mapData.mapBounds && !converted) {
                     this.mapBounds = mapData.mapBounds;
                     console.log(`📐 Using exported map bounds: Top=${this.mapBounds.topY}, Bottom=${this.mapBounds.bottomY}`);
                 } else {
+                    if (converted) {
+                        console.log('🩹 Converted fully-opaque map to a playable terrain mask');
+                    }
                     // Fallback: calculate bounds from terrain (for older maps)
                     this.mapBounds = {
                         topY: this.terrain.getMapTopBoundary(),
@@ -923,10 +933,14 @@ export class Game extends EventEmitter {
             for (const koala of team.koalas) {
                 if (!koala.isAlive) continue;
 
-                // Animate backflip rotation
+                // Animate backflip rotation - one clean somersault, then hold
+                // upright through the rest of the descent (no more wild 4+ spins
+                // that snap back to upright on landing).
                 if (koala.isBackflipping && !koala.onGround) {
-                    // Spin speed - complete about 1.5 rotations during the jump
-                    koala.backflipRotation += 12 * dt; // radians per second
+                    koala.backflipRotation = Math.min(
+                        koala.backflipRotation + 9 * dt, // rad/s
+                        Math.PI * 2                       // cap at one full flip
+                    );
                 }
 
                 // Animate melee swing
@@ -2226,7 +2240,19 @@ export class Game extends EventEmitter {
             return;
         }
 
-        const groundY = validation.groundY;
+        // Respect where the player is pointing. On multi-level maps there can be
+        // several ground surfaces at this X (e.g. a high platform and the floor
+        // below it). Pick the surface NEAREST to the crosshair Y so the koala
+        // lands on the level the player aimed at, instead of always snapping to
+        // the topmost surface and sliding down to a lower one.
+        const surfaces = this.terrain.getVisualGroundY(targetX);
+        let groundY = validation.groundY;
+        if (surfaces.length > 0) {
+            groundY = surfaces.reduce(
+                (best, s) => (Math.abs(s - targetY) < Math.abs(best - targetY) ? s : best),
+                surfaces[0]
+            );
+        }
 
         // Find the "sky" position above the ground at this X
         // This gives us the drop point - just like in Worms Armageddon

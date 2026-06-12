@@ -106,6 +106,53 @@
     <!-- Map Editor Screen -->
     <div id="editor-screen" class="screen">
         <canvas id="editor-canvas"></canvas>
+
+        <!-- Tool sidebar (real DOM controls) -->
+        <aside id="editor-sidebar">
+            <h2 class="editor-sidebar-title">🗺️ Map Editor</h2>
+
+            <section class="editor-section">
+                <h3>Tools</h3>
+                <div class="editor-tool-grid">
+                    <button class="editor-tool" data-tool="draw" title="Draw terrain (D)">🖌️<span>Draw</span></button>
+                    <button class="editor-tool" data-tool="erase" title="Erase terrain (E)">🧹<span>Erase</span></button>
+                    <button class="editor-tool" data-tool="rect" title="Rectangle (R)">▭<span>Rect</span></button>
+                    <button class="editor-tool" data-tool="ellipse" title="Ellipse (C)">⬭<span>Ellipse</span></button>
+                    <button class="editor-tool" data-tool="line" title="Line (L)">╱<span>Line</span></button>
+                    <button class="editor-tool" data-tool="spawn1" title="Place Team 1 spawn — right-click a marker to remove it">🚩<span>Spawn 1</span></button>
+                    <button class="editor-tool" data-tool="spawn2" title="Place Team 2 spawn — right-click a marker to remove it">🚩<span>Spawn 2</span></button>
+                </div>
+            </section>
+
+            <section class="editor-section">
+                <h3>Brush size · <span id="editor-brush-value">50</span>px</h3>
+                <input type="range" id="editor-brush-slider" class="editor-slider" min="5" max="200" step="5" value="50">
+            </section>
+
+            <section class="editor-section">
+                <h3>Terrain</h3>
+                <div class="editor-swatch-grid" id="editor-terrain-swatches"></div>
+            </section>
+
+            <section class="editor-section">
+                <h3>Background</h3>
+                <div class="editor-swatch-grid bg" id="editor-bg-swatches"></div>
+            </section>
+
+            <section class="editor-section">
+                <h3>Actions</h3>
+                <div class="editor-action-grid">
+                    <button class="editor-action" id="editor-undo" title="Undo (Ctrl+Z)">↶ Undo</button>
+                    <button class="editor-action" id="editor-redo" title="Redo (Ctrl+Y)">↷ Redo</button>
+                    <button class="editor-action" id="editor-fillground" title="Fill a solid ground floor across the map">⬇ Fill Ground</button>
+                    <button class="editor-action" id="editor-grid" title="Toggle grid (G)">▦ Grid</button>
+                    <button class="editor-action danger" id="editor-clear" title="Clear everything (Del)">🗑 Clear</button>
+                </div>
+            </section>
+
+            <p class="editor-hint">Left-drag: draw &middot; Right-drag: pan &middot; Scroll: zoom</p>
+        </aside>
+
         <div id="editor-topbar">
             <button id="btn-editor-back" class="editor-btn">⬅ Back</button>
             <span class="editor-title">Map Editor</span>

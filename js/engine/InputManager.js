@@ -454,8 +454,12 @@ export class InputManager {
         while (koala.aimAngle > Math.PI) koala.aimAngle -= 2 * Math.PI;
         while (koala.aimAngle < -Math.PI) koala.aimAngle += 2 * Math.PI;
 
-        // Update facing direction based on aim angle - ONLY if not walking
-        if (moveDir === 0) {
+        // Update facing from aim ONLY when the player is actively aiming with
+        // the keyboard (W/S). Walking sets facing to the move direction (above),
+        // and the mouse sets it on mouse-move (updateAimFromMouse). When idle we
+        // leave facing alone — this kills the annoying snap-back where the body
+        // whipped around to face the mouse the instant you stopped walking.
+        if (moveDir === 0 && aimChanged) {
             koala.facingLeft = Math.abs(koala.aimAngle) > Math.PI / 2;
         }
 
@@ -648,9 +652,10 @@ export class InputManager {
         const koala = this.game.getCurrentKoala();
         if (!koala || !koala.onGround) return;
 
-        // Forward hop - less height, more horizontal movement
-        koala.vy = -250; // Lower jump
-        koala.vx = koala.facingLeft ? -150 : 150; // Forward momentum
+        // Forward hop - a short, snappy arc. Air friction is now ~1.0 so this
+        // horizontal momentum is preserved through the jump (no floaty drop).
+        koala.vy = -260;
+        koala.vx = koala.facingLeft ? -135 : 135; // Forward momentum
         koala.onGround = false;
         koala.isJumping = true;
 
@@ -673,9 +678,11 @@ export class InputManager {
         const koala = this.game.getCurrentKoala();
         if (!koala || !koala.onGround) return;
 
-        // Backflip - higher jump with backward movement and spin
-        koala.vy = -450; // Much stronger
-        koala.vx = koala.facingLeft ? 200 : -200;
+        // Backflip - a higher jump that hops backward with one clean somersault.
+        // Height/distance toned down and the spin is now a single controlled
+        // rotation (see Game.updateKoalaAnimations) instead of 4+ wild flips.
+        koala.vy = -400;
+        koala.vx = koala.facingLeft ? 165 : -165;
         koala.onGround = false;
         koala.isBackflipping = true;
         koala.backflipRotation = 0; // Start spin

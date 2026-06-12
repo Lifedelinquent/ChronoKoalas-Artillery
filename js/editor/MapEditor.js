@@ -3,6 +3,7 @@
  */
 
 import { MapManager } from '../utils/MapManager.js';
+import { processTerrainImage } from '../utils/TerrainMask.js';
 
 export class MapEditor {
     constructor(canvas) {
@@ -29,10 +30,12 @@ export class MapEditor {
         };
 
         // Tools
-        this.currentTool = 'draw'; // draw, erase, rect, ellipse
+        this.currentTool = 'draw'; // draw, erase, rect, ellipse, line, spawn1, spawn2
         this.brushSize = 50;
-        this.brushHardness = 1.0; // 1.0 = hard edge, 0.0 = soft
         this.terrainColor = '#8B4513'; // Dirt brown
+
+        // DOM control references (populated in setupDOM)
+        this.dom = {};
 
         // Terrain colors palette
         this.terrainColors = {
@@ -122,6 +125,9 @@ export class MapEditor {
         // Keyboard events
         window.addEventListener('keydown', this.handleKeyDown);
 
+        // Wire up the HTML sidebar controls
+        this.setupDOM();
+
         // Initialize with blank terrain
         this.clearTerrain();
 
@@ -132,6 +138,84 @@ export class MapEditor {
         this.animationId = requestAnimationFrame(this.render);
 
         console.log('🗺️ Map Editor initialized');
+    }
+
+    /**
+     * Wire up the HTML sidebar controls (tools, sliders, swatches, actions).
+     * Building the swatches here keeps the colour lists single-sourced from
+     * this.terrainColors / this.backgroundColors.
+     */
+    setupDOM() {
+        const $ = (id) => document.getElementById(id);
+
+        // Tool buttons
+        this.dom.tools = Array.from(document.querySelectorAll('.editor-tool'));
+        this.dom.tools.forEach(btn => {
+            btn.onclick = () => this.setTool(btn.dataset.tool);
+        });
+
+        // Brush size slider
+        this.dom.brushSlider = $('editor-brush-slider');
+        this.dom.brushValue = $('editor-brush-value');
+        if (this.dom.brushSlider) {
+            this.dom.brushSlider.value = this.brushSize;
+            this.dom.brushSlider.oninput = () => this.setBrushSize(parseInt(this.dom.brushSlider.value, 10));
+        }
+
+        // Terrain swatches
+        const terrainWrap = $('editor-terrain-swatches');
+        this.dom.terrainSwatches = [];
+        if (terrainWrap) {
+            terrainWrap.innerHTML = '';
+            Object.keys(this.terrainColors).forEach(type => {
+                const sw = document.createElement('button');
+                sw.className = 'editor-swatch';
+                sw.style.background = this.terrainColors[type];
+                sw.textContent = type;
+                sw.dataset.terrain = type;
+                sw.title = `${type} terrain`;
+                sw.onclick = () => this.setTerrainType(type);
+                terrainWrap.appendChild(sw);
+                this.dom.terrainSwatches.push(sw);
+            });
+        }
+
+        // Background swatches
+        const bgWrap = $('editor-bg-swatches');
+        this.dom.bgSwatches = [];
+        if (bgWrap) {
+            bgWrap.innerHTML = '';
+            this.backgroundColors.forEach(color => {
+                const sw = document.createElement('button');
+                sw.className = 'editor-swatch bg';
+                sw.style.background = color;
+                sw.dataset.bg = color;
+                sw.title = color;
+                sw.onclick = () => this.setBackground(color);
+                bgWrap.appendChild(sw);
+                this.dom.bgSwatches.push(sw);
+            });
+        }
+
+        // Action buttons
+        this.dom.undo = $('editor-undo');
+        this.dom.redo = $('editor-redo');
+        this.dom.grid = $('editor-grid');
+        if (this.dom.undo) this.dom.undo.onclick = () => this.undo();
+        if (this.dom.redo) this.dom.redo.onclick = () => this.redo();
+        if (this.dom.grid) this.dom.grid.onclick = () => this.toggleGrid();
+        const fillBtn = $('editor-fillground');
+        if (fillBtn) fillBtn.onclick = () => this.fillGround();
+        const clearBtn = $('editor-clear');
+        if (clearBtn) clearBtn.onclick = () => {
+            this.clearTerrain();
+            this.saveToHistory();
+        };
+
+        // Initial UI sync
+        this.refreshToolUI();
+        this.refreshSwatchUI();
+        this.refreshActionUI();
     }
 
     /**
@@ -179,10 +263,12 @@ export class MapEditor {
             this.clampCamera();
         }
 
-        // Draw/Erase while mouse is down (only for brush tools)
+        // Draw/Erase while mouse is down (only for brush tools).
+        // Interpolate from the previous point so fast strokes stay continuous
+        // instead of leaving a trail of disconnected circles.
         if (this.mouse.down && this.isDrawing &&
             (this.currentTool === 'draw' || this.currentTool === 'erase')) {
-            this.applyBrush(this.mouse.x, this.mouse.y);
+            this.applyBrushStroke(this.lastMouse.x, this.lastMouse.y, this.mouse.x, this.mouse.y);
         }
 
         this.lastMouse.x = this.mouse.x;
@@ -203,15 +289,14 @@ export class MapEditor {
         this.mouse.y = screenY / this.camera.zoom + this.camera.y;
 
         if (e.button === 0) { // Left click
-            // Check if clicking on UI elements first (in screen coordinates)
-            if (this.handleUIClick(screenX, screenY)) {
-                return; // UI was clicked, don't start drawing
-            }
-
             this.mouse.down = true;
             this.isDrawing = true;
 
-            if (this.currentTool === 'rect' || this.currentTool === 'ellipse') {
+            // Seed the stroke origin so the first interpolated segment starts here
+            this.lastMouse.x = this.mouse.x;
+            this.lastMouse.y = this.mouse.y;
+
+            if (this.currentTool === 'rect' || this.currentTool === 'ellipse' || this.currentTool === 'line') {
                 this.shapeStart = { x: this.mouse.x, y: this.mouse.y };
             } else if (this.currentTool === 'spawn1') {
                 const spawnPoint = { x: Math.round(this.mouse.x), y: Math.round(this.mouse.y) };
@@ -243,57 +328,6 @@ export class MapEditor {
     }
 
     /**
-     * Handle clicks on UI elements (returns true if UI was clicked)
-     */
-    handleUIClick(screenX, screenY) {
-        // Check if click is within sidebar (0-200px)
-        if (screenX > 200) return false;
-
-        // Tool buttons
-        const tools = [
-            { id: 'draw', y: 95 },
-            { id: 'erase', y: 120 },
-            { id: 'rect', y: 145 },
-            { id: 'ellipse', y: 170 },
-            { id: 'spawn1', y: 195 },
-            { id: 'spawn2', y: 220 }
-        ];
-
-        for (const tool of tools) {
-            if (screenY >= tool.y - 15 && screenY <= tool.y + 7 &&
-                screenX >= 15 && screenX <= 185) {
-                this.setTool(tool.id);
-                return true;
-            }
-        }
-
-        // Terrain type buttons (2x2 grid starting at y=400)
-        const terrainTypes = ['dirt', 'rock', 'grass', 'sand'];
-        for (let i = 0; i < terrainTypes.length; i++) {
-            const x = 20 + (i % 2) * 85;
-            const y = 400 + Math.floor(i / 2) * 35;
-            if (screenX >= x && screenX <= x + 70 &&
-                screenY >= y && screenY <= y + 25) {
-                this.setTerrainType(terrainTypes[i]);
-                return true;
-            }
-        }
-
-        // Background color buttons (row starting at y=510)
-        for (let i = 0; i < this.backgroundColors.length; i++) {
-            const x = 20 + (i % 4) * 45;
-            const y = 510 + Math.floor(i / 4) * 30;
-            if (screenX >= x && screenX <= x + 35 &&
-                screenY >= y && screenY <= y + 22) {
-                this.backgroundColor = this.backgroundColors[i];
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
      * Handle mouse up
      */
     handleMouseUp(e) {
@@ -303,6 +337,9 @@ export class MapEditor {
                 // For shape tools, draw the final shape
                 if (this.shapeStart && (this.currentTool === 'rect' || this.currentTool === 'ellipse')) {
                     this.applyShape(this.shapeStart.x, this.shapeStart.y, this.mouse.x, this.mouse.y);
+                    this.shapeStart = null;
+                } else if (this.shapeStart && this.currentTool === 'line') {
+                    this.applyBrushStroke(this.shapeStart.x, this.shapeStart.y, this.mouse.x, this.mouse.y);
                     this.shapeStart = null;
                 }
                 this.isDrawing = false;
@@ -337,16 +374,20 @@ export class MapEditor {
      * Handle keyboard input
      */
     handleKeyDown(e) {
+        // Ignore shortcuts while typing in a form control (e.g. the brush slider)
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+
         // Tool shortcuts
         if (e.key === '1' || e.key === 'd') this.setTool('draw');
         if (e.key === '2' || e.key === 'e') this.setTool('erase');
         if (e.key === '3' || e.key === 'r') this.setTool('rect');
         if (e.key === '4' || e.key === 'c') this.setTool('ellipse');
-        if (e.key === '5') this.setTool('spawn1');
-        if (e.key === '6') this.setTool('spawn2');
+        if (e.key === '5' || e.key === 'l') this.setTool('line');
+        if (e.key === '6') this.setTool('spawn1');
+        if (e.key === '7') this.setTool('spawn2');
 
         // Brush size
-        if (e.key === '[') this.setBrushSize(Math.max(10, this.brushSize - 10));
+        if (e.key === '[') this.setBrushSize(Math.max(5, this.brushSize - 10));
         if (e.key === ']') this.setBrushSize(Math.min(200, this.brushSize + 10));
 
         // Undo/Redo
@@ -361,7 +402,7 @@ export class MapEditor {
 
         // Grid toggle
         if (e.key === 'g') {
-            this.showGrid = !this.showGrid;
+            this.toggleGrid();
         }
 
         // Clear
@@ -386,31 +427,54 @@ export class MapEditor {
     }
 
     /**
-     * Apply brush at position
+     * Stamp the brush once at a position.
+     * @param {number} x
+     * @param {number} y
+     * @param {'draw'|'erase'} mode
      */
-    applyBrush(x, y) {
+    stampBrush(x, y, mode) {
         const ctx = this.terrainCtx;
-        const size = this.brushSize;
+        const radius = this.brushSize / 2;
 
-        if (this.currentTool === 'draw') {
-            // Draw terrain
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = this.terrainColors[this.selectedTerrainType];
-            ctx.beginPath();
-            ctx.arc(x, y, size / 2, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Add texture noise
-            this.addTerrainTexture(x, y, size / 2);
-
-        } else if (this.currentTool === 'erase') {
-            // Erase terrain (create hole)
+        if (mode === 'erase') {
             ctx.globalCompositeOperation = 'destination-out';
             ctx.fillStyle = 'white';
             ctx.beginPath();
-            ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
+        } else {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = this.terrainColors[this.selectedTerrainType];
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
+            ctx.fill();
+            this.addTerrainTexture(x, y, radius);
+        }
+    }
+
+    /**
+     * Apply brush at a single position (used for the initial click).
+     */
+    applyBrush(x, y) {
+        const mode = this.currentTool === 'erase' ? 'erase' : 'draw';
+        this.stampBrush(x, y, mode);
+    }
+
+    /**
+     * Stamp the brush along the segment (x0,y0)->(x1,y1) so fast strokes and
+     * the Line tool produce a continuous band rather than spaced-out dots.
+     */
+    applyBrushStroke(x0, y0, x1, y1) {
+        const mode = this.currentTool === 'erase' ? 'erase' : 'draw';
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        // Overlap stamps generously for a smooth edge
+        const step = Math.max(2, this.brushSize / 4);
+        const steps = Math.ceil(dist / step);
+
+        for (let i = 0; i <= steps; i++) {
+            const t = steps === 0 ? 0 : i / steps;
+            this.stampBrush(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, mode);
         }
     }
 
@@ -515,7 +579,7 @@ export class MapEditor {
      */
     setTool(tool) {
         this.currentTool = tool;
-        this.updateToolbarUI();
+        this.refreshToolUI();
     }
 
     /**
@@ -523,7 +587,8 @@ export class MapEditor {
      */
     setBrushSize(size) {
         this.brushSize = size;
-        this.updateToolbarUI();
+        if (this.dom.brushSlider) this.dom.brushSlider.value = size;
+        if (this.dom.brushValue) this.dom.brushValue.textContent = size;
     }
 
     /**
@@ -531,7 +596,76 @@ export class MapEditor {
      */
     setTerrainType(type) {
         this.selectedTerrainType = type;
-        this.updateToolbarUI();
+        this.refreshSwatchUI();
+    }
+
+    /**
+     * Set the sky/background colour
+     */
+    setBackground(color) {
+        this.backgroundColor = color;
+        this.refreshSwatchUI();
+    }
+
+    /**
+     * Toggle the alignment grid
+     */
+    toggleGrid() {
+        this.showGrid = !this.showGrid;
+        this.refreshActionUI();
+    }
+
+    /**
+     * Fill a solid ground floor across the full map width. Most artillery maps
+     * need a base to stand on, so this saves hand-painting one stroke at a time.
+     * Fills from the water line up by ~1/3 of the map height.
+     */
+    fillGround() {
+        const ctx = this.terrainCtx;
+        const groundTop = Math.round(this.worldHeight * 0.66);
+        const groundBottom = this.worldHeight;
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = this.terrainColors[this.selectedTerrainType];
+        ctx.fillRect(0, groundTop, this.worldWidth, groundBottom - groundTop);
+        this.addShapeTexture(0, groundTop, this.worldWidth, groundBottom - groundTop, 'rect');
+
+        this.saveToHistory();
+    }
+
+    /**
+     * Highlight the active tool button
+     */
+    refreshToolUI() {
+        if (!this.dom.tools) return;
+        this.dom.tools.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tool === this.currentTool);
+        });
+    }
+
+    /**
+     * Highlight the active terrain + background swatches
+     */
+    refreshSwatchUI() {
+        if (this.dom.terrainSwatches) {
+            this.dom.terrainSwatches.forEach(sw => {
+                sw.classList.toggle('active', sw.dataset.terrain === this.selectedTerrainType);
+            });
+        }
+        if (this.dom.bgSwatches) {
+            this.dom.bgSwatches.forEach(sw => {
+                sw.classList.toggle('active', sw.dataset.bg === this.backgroundColor);
+            });
+        }
+    }
+
+    /**
+     * Sync action buttons (grid toggle state, undo/redo enabled state)
+     */
+    refreshActionUI() {
+        if (this.dom.grid) this.dom.grid.classList.toggle('active', this.showGrid);
+        if (this.dom.undo) this.dom.undo.disabled = this.historyIndex <= 0;
+        if (this.dom.redo) this.dom.redo.disabled = this.historyIndex >= this.history.length - 1;
     }
 
     /**
@@ -551,6 +685,8 @@ export class MapEditor {
         } else {
             this.historyIndex++;
         }
+
+        this.refreshActionUI();
     }
 
     /**
@@ -560,6 +696,7 @@ export class MapEditor {
         if (this.historyIndex > 0) {
             this.historyIndex--;
             this.terrainCtx.putImageData(this.history[this.historyIndex], 0, 0);
+            this.refreshActionUI();
         }
     }
 
@@ -570,6 +707,7 @@ export class MapEditor {
         if (this.historyIndex < this.history.length - 1) {
             this.historyIndex++;
             this.terrainCtx.putImageData(this.history[this.historyIndex], 0, 0);
+            this.refreshActionUI();
         }
     }
 
@@ -619,8 +757,9 @@ export class MapEditor {
 
         ctx.restore();
 
-        // Draw UI overlay (not affected by camera)
-        this.drawUI();
+        // Draw lightweight on-canvas HUD (coords + zoom). The tool UI now lives
+        // in the HTML sidebar, so this only shows context that follows the view.
+        this.drawHUD();
 
         // Continue loop
         this.animationId = requestAnimationFrame(this.render);
@@ -850,13 +989,26 @@ export class MapEditor {
      */
     drawShapePreview() {
         if (!this.shapeStart || !this.isDrawing) return;
-        if (this.currentTool !== 'rect' && this.currentTool !== 'ellipse') return;
+        if (this.currentTool !== 'rect' && this.currentTool !== 'ellipse' && this.currentTool !== 'line') return;
 
         const ctx = this.ctx;
         const x1 = this.shapeStart.x;
         const y1 = this.shapeStart.y;
         const x2 = this.mouse.x;
         const y2 = this.mouse.y;
+
+        // Line preview: a thick stroke at the current brush width
+        if (this.currentTool === 'line') {
+            ctx.strokeStyle = this.terrainColors[this.selectedTerrainType] + 'cc';
+            ctx.lineWidth = this.brushSize;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+            ctx.lineWidth = 1;
+            return;
+        }
 
         const left = Math.min(x1, x2);
         const top = Math.min(y1, y2);
@@ -888,9 +1040,9 @@ export class MapEditor {
     drawBrushCursor() {
         const ctx = this.ctx;
 
-        if (this.currentTool === 'draw' || this.currentTool === 'erase') {
-            ctx.strokeStyle = this.currentTool === 'draw' ?
-                this.terrainColors[this.selectedTerrainType] : '#ff4444';
+        if (this.currentTool === 'draw' || this.currentTool === 'erase' || this.currentTool === 'line') {
+            ctx.strokeStyle = this.currentTool === 'erase' ?
+                '#ff4444' : this.terrainColors[this.selectedTerrainType];
             ctx.lineWidth = 2;
             ctx.setLineDash([5, 5]);
             ctx.beginPath();
@@ -912,138 +1064,25 @@ export class MapEditor {
     }
 
     /**
-     * Draw UI overlay
+     * Draw a small on-canvas HUD: live cursor coordinates and zoom level.
+     * The tool palette now lives in the HTML sidebar, so this stays minimal
+     * and is anchored to the top-right to avoid colliding with the sidebar.
      */
-    drawUI() {
+    drawHUD() {
         const ctx = this.ctx;
-
-        // Toolbar background
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-        ctx.fillRect(0, 0, 200, this.canvas.height);
-
-        // Title
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 18px Outfit';
-        ctx.fillText('Map Editor', 20, 30);
-
-        // Tools section
-        ctx.font = 'bold 14px Outfit';
-        ctx.fillText('Tools', 20, 70);
-
-        const tools = [
-            { id: 'draw', label: '🖌️ Draw (1)', y: 95 },
-            { id: 'erase', label: '🧹 Erase (2)', y: 120 },
-            { id: 'rect', label: '▭ Rectangle (3)', y: 145 },
-            { id: 'ellipse', label: '⬭ Ellipse (4)', y: 170 },
-            { id: 'spawn1', label: '🚩 Team 1 Spawn', y: 195 },
-            { id: 'spawn2', label: '🚩 Team 2 Spawn', y: 220 }
-        ];
-
-        tools.forEach(tool => {
-            ctx.fillStyle = this.currentTool === tool.id ? '#3498db' : '#666';
-            ctx.fillRect(15, tool.y - 15, 170, 22);
-            ctx.fillStyle = '#fff';
-            ctx.font = '13px Outfit';
-            ctx.fillText(tool.label, 25, tool.y);
-        });
-
-        // Brush size
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px Outfit';
-        ctx.fillText('Brush Size', 20, 260);
-        ctx.font = '13px Outfit';
-        ctx.fillText(`${this.brushSize}px  [ / ]`, 20, 280);
-
-        // Draw brush size indicator
-        ctx.strokeStyle = '#3498db';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(100, 320, Math.min(this.brushSize / 2, 40), 0, Math.PI * 2);
-        ctx.stroke();
-
-        // Terrain type
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px Outfit';
-        ctx.fillText('Terrain', 20, 380);
-
-        const terrainTypes = ['dirt', 'rock', 'grass', 'sand'];
-        terrainTypes.forEach((type, i) => {
-            const x = 20 + (i % 2) * 85;
-            const y = 400 + Math.floor(i / 2) * 35;
-            ctx.fillStyle = this.terrainColors[type];
-            ctx.fillRect(x, y, 70, 25);
-            if (this.selectedTerrainType === type) {
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 2;
-                ctx.strokeRect(x, y, 70, 25);
-            }
-            ctx.fillStyle = '#fff';
-            ctx.font = '11px Outfit';
-            ctx.fillText(type, x + 5, y + 17);
-        });
-
-        // Background color section
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px Outfit';
-        ctx.fillText('Background', 20, 490);
-
-        // Background color swatches (2 rows of 4)
-        this.backgroundColors.forEach((color, i) => {
-            const x = 20 + (i % 4) * 45;
-            const y = 510 + Math.floor(i / 4) * 30;
-            ctx.fillStyle = color;
-            ctx.fillRect(x, y, 35, 22);
-            if (this.backgroundColor === color) {
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 2;
-                ctx.strokeRect(x, y, 35, 22);
-            }
-        });
-
-        // Instructions (moved down)
-        ctx.fillStyle = '#888';
-        ctx.font = '11px Outfit';
-        const instructions = [
-            'Left click: Draw/Place',
-            'Right drag: Pan',
-            'Scroll: Zoom',
-            'G: Toggle grid',
-            'Ctrl+Z: Undo',
-            'Del: Clear all'
-        ];
-        instructions.forEach((text, i) => {
-            ctx.fillText(text, 20, 600 + i * 18);
-        });
-
-        // Zoom indicator
-        ctx.fillStyle = '#fff';
-        ctx.font = '12px Outfit';
-        ctx.fillText(`Zoom: ${Math.round(this.camera.zoom * 100)}%`, 20, this.canvas.height - 40);
-
-        // Mouse coordinates display
-        ctx.fillStyle = '#3498db';
-        ctx.font = 'bold 12px Outfit';
         const mouseX = Math.round(this.mouse.x);
         const mouseY = Math.round(this.mouse.y);
-        ctx.fillText(`X: ${mouseX}  Y: ${mouseY}`, 20, this.canvas.height - 20);
 
-        // Also show a floating coordinate near the mouse cursor (top right of screen)
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-        ctx.fillRect(this.canvas.width - 150, 10, 140, 30);
+        ctx.fillRect(this.canvas.width - 190, 60, 180, 56);
+
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 14px Outfit';
-        ctx.textAlign = 'right';
-        ctx.fillText(`X: ${mouseX}  Y: ${mouseY}`, this.canvas.width - 20, 30);
         ctx.textAlign = 'left';
-    }
-
-    /**
-     * Update toolbar UI (for external HTML toolbar if used)
-     */
-    updateToolbarUI() {
-        // Update any external HTML elements if they exist
-        const brushSizeEl = document.getElementById('editor-brush-size');
-        if (brushSizeEl) brushSizeEl.textContent = this.brushSize + 'px';
+        ctx.fillText(`X: ${mouseX}   Y: ${mouseY}`, this.canvas.width - 178, 84);
+        ctx.fillStyle = '#9fb4d8';
+        ctx.font = '13px Outfit';
+        ctx.fillText(`Zoom: ${Math.round(this.camera.zoom * 100)}%`, this.canvas.width - 178, 104);
     }
 
     /**
@@ -1089,7 +1128,9 @@ export class MapEditor {
                 this.placedObjects = mapData.objects || [];
                 this.spawns = mapData.spawns || { team1: [], team2: [] };
                 this.backgroundColor = mapData.backgroundColor || '#1a1a2e';
+                this.calculateMapBounds();
                 this.saveToHistory();
+                this.refreshSwatchUI();
                 resolve();
             };
             img.src = mapData.terrain;
@@ -1136,28 +1177,23 @@ export class MapEditor {
     }
 
     /**
-     * Process imported image to ensure proper terrain format
-     * Makes fully transparent pixels proper air (for collision detection)
+     * Turn an imported image into a *playable* terrain mask.
+     *
+     * Two kinds of source images are handled (see js/utils/TerrainMask.js):
+     *  - Silhouette PNGs that already encode terrain via transparency: we keep
+     *    that design (transparent = air, opaque = solid).
+     *  - Opaque pictures (photos, JPGs, renders) that have no transparency:
+     *    every pixel would otherwise become solid, leaving the koalas nowhere to
+     *    stand. We derive a terrain mask from the picture's brightness so the
+     *    landmasses become solid and the darker background/cavities become open
+     *    air — giving a map you play *inside*, with caves and ledges, not a flat
+     *    floor you stand on top of.
      */
     processImportedImage() {
-        const imageData = this.terrainCtx.getImageData(0, 0, this.worldWidth, this.worldHeight);
-        const data = imageData.data;
+        const W = this.worldWidth, H = this.worldHeight;
+        const imageData = this.terrainCtx.getImageData(0, 0, W, H);
 
-        // Loop through all pixels
-        for (let i = 0; i < data.length; i += 4) {
-            const alpha = data[i + 3];
-
-            // If pixel is mostly transparent, make it fully transparent (air)
-            if (alpha < 128) {
-                data[i] = 0;     // R
-                data[i + 1] = 0; // G
-                data[i + 2] = 0; // B
-                data[i + 3] = 0; // A (fully transparent)
-            } else {
-                // Make it fully opaque (solid terrain)
-                data[i + 3] = 255;
-            }
-        }
+        processTerrainImage(imageData.data, W, H);
 
         this.terrainCtx.putImageData(imageData, 0, 0);
 

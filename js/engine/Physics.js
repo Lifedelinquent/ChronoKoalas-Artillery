@@ -8,7 +8,13 @@ export class Physics {
 
         // Physics constants
         this.gravity = 400; // pixels per second squared
-        this.friction = 0.95;
+        // Friction is now split between ground and air, and applied in a
+        // frame-rate-independent way (see updateEntity). Air friction is nearly
+        // 1.0 so jump/backflip arcs keep their horizontal momentum (no more
+        // floaty near-vertical drops); ground friction is strong so a koala
+        // stops where it lands instead of sliding down slopes.
+        this.groundFriction = 0.80; // per 1/60s — kills residual slide in ~0.2s
+        this.airFriction = 0.995;   // per 1/60s — negligible drag, natural arcs
         this.bounciness = 0.5;
         this.terminalVelocity = 800;
     }
@@ -50,8 +56,11 @@ export class Physics {
         entity.x += entity.vx * dt;
         entity.y += entity.vy * dt;
 
-        // Apply friction
-        entity.vx *= this.friction;
+        // Apply friction (frame-rate independent). Strong on the ground so the
+        // koala stops where it lands; nearly none in the air so jumps and
+        // backflips keep their horizontal momentum and arc naturally.
+        const frictionCoeff = entity.onGround ? this.groundFriction : this.airFriction;
+        entity.vx *= Math.pow(frictionCoeff, dt * 60);
 
         // Terrain collision
         this.resolveTerrainCollision(entity);
@@ -168,6 +177,14 @@ export class Physics {
             }
 
             entity.vy = 0;
+
+            // Landing impact: absorb most horizontal momentum the instant we
+            // touch down so a hop/backflip doesn't carry the koala sliding off
+            // down a slope. Only on the ground->air->ground transition.
+            if (!wasOnGround) {
+                entity.vx *= 0.4;
+            }
+
             entity.onGround = true;
 
             // Reset jump/backflip state on landing

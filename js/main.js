@@ -319,12 +319,12 @@ function setupMenuHandlers() {
     btnPractice.addEventListener('click', (e) => {
         e.target.blur(); // Remove focus so spacebar doesn't re-trigger
         const maps = MapManager.getAllMaps();
-        menuManager.showMapSelection(maps, (mapId) => {
+        menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
             let customMap = null;
             if (mapId !== 'default') {
                 customMap = maps[mapId];
             }
-            startGame(true, null, customMap);
+            startGame(true, null, customMap, suddenDeathTime);
         });
     });
 
@@ -345,7 +345,8 @@ function setupMenuHandlers() {
     btnStartGame.addEventListener('click', () => {
         const options = {
             isPractice: false,
-            customMap: window.selectedMap
+            customMap: window.selectedMap,
+            suddenDeathTime: window.selectedSuddenDeathTime
         };
         networkManager.startGame(options);
     });
@@ -355,7 +356,7 @@ function setupMenuHandlers() {
     if (btnChangeMap) {
         btnChangeMap.addEventListener('click', () => {
             const maps = MapManager.getAllMaps();
-            menuManager.showMapSelection(maps, (mapId) => {
+            menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
                 let map = null;
                 let name = 'Default Zoo';
                 if (mapId !== 'default') {
@@ -364,10 +365,11 @@ function setupMenuHandlers() {
                 }
 
                 window.selectedMap = map;
+                window.selectedSuddenDeathTime = suddenDeathTime;
                 menuManager.updateLobbyMapName(name);
 
                 // Sync with other players
-                networkManager.sendMapSelection(map);
+                networkManager.sendMapSelection(map, suddenDeathTime);
             });
         });
     }
@@ -383,7 +385,7 @@ function setupMenuHandlers() {
         } else if (networkManager.isHost) {
             // Multiplayer rematch must go through the host so both clients
             // restart with the same fresh seed (local reset would desync)
-            networkManager.startGame({ customMap: window.selectedMap });
+            networkManager.startGame({ customMap: window.selectedMap, suddenDeathTime: window.selectedSuddenDeathTime });
         } else {
             alert('Only the host can start a rematch.');
         }
@@ -451,6 +453,9 @@ function setupMenuHandlers() {
 
     networkManager.on('mapSelected', (data) => {
         window.selectedMap = data.map;
+        if (data.suddenDeathTime !== undefined) {
+            window.selectedSuddenDeathTime = data.suddenDeathTime;
+        }
         const name = data.map ? data.map.name : 'Default Zoo';
         menuManager.updateLobbyMapName(name);
     });
@@ -534,7 +539,7 @@ function setupMenuHandlers() {
  * @param {boolean} isPractice - Single player practice mode
  * @param {Object} networkState - Initial state from network (multiplayer)
  */
-function startGame(isPractice = false, networkState = null, customMap = null) {
+function startGame(isPractice = false, networkState = null, customMap = null, suddenDeathTime = null) {
     const canvas = document.getElementById('game-canvas');
 
     // Destroy any previous game so we don't leak loops and input listeners
@@ -543,12 +548,17 @@ function startGame(isPractice = false, networkState = null, customMap = null) {
         game = null;
     }
 
+    // Sudden-death timer: network clients take it from the host's game state,
+    // otherwise use the value chosen in the map-selection screen.
+    const sdTime = networkState?.suddenDeathTime ?? suddenDeathTime;
+
     // Create game instance
     game = new Game(canvas, {
         isPractice,
         networkManager: isPractice ? null : networkManager,
         initialState: networkState,
-        customMap: customMap || window.selectedMap
+        customMap: customMap || window.selectedMap,
+        suddenDeathTime: sdTime
     });
 
     // Expose game instance globally for debugging/export

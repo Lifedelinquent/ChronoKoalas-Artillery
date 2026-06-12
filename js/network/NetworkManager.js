@@ -400,7 +400,8 @@ export class NetworkManager extends EventEmitter {
         const gameState = {
             seed: Math.floor(Math.random() * 1000000),
             teams: ['red', 'blue'],
-            customMap: options.customMap
+            customMap: options.customMap,
+            suddenDeathTime: options.suddenDeathTime
         };
 
         // Send start signal to peer
@@ -416,10 +417,10 @@ export class NetworkManager extends EventEmitter {
     /**
      * Send map selection (host only)
      */
-    sendMapSelection(map) {
+    sendMapSelection(map, suddenDeathTime) {
         if (!this.isHost) return;
-        this.send({ type: 'mapSelected', map });
-        this.emit('mapSelected', { map });
+        this.send({ type: 'mapSelected', map, suddenDeathTime });
+        this.emit('mapSelected', { map, suddenDeathTime });
     }
 
     /**

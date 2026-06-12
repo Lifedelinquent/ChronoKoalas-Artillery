@@ -279,6 +279,27 @@ export class MenuManager {
         // Track selected map
         let selectedMapId = 'default';
 
+        // Sudden-death duration selector (seconds of play before it can start;
+        // -1 means "Never"). Default to whatever option is pre-marked in the markup.
+        const sdOptions = document.getElementById('sudden-death-options');
+        let selectedSuddenDeathTime = 180;
+        if (sdOptions) {
+            const preselected = sdOptions.querySelector('.sd-option.selected');
+            if (preselected) {
+                selectedSuddenDeathTime = parseInt(preselected.dataset.sdTime, 10);
+            }
+            sdOptions.onclick = (e) => {
+                const btn = e.target.closest('.sd-option');
+                if (!btn) return;
+                const buttons = sdOptions.getElementsByClassName('sd-option');
+                for (let i = 0; i < buttons.length; i++) {
+                    buttons[i].classList.remove('selected');
+                }
+                btn.classList.add('selected');
+                selectedSuddenDeathTime = parseInt(btn.dataset.sdTime, 10);
+            };
+        }
+
         // Function to render the map list
         const renderMapList = () => {
             // Get fresh map list from storage
@@ -388,7 +409,7 @@ export class MenuManager {
             modal.classList.add('hidden');
             hideDeleteConfirm(); // Also close delete modal if open
             const selectedCard = list.querySelector('.map-card.selected');
-            callback(selectedCard ? selectedCard.dataset.mapId : 'default');
+            callback(selectedCard ? selectedCard.dataset.mapId : 'default', selectedSuddenDeathTime);
         };
     }
 

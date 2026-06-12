@@ -1224,6 +1224,7 @@ body {
     max-width: 850px;
     width: 90%;
     max-height: 85vh;
+    overflow: auto;
     display: flex;
     flex-direction: column;
 }
@@ -1241,9 +1242,11 @@ body {
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: 20px;
     overflow-y: auto;
+    min-height: 0;
     padding: 10px;
     margin-bottom: 2rem;
 }
+
 
 .map-card {
     background: rgba(255, 255, 255, 0.05);

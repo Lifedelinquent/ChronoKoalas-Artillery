@@ -301,9 +301,9 @@ export class MenuManager {
         }
 
         // Function to render the map list
-        const renderMapList = () => {
+        const renderMapList = async () => {
             // Get fresh map list from storage
-            const currentMaps = MapManager.getAllMaps();
+            const currentMaps = await MapManager.getAllMaps();
 
             // Update the maps array reference
             maps.length = 0;
@@ -362,10 +362,10 @@ export class MenuManager {
         };
 
         // Confirm delete button
-        btnDeleteConfirm.onclick = () => {
+        btnDeleteConfirm.onclick = async () => {
             if (pendingDeleteMapName) {
-                MapManager.deleteMap(pendingDeleteMapName);
-                renderMapList();
+                await MapManager.deleteMap(pendingDeleteMapName);
+                await renderMapList();
             }
             hideDeleteConfirm();
         };

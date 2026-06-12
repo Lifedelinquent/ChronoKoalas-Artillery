@@ -22,6 +22,9 @@ let mapEditor = null;
 async function init() {
     console.log('🐨 Koala Artillery initializing...');
 
+    // Migrate any maps saved in the old localStorage format → IndexedDB
+    await MapManager.migrateFromLocalStorage();
+
     // Initialize managers
     menuManager = new MenuManager();
     networkManager = new NetworkManager();
@@ -316,9 +319,9 @@ function setupMenuHandlers() {
     });
 
     // Practice Mode - Start single player
-    btnPractice.addEventListener('click', (e) => {
+    btnPractice.addEventListener('click', async (e) => {
         e.target.blur(); // Remove focus so spacebar doesn't re-trigger
-        const maps = MapManager.getAllMaps();
+        const maps = await MapManager.getAllMaps();
         menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
             let customMap = null;
             if (mapId !== 'default') {
@@ -354,8 +357,8 @@ function setupMenuHandlers() {
     // Change Map (Lobby)
     const btnChangeMap = document.getElementById('btn-change-map');
     if (btnChangeMap) {
-        btnChangeMap.addEventListener('click', () => {
-            const maps = MapManager.getAllMaps();
+        btnChangeMap.addEventListener('click', async () => {
+            const maps = await MapManager.getAllMaps();
             menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
                 let map = null;
                 let name = 'Default Zoo';
@@ -740,11 +743,16 @@ function saveMap() {
     if (!mapEditor) return;
 
     // Use custom naming modal instead of native prompt
-    menuManager.showMapNaming((mapName) => {
+    menuManager.showMapNaming(async (mapName) => {
         const mapData = mapEditor.exportMap(mapName);
 
-        // Save to local storage
-        MapManager.saveMap(mapData);
+        // Save to IndexedDB
+        try {
+            await MapManager.saveMap(mapData);
+        } catch (e) {
+            // saveMap already alerts the user; just bail out
+            return;
+        }
 
         const json = JSON.stringify(mapData, null, 2);
 

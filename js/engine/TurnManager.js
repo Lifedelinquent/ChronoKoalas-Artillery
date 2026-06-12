@@ -80,6 +80,14 @@ export class TurnManager extends EventEmitter {
         }
         this.game.audioManager.playTurnStart();
 
+        // Stow any parachutes left deployed from the previous turn
+        for (const t of this.game.teams) {
+            for (const k of t.koalas) {
+                k.parachuteActive = false;
+                k.parachuteDeployed = false;
+            }
+        }
+
         // Switch to current team's inventory
         const team = this.game.teams[this.currentTeamIndex];
         if (team && team.weapons) {
@@ -227,6 +235,10 @@ export class TurnManager extends EventEmitter {
         const finishedTeam = this.game.teams[this.currentTeamIndex];
         if (finishedTeam) {
             finishedTeam.currentKoalaIndex = (this.currentKoalaIndex + 1) % finishedTeam.koalas.length;
+
+            // Crate buffs (double damage / low gravity / fast walk) last
+            // until the collecting team's turn is over
+            finishedTeam.buffs = {};
         }
 
         const startTeam = this.currentTeamIndex;

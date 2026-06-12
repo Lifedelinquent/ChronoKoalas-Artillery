@@ -194,6 +194,9 @@ export class Renderer {
         // Draw projectiles
         this.drawProjectiles();
 
+        // Draw burning ground (petrol / napalm)
+        this.drawFirePatches();
+
         // Draw particles
         this.drawParticles();
 
@@ -300,6 +303,29 @@ export class Renderer {
 
         ctx.save();
         ctx.translate(x, y);
+
+        // Parachute canopy while drifting down
+        if (koala.parachuteDeployed) {
+            ctx.fillStyle = '#e74c3c';
+            ctx.beginPath();
+            ctx.arc(0, -45, 26, Math.PI, 0);
+            ctx.fill();
+            ctx.fillStyle = '#f5f5f0';
+            ctx.beginPath();
+            ctx.arc(0, -45, 26, Math.PI + 0.6, Math.PI + 1.2);
+            ctx.arc(0, -45, 26, -1.2, -0.6);
+            ctx.lineTo(0, -45);
+            ctx.fill();
+
+            // Strings
+            ctx.strokeStyle = '#888';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-22, -38); ctx.lineTo(-6, -8);
+            ctx.moveTo(22, -38); ctx.lineTo(6, -8);
+            ctx.moveTo(0, -45); ctx.lineTo(0, -10);
+            ctx.stroke();
+        }
 
         // Apply backflip rotation if active
         if (koala.isBackflipping && koala.backflipRotation) {
@@ -930,12 +956,14 @@ export class Renderer {
             switch (proj.type) {
                 case 'bazooka':
                 case 'airstrike':
+                case 'homing':
                     this.drawRocket(ctx);
                     break;
                 case 'grenade':
                     this.drawGrenade(ctx, proj);
                     break;
                 case 'shotgun':
+                case 'gunburst':
                     this.drawPellet(ctx, proj);
                     break;
                 case 'dynamite':
@@ -946,6 +974,28 @@ export class Renderer {
                     break;
                 case 'holygrenade':
                     this.drawHolyGrenade(ctx, proj);
+                    break;
+                case 'mortar':
+                    this.drawMortarShell(ctx);
+                    break;
+                case 'cluster':
+                case 'clusterFrag':
+                    this.drawClusterBomb(ctx, proj);
+                    break;
+                case 'banana':
+                    this.drawBanana(ctx);
+                    break;
+                case 'petrol':
+                    this.drawPetrolBomb(ctx);
+                    break;
+                case 'arrow':
+                    this.drawArrow(ctx);
+                    break;
+                case 'sheep':
+                    this.drawSheep(ctx, proj);
+                    break;
+                case 'meteor':
+                    this.drawMeteor(ctx);
                     break;
                 default:
                     this.drawDefaultProjectile(ctx, proj);
@@ -985,6 +1035,49 @@ export class Renderer {
                     ctx.restore();
                 }
             }
+        }
+    }
+
+    /**
+     * Draw burning fire patches (petrol bomb / napalm strike)
+     */
+    drawFirePatches(ctx = this.ctx) {
+        const patches = this.game.firePatches;
+        if (!patches || patches.length === 0) return;
+
+        const now = performance.now();
+        for (const fire of patches) {
+            ctx.save();
+            ctx.translate(fire.x, fire.y);
+
+            const flicker = Math.sin(now / 70 + fire.flicker);
+            const h = 14 + flicker * 4;
+
+            // Outer flame
+            ctx.fillStyle = 'rgba(255, 100, 0, 0.85)';
+            ctx.beginPath();
+            ctx.moveTo(-9, 2);
+            ctx.quadraticCurveTo(-7, -h * 0.6, 0, -h);
+            ctx.quadraticCurveTo(7, -h * 0.6, 9, 2);
+            ctx.closePath();
+            ctx.fill();
+
+            // Inner flame
+            ctx.fillStyle = 'rgba(255, 210, 60, 0.9)';
+            ctx.beginPath();
+            ctx.moveTo(-4, 2);
+            ctx.quadraticCurveTo(-3, -h * 0.35, 0, -h * 0.55);
+            ctx.quadraticCurveTo(3, -h * 0.35, 4, 2);
+            ctx.closePath();
+            ctx.fill();
+
+            // Ground glow
+            ctx.fillStyle = 'rgba(255, 140, 0, 0.25)';
+            ctx.beginPath();
+            ctx.ellipse(0, 2, 14, 5, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
         }
     }
 
@@ -1113,6 +1206,202 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(-1, -1, 1, 0, Math.PI * 2);
         ctx.fill();
+    }
+
+    /**
+     * Draw mortar shell - stubby grey shell with a red band
+     */
+    drawMortarShell(ctx) {
+        ctx.fillStyle = '#666';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 9, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#c0392b';
+        ctx.fillRect(2, -4, 3, 8);
+
+        ctx.fillStyle = '#444';
+        ctx.beginPath();
+        ctx.moveTo(-9, 0);
+        ctx.lineTo(-13, -4);
+        ctx.lineTo(-13, 4);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    /**
+     * Draw cluster bomb / fragment - grey orb with a warning band
+     */
+    drawClusterBomb(ctx, proj) {
+        const r = proj.type === 'cluster' ? 8 : 5;
+        ctx.fillStyle = '#95a5a6';
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#e67e22';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Highlight
+        ctx.fillStyle = '#ccc';
+        ctx.beginPath();
+        ctx.arc(-r / 3, -r / 3, r / 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    /**
+     * Draw banana bomb - yellow crescent
+     */
+    drawBanana(ctx) {
+        ctx.strokeStyle = '#f1c40f';
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.arc(0, -3, 9, 0.3, Math.PI - 0.3);
+        ctx.stroke();
+
+        // Tips
+        ctx.fillStyle = '#7d6608';
+        ctx.beginPath();
+        ctx.arc(-8, 0, 2, 0, Math.PI * 2);
+        ctx.arc(8, 0, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineCap = 'butt';
+    }
+
+    /**
+     * Draw petrol bomb - bottle with a burning rag
+     */
+    drawPetrolBomb(ctx) {
+        // Bottle
+        ctx.fillStyle = 'rgba(120, 180, 90, 0.85)';
+        ctx.fillRect(-4, -8, 8, 14);
+        ctx.fillRect(-2, -13, 4, 6);
+
+        // Liquid
+        ctx.fillStyle = 'rgba(220, 160, 40, 0.9)';
+        ctx.fillRect(-3, -2, 6, 7);
+
+        // Burning rag
+        const flicker = Math.sin(performance.now() / 60) * 2;
+        ctx.fillStyle = '#ff6600';
+        ctx.beginPath();
+        ctx.arc(0, -15, 3 + flicker * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffcc00';
+        ctx.beginPath();
+        ctx.arc(0, -15, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    /**
+     * Draw longbow arrow
+     */
+    drawArrow(ctx) {
+        // Shaft
+        ctx.strokeStyle = '#8B5A2B';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-12, 0);
+        ctx.lineTo(8, 0);
+        ctx.stroke();
+
+        // Head
+        ctx.fillStyle = '#aaa';
+        ctx.beginPath();
+        ctx.moveTo(14, 0);
+        ctx.lineTo(7, -3);
+        ctx.lineTo(7, 3);
+        ctx.closePath();
+        ctx.fill();
+
+        // Fletching
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath();
+        ctx.moveTo(-12, 0);
+        ctx.lineTo(-16, -4);
+        ctx.lineTo(-10, 0);
+        ctx.lineTo(-16, 4);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    /**
+     * Draw the sheep - fluffy body, dark head, trotting legs
+     */
+    drawSheep(ctx, proj) {
+        // Keep the sheep upright regardless of velocity
+        ctx.rotate(-(proj.rotation || 0));
+
+        const trot = Math.sin(performance.now() / 80) * 2;
+
+        // Legs
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-5, 5); ctx.lineTo(-5, 11 + trot);
+        ctx.moveTo(5, 5); ctx.lineTo(5, 11 - trot);
+        ctx.stroke();
+
+        // Fluffy body
+        ctx.fillStyle = '#f5f5f0';
+        ctx.beginPath();
+        ctx.arc(-5, 0, 6, 0, Math.PI * 2);
+        ctx.arc(0, -3, 7, 0, Math.PI * 2);
+        ctx.arc(5, 0, 6, 0, Math.PI * 2);
+        ctx.arc(0, 2, 6, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Head (faces walking direction)
+        const dir = proj.walkDir || 1;
+        ctx.fillStyle = '#2c2c2c';
+        ctx.beginPath();
+        ctx.ellipse(9 * dir, -4, 5, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Eye
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(11 * dir, -5, 1.2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    /**
+     * Draw meteor - flaming rock
+     */
+    drawMeteor(ctx) {
+        // Flame trail (behind, opposite travel direction)
+        ctx.fillStyle = 'rgba(255, 120, 0, 0.6)';
+        ctx.beginPath();
+        ctx.moveTo(-8, 0);
+        ctx.lineTo(-26, -5);
+        ctx.lineTo(-26, 5);
+        ctx.closePath();
+        ctx.fill();
+
+        // Rock
+        ctx.fillStyle = '#6e4b2a';
+        ctx.beginPath();
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Molten cracks
+        ctx.strokeStyle = '#ff9933';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-4, -3); ctx.lineTo(2, 1);
+        ctx.moveTo(0, -6); ctx.lineTo(3, -1);
+        ctx.stroke();
+
+        // Glow
+        ctx.strokeStyle = 'rgba(255, 150, 50, 0.5)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, 11, 0, Math.PI * 2);
+        ctx.stroke();
     }
 
     /**

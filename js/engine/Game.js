@@ -76,6 +76,12 @@ export class Game extends EventEmitter {
         // Multi-shot weapon tracking (shotgun)
         this.shotgunShotsRemaining = 0;
 
+        // Burning patches of ground (petrol bomb / napalm strike)
+        this.firePatches = [];
+
+        // Kamikaze dash state (null when inactive)
+        this.kamikazeState = null;
+
         // Camera
         this.camera = {
             x: 0,
@@ -115,6 +121,16 @@ export class Game extends EventEmitter {
         this.turnManager.turnTime = this.turnManager.defaultTurnTime;
         this.turnManager.elapsedGameTime = 0;
         this.waterLevel = this.worldHeight - 60;
+
+        // Apply the sudden-death delay chosen on the map screen. -1 means
+        // "Never" (the trigger can never fire); anything missing keeps the
+        // TurnManager default. Stored once per match so a rematch can override it.
+        const sd = this.options.suddenDeathTime;
+        if (sd === -1) {
+            this.turnManager.suddenDeathTime = Infinity;
+        } else if (typeof sd === 'number' && sd > 0) {
+            this.turnManager.suddenDeathTime = sd;
+        }
 
         // Get game seed for multiplayer sync (or generate random for practice)
         const initialState = this.options.initialState;
@@ -877,6 +893,9 @@ export class Game extends EventEmitter {
                 this.updateTurnTimer(dt);
                 this.updateBlowtorch(dt);
                 break;
+            case 'drill':
+                this.updateDrill(dt);
+                break;
             case 'retreat':
                 this.updateRetreat(dt);
                 break;
@@ -884,6 +903,14 @@ export class Game extends EventEmitter {
                 // Damage phase is handled by processDamage timeout
                 break;
         }
+
+        // Kamikaze dash moves the koala through terrain until it detonates
+        if (this.kamikazeState) {
+            this.updateKamikaze(dt);
+        }
+
+        // Burning ground keeps cooking across phases (and turns)
+        this.updateFirePatches(dt);
 
         // Always update projectiles/traps (mines need to work even during aiming)
         if (profile) t0 = performance.now();
@@ -991,21 +1018,33 @@ export class Game extends EventEmitter {
                 const dist = Math.hypot(target.x - hitX, target.y - hitY);
                 if (dist < weapon.range + 10) {
                     if (isAuthoritativeClient) {
-                        // HIT!
-                        target.takeDamage(weapon.damage);
+                        // HIT! (double damage crate buff applies to melee too)
+                        const damage = weapon.damage * this.getDamageMultiplier();
+                        if (damage > 0) {
+                            target.takeDamage(damage);
+                            this.createFloatingText(target.x, target.y - 40, `-${damage}`, '#ff5544');
+                            shooter.damageDealt = (shooter.damageDealt || 0) + damage;
+                        }
 
-                        // Massive knockback in the direction of the swing
-                        const knockbackX = Math.cos(angle) * weapon.knockback;
-                        const knockbackY = Math.sin(angle) * weapon.knockback;
-
-                        target.applyKnockback(knockbackX, knockbackY);
-
-                        this.createFloatingText(target.x, target.y - 40, `-${weapon.damage}`, '#ff5544');
-                        shooter.damageDealt = (shooter.damageDealt || 0) + weapon.damage;
+                        // Knockback direction depends on the weapon:
+                        // Fire Punch launches skyward, Dragon Ball sends them flat,
+                        // everything else follows the swing angle
+                        let kbX, kbY;
+                        if (weapon.verticalKnockback) {
+                            kbX = Math.cos(angle) * 0.35 * weapon.knockback;
+                            kbY = -weapon.knockback;
+                        } else if (weapon.flatKnockback) {
+                            kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
+                            kbY = -0.3 * weapon.knockback;
+                        } else {
+                            kbX = Math.cos(angle) * weapon.knockback;
+                            kbY = Math.sin(angle) * weapon.knockback;
+                        }
+                        target.applyKnockback(kbX, kbY);
 
                         explosionResults.push({
                             koalaName: target.name,
-                            damage: weapon.damage,
+                            damage,
                             newHealth: target.health,
                             x: target.x,
                             y: target.y,
@@ -1438,12 +1477,38 @@ export class Game extends EventEmitter {
             const prevX = proj.x;
             const prevY = proj.y;
 
+            // Homing missiles steer toward their locked target after a boost phase
+            if (proj.homingTarget && !proj.stationary) {
+                proj.homingDelay -= dt;
+                if (proj.homingDelay <= 0 && proj.homingFuel > 0) {
+                    proj.homingFuel -= dt;
+                    const hx = proj.homingTarget.x - proj.x;
+                    const hy = proj.homingTarget.y - proj.y;
+                    const hd = Math.hypot(hx, hy) || 1;
+                    if (hd < 30) {
+                        // Reached the marker - cut the engine and fly through,
+                        // otherwise an in-air target makes it hover forever
+                        proj.homingFuel = 0;
+                    } else {
+                        const cruiseSpeed = 750;
+                        const blend = Math.min(1, 6 * dt);
+                        proj.vx += ((hx / hd) * cruiseSpeed - proj.vx) * blend;
+                        proj.vy += ((hy / hd) * cruiseSpeed - proj.vy) * blend;
+                    }
+                }
+            }
+
+            // Sheep: walks along the ground and hops over obstacles
+            if (proj.isWalker) {
+                this.updateWalker(proj, dt);
+            }
+
             // Apply physics to move the projectile FIRST
             if (!proj.stationary) {
                 this.physics.updateProjectile(proj, dt);
 
                 // Smoke trail for rockets and airstrike missiles
-                if ((proj.type === 'bazooka' || proj.type === 'airstrike') &&
+                if ((proj.type === 'bazooka' || proj.type === 'airstrike' || proj.type === 'homing' || proj.type === 'meteor') &&
                     this.particles.length < this.maxParticles - 10) {
                     proj.trailAccum = (proj.trailAccum || 0) + dt;
                     if (proj.trailAccum > 0.03) {
@@ -1677,10 +1742,50 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Update a walking projectile (sheep): trots along the ground in its
+     * throw direction, hops over walls, never settles down for long.
+     */
+    updateWalker(proj, dt) {
+        // A walker never stays parked - terrain hits may have flagged it
+        // stationary, but it gets right back up and keeps going
+        if (proj.stationary) {
+            proj.stationary = false;
+            proj.vy = 0;
+        }
+
+        const grounded = this.terrain.checkCollision(proj.x, proj.y + 7);
+        if (!grounded) return; // airborne: let gravity do its thing
+
+        // Lift out if embedded in the ground
+        let lift = 0;
+        while (lift < 10 && this.terrain.checkCollision(proj.x, proj.y + 3)) {
+            proj.y -= 1;
+            lift++;
+        }
+
+        // Trot forward
+        proj.vx = proj.walkDir * (proj.walkSpeed || 140);
+        if (proj.vy > 0) proj.vy = 0;
+
+        // Wall ahead? Hop. Hop didn't help (still blocked higher up)? Turn around.
+        const aheadX = proj.x + proj.walkDir * 9;
+        if (this.terrain.checkCollision(aheadX, proj.y - 2)) {
+            if (this.terrain.checkCollision(aheadX, proj.y - 26)) {
+                proj.walkDir *= -1;
+            } else {
+                proj.vy = -300;
+            }
+        }
+    }
+
+    /**
      * Handle projectile impact
      */
     handleProjectileImpact(projectile, directHitKoala = null) {
         const weapon = projectile.weapon;
+
+        // Double damage crate buff (applies while the collecting team is shooting)
+        const damageMultiplier = this.getDamageMultiplier();
 
         // Collect explosion results for network sync
         const explosionResults = [];
@@ -1734,7 +1839,7 @@ export class Game extends EventEmitter {
 
                     // Only apply damage to alive koalas
                     if (koala.isAlive) {
-                        const damage = Math.round(weapon.damage * (1 - distance / weapon.explosionRadius));
+                        const damage = Math.round(weapon.damage * damageMultiplier * (1 - distance / weapon.explosionRadius));
                         koala.takeDamage(damage);
 
                         // Play damage sound
@@ -1765,9 +1870,19 @@ export class Game extends EventEmitter {
         // Direct hit bonus - ONLY on authoritative client
         // Use ?? so weapons with an explicit directDamage of 0 (bazooka etc.)
         // don't get a phantom double-damage bonus on direct hits
-        const directDamage = weapon.directDamage ?? weapon.damage;
+        const directDamage = Math.round((weapon.directDamage ?? weapon.damage) * damageMultiplier);
         if (directHitKoala && isAuthoritativeClient && directDamage > 0) {
             directHitKoala.takeDamage(directDamage);
+
+            // Arrows and bullets shove the target along their flight path
+            if (weapon.directKnockback) {
+                const speed = Math.hypot(projectile.vx, projectile.vy) || 1;
+                directHitKoala.applyKnockback(
+                    (projectile.vx / speed) * weapon.directKnockback,
+                    (projectile.vy / speed) * weapon.directKnockback - 100
+                );
+            }
+
             this.createFloatingText(directHitKoala.x, directHitKoala.y - 55, `-${directDamage}`, '#ff5544');
             if (projectile.shooter && projectile.shooter !== directHitKoala) {
                 projectile.shooter.damageDealt = (projectile.shooter.damageDealt || 0) + directDamage;
@@ -1792,6 +1907,17 @@ export class Game extends EventEmitter {
 
         // Create particles
         this.createExplosionParticles(projectile.x, projectile.y, weapon.explosionRadius);
+
+        // Cluster weapons split into fragments (both clients simulate these
+        // with the shared seeded RNG, damage stays host-authoritative)
+        if (weapon.clusters) {
+            this.spawnClusterFragments(projectile, weapon);
+        }
+
+        // Petrol bomb / napalm missiles seed burning ground
+        if (weapon.spawnsFire) {
+            this.spawnFirePatches(projectile.x, projectile.y, weapon.fireCount || 5);
+        }
 
         // NETWORK SYNC: ALWAYS send explosion results to opponent for terrain sync
         // Host sends explosion results to Guest to maintain authority
@@ -2097,6 +2223,106 @@ export class Game extends EventEmitter {
             return;
         }
 
+        // Handle Pneumatic Drill (dig straight down)
+        if (weapon.type === 'drill') {
+            this.activateDrill(koala, weapon);
+
+            if (weapon.ammo !== Infinity) {
+                weapon.ammo--;
+                this.updateWeaponUI();
+            }
+
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+            return;
+        }
+
+        // Handle Kamikaze (dash through terrain, then detonate)
+        if (weapon.type === 'kamikaze') {
+            this.startKamikaze(koala, weapon, angle);
+
+            if (weapon.ammo !== Infinity) {
+                weapon.ammo--;
+                this.updateWeaponUI();
+            }
+
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+            return;
+        }
+
+        // Handle Parachute (deploys for the rest of the turn, doesn't end it)
+        if (weapon.type === 'parachute') {
+            if (koala.parachuteActive) return; // already deployed
+            koala.parachuteActive = true;
+            this.createFloatingText(koala.x, koala.y - 40, 'Parachute ready!', '#7ec8ff');
+
+            if (weapon.ammo !== Infinity) {
+                weapon.ammo--;
+                this.updateWeaponUI();
+            }
+
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+            return;
+        }
+
+        // Handle Skip Go (forfeit the turn)
+        if (weapon.type === 'skip') {
+            console.log('⏭️ Turn skipped');
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+            this.phase = 'damage';
+            this.scheduleDelayedAction(300, () => this.processDamage());
+            return;
+        }
+
+        // Handle Surrender (white flag - the other team wins)
+        if (weapon.type === 'surrender') {
+            console.log('🏳️ Surrender!');
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+            const currentTeam = this.getCurrentTeam();
+            const winner = this.teams.find(t => t !== currentTeam && t.isAlive()) || null;
+            this.endGame(winner);
+            return;
+        }
+
+        // Handle Armageddon (meteors rain across the whole map)
+        if (weapon.type === 'armageddon') {
+            if (weapon.ammo !== Infinity) {
+                weapon.ammo--;
+                this.updateWeaponUI();
+            }
+
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+
+            this.executeArmageddon(weapon);
+            return;
+        }
+
+        // Handle burst guns (handgun, uzi, minigun)
+        if (weapon.type === 'gunburst') {
+            this.fireBurstGun(koala, weapon, angle);
+
+            if (weapon.ammo !== Infinity) {
+                weapon.ammo--;
+                this.updateWeaponUI();
+            }
+
+            if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            }
+            return;
+        }
+
         // Handle Shotgun (scatter pellets with 2 shots per turn)
         if (weapon.type === 'shotgun') {
             // Initialize shots remaining on first shot
@@ -2176,6 +2402,12 @@ export class Game extends EventEmitter {
         // Track the shooter so we don't damage them with their own projectile
         projectile.shooter = koala;
 
+        // Sheep walks in the direction it was thrown
+        if (weapon.isWalker) {
+            projectile.walkDir = Math.cos(angle) >= 0 ? 1 : -1;
+            projectile.walkSpeed = weapon.walkSpeed || 140;
+        }
+
         this.projectiles.push(projectile);
         console.log('Projectile created at:', spawnX.toFixed(0), spawnY.toFixed(0), 'shooter:', koala.name);
 
@@ -2210,6 +2442,32 @@ export class Game extends EventEmitter {
 
         console.log('Firing targetted weapon:', weapon.name, 'at', targetX, targetY);
 
+        // Execute the weapon; some (teleport, girder) can fail validation,
+        // in which case no ammo is spent and no sound plays
+        let success = true;
+        switch (weapon.type) {
+            case 'teleport':
+                success = this.executeTeleport(koala, targetX, targetY) !== false;
+                break;
+            case 'airstrike':
+                this.executeAirstrike(targetX, targetY, weapon);
+                break;
+            case 'homing':
+                this.executeHomingMissile(koala, weapon, targetX, targetY);
+                break;
+            case 'girder':
+                success = this.placeGirder(targetX, targetY);
+                break;
+            default:
+                console.warn('Unknown targetted weapon:', weapon.type);
+                return;
+        }
+
+        if (!success) {
+            this.audioManager.playClick();
+            return;
+        }
+
         // Play fire sound
         this.audioManager.playFire(weapon.id);
 
@@ -2218,18 +2476,6 @@ export class Game extends EventEmitter {
             weapon.ammo--;
             console.log('Ammo remaining:', weapon.ammo);
             this.updateWeaponUI();
-        }
-
-        switch (weapon.type) {
-            case 'teleport':
-                this.executeTeleport(koala, targetX, targetY);
-                break;
-            case 'airstrike':
-                this.executeAirstrike(targetX, targetY, weapon);
-                break;
-            default:
-                console.warn('Unknown targetted weapon:', weapon.type);
-                return;
         }
 
         // Send to network (only if this is our turn)
@@ -2248,8 +2494,8 @@ export class Game extends EventEmitter {
 
         if (!validation.valid) {
             console.log(`Cannot teleport: ${validation.reason}`);
-            // Could add visual/audio feedback here
-            return;
+            // No ammo is spent on an invalid target
+            return false;
         }
 
         // Respect where the player is pointing. On multi-level maps there can be
@@ -2368,7 +2614,67 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Execute airstrike - missiles fall from sky
+     * Launch a homing missile from the koala toward a clicked target
+     */
+    executeHomingMissile(koala, weapon, targetX, targetY) {
+        this.phase = 'projectile';
+        this.projectileGraceTimer = 0.2;
+
+        // Launch upward-ish toward the target side, then steer in
+        const launchAngle = targetX >= koala.x ? -Math.PI / 3 : -Math.PI * 2 / 3;
+        const spawnX = koala.x + Math.cos(launchAngle) * 30;
+        const spawnY = (koala.y - 10) + Math.sin(launchAngle) * 30;
+
+        const proj = this.weaponManager.createProjectileFor(weapon, spawnX, spawnY, launchAngle, 1.0);
+        if (!proj) return;
+
+        proj.shooter = koala;
+        proj.homingTarget = { x: targetX, y: targetY };
+        proj.homingDelay = 0.35; // straight boost before lock-on
+        proj.homingFuel = 5;     // seconds of steering before it goes ballistic
+        this.projectiles.push(proj);
+        this.followProjectile(proj);
+    }
+
+    /**
+     * Place a steel girder at the target position. Doesn't end the turn.
+     * Returns false (no ammo spent) if a koala is in the way.
+     */
+    placeGirder(targetX, targetY) {
+        const width = 90;
+        const height = 12;
+
+        // Refuse placement on top of any koala - they'd get stuck inside
+        for (const team of this.teams) {
+            for (const koala of team.koalas) {
+                if (!koala.isAlive) continue;
+                if (Math.abs(koala.x - targetX) < width / 2 + 15 &&
+                    Math.abs(koala.y - targetY) < 40) {
+                    console.log('Cannot place girder on a koala');
+                    return false;
+                }
+            }
+        }
+
+        this.terrain.addGirder(targetX, targetY, width, height);
+
+        // Placement puff
+        for (let i = 0; i < 6; i++) {
+            this.addParticle({
+                type: 'smoke',
+                x: targetX + (Math.random() - 0.5) * width,
+                y: targetY,
+                vx: (Math.random() - 0.5) * 40,
+                vy: -20 - Math.random() * 30,
+                lifetime: 0.6, time: 0, color: '#aaa', size: 4
+            });
+        }
+        return true;
+    }
+
+    /**
+     * Execute airstrike - missiles fall from sky.
+     * Variants: napalm (missiles seed fire) and mine strike (drops live mines).
      */
     executeAirstrike(targetX, targetY, weapon) {
         const missileCount = weapon.missiles || 5;
@@ -2377,6 +2683,38 @@ export class Game extends EventEmitter {
         const startX = targetX - spread / 2;
 
         this.phase = 'projectile';
+
+        // Mine strike: parachute live mines instead of missiles
+        if (weapon.dropsMines) {
+            const rand = this.seededRandom || Math.random;
+            const spawnMine = (index) => {
+                if (this.isGameOver) return;
+                const mineX = startX + (index * spacing);
+                const proj = this.weaponManager.createProjectileFor(weapon, mineX, 50, Math.PI / 2, 0.2);
+                if (proj) {
+                    proj.type = 'mine';
+                    proj.vx = 0;
+                    proj.vy = 200;
+                    proj.gravityMultiplier = 0.5;
+                    proj.affectedByWind = false;
+                    proj.triggeredByProximity = true;
+                    proj.triggerDelay = 3;
+                    proj.timer = 3;
+                    proj.timerStarted = false;
+                    proj.isDud = rand() < 0.15;
+                    this.projectiles.push(proj);
+                }
+                this.audioManager.playMissileDrop();
+                if (this.phase !== 'projectile') this.phase = 'projectile';
+            };
+
+            spawnMine(0);
+            for (let i = 1; i < missileCount; i++) {
+                this.scheduleDelayedAction(i * 200, () => spawnMine(i));
+            }
+            this.centerCameraOn(targetX, targetY);
+            return;
+        }
 
         // Helper to spawn a single missile
         const spawnMissile = (index) => {
@@ -2494,6 +2832,396 @@ export class Game extends EventEmitter {
 
             // Audio
             // this.audioManager.playRope(); // If exists
+        }
+    }
+
+    /**
+     * Damage multiplier from the current team's crate buffs
+     */
+    getDamageMultiplier() {
+        return this.getCurrentTeam()?.buffs?.doubleDamage ? 2 : 1;
+    }
+
+    /**
+     * Fire a burst gun (handgun / uzi / minigun): a stream of pellets at the
+     * locked-in angle, staggered over time via delayed actions.
+     */
+    fireBurstGun(koala, weapon, angle) {
+        const burstCount = weapon.burstCount || 6;
+        const interval = weapon.burstInterval || 0.1;
+
+        this.phase = 'projectile';
+        // Grace period covers the whole burst so the phase can't end between rounds
+        this.projectileGraceTimer = burstCount * interval + 0.25;
+
+        const rand = this.seededRandom || Math.random;
+        const spawnOffset = 30;
+
+        const fireOne = () => {
+            if (this.isGameOver) return;
+            const spread = (rand() - 0.5) * (weapon.burstSpread || 0);
+            const shotAngle = angle + spread;
+            const spawnX = koala.x + Math.cos(shotAngle) * spawnOffset;
+            const spawnY = (koala.y - 10) + Math.sin(shotAngle) * spawnOffset;
+
+            const projectile = this.weaponManager.createProjectileFor(weapon, spawnX, spawnY, shotAngle, 1.0);
+            if (projectile) {
+                projectile.shooter = koala;
+                projectile.isPellet = true;
+                projectile.maxRange = weapon.maxRange || 500;
+                projectile.startX = spawnX;
+                projectile.startY = spawnY;
+                this.projectiles.push(projectile);
+            }
+            this.audioManager.playFire(weapon.id);
+
+            // Muzzle flash
+            this.addParticle({
+                type: 'spark',
+                x: spawnX, y: spawnY,
+                vx: Math.cos(shotAngle) * 80, vy: Math.sin(shotAngle) * 80,
+                color: '#ffdd66', size: 3, lifetime: 0.1, time: 0
+            });
+
+            // Keep the phase pinned while the burst is still going
+            if (this.phase !== 'projectile') {
+                this.phase = 'projectile';
+            }
+        };
+
+        fireOne();
+        for (let i = 1; i < burstCount; i++) {
+            this.scheduleDelayedAction(i * interval * 1000, fireOne);
+        }
+    }
+
+    /**
+     * Activate the pneumatic drill - digs straight down for a fixed duration
+     */
+    activateDrill(koala, weapon) {
+        this.phase = 'drill';
+        koala.drillTimer = weapon.duration || 2.5;
+        koala.drillSpeed = weapon.digSpeed || 75;
+        koala.drillRadius = weapon.digRadius || 16;
+        koala.drillAccum = 0;
+
+        // Open a hole right beneath so the first frames don't fight collision
+        this.terrain.createCrater(koala.x, koala.y + 10, koala.drillRadius);
+        console.log('🪛 Drill activated for', koala.name);
+    }
+
+    /**
+     * Update pneumatic drill - straight-down dig, then retreat
+     */
+    updateDrill(dt) {
+        const koala = this.getCurrentKoala();
+        if (!koala || koala.drillTimer === undefined || koala.drillTimer <= 0) {
+            this.endDrill();
+            return;
+        }
+
+        koala.drillTimer -= dt;
+        const move = koala.drillSpeed * dt;
+        koala.y += move;
+        koala.drillAccum += move;
+
+        // Carve every few pixels of descent
+        if (koala.drillAccum >= 5) {
+            koala.drillAccum = 0;
+            this.terrain.createCrater(koala.x, koala.y + 8, koala.drillRadius);
+            if (Math.random() > 0.85) {
+                this.audioManager.playFire('blowtorch');
+            }
+        }
+
+        // Dust particles
+        this.addParticle({
+            type: 'spark',
+            x: koala.x + (Math.random() - 0.5) * 16,
+            y: koala.y + 12,
+            vx: (Math.random() - 0.5) * 120,
+            vy: -Math.random() * 80,
+            color: Math.random() > 0.5 ? '#a08060' : '#776655',
+            size: 2 + Math.random() * 2,
+            lifetime: 0.4,
+            time: 0
+        });
+
+        // Don't drill into the water
+        if (koala.y > this.waterLevel - 30) {
+            koala.drillTimer = 0;
+        }
+
+        if (koala.drillTimer <= 0) {
+            this.endDrill();
+        }
+    }
+
+    /**
+     * Finish drilling and hand the turn over
+     */
+    endDrill() {
+        const koala = this.getCurrentKoala();
+        if (koala) {
+            koala.drillTimer = undefined;
+            koala.vy = 0;
+            koala.onGround = false; // let physics settle them into the shaft
+        }
+
+        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
+            this.sendTurnEnd();
+        }
+        this.startRetreat();
+    }
+
+    /**
+     * Start a kamikaze dash: the koala flies along the aim direction, carving
+     * through terrain and battering anyone in the way, then detonates.
+     */
+    startKamikaze(koala, weapon, angle) {
+        this.phase = 'projectile';
+        this.projectileGraceTimer = 0.2;
+        this.kamikazeState = {
+            koala,
+            weapon,
+            dirX: Math.cos(angle),
+            dirY: Math.sin(angle),
+            traveled: 0,
+            carveAccum: 0,
+            hitVictims: new Set()
+        };
+        koala.isBackflipping = false;
+        console.log('✈️ KAMIKAZE!', koala.name);
+    }
+
+    /**
+     * Update the kamikaze dash each frame
+     */
+    updateKamikaze(dt) {
+        const state = this.kamikazeState;
+        const koala = state.koala;
+        const weapon = state.weapon;
+
+        const move = (weapon.dashSpeed || 480) * dt;
+        koala.x += state.dirX * move;
+        koala.y += state.dirY * move;
+        koala.vx = 0;
+        koala.vy = 0;
+        koala.onGround = false;
+        state.traveled += move;
+        state.carveAccum += move;
+
+        // Carve a tunnel
+        if (state.carveAccum >= 8) {
+            state.carveAccum = 0;
+            this.terrain.createCrater(koala.x, koala.y, 20);
+        }
+
+        // Flame trail
+        this.addParticle({
+            type: 'spark',
+            x: koala.x - state.dirX * 14,
+            y: koala.y - state.dirY * 14,
+            vx: (Math.random() - 0.5) * 60,
+            vy: (Math.random() - 0.5) * 60,
+            color: Math.random() > 0.5 ? '#ff6600' : '#ffcc00',
+            size: 3, lifetime: 0.3, time: 0
+        });
+
+        // Batter anyone touched along the way (once each)
+        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
+        for (const team of this.teams) {
+            for (const target of team.koalas) {
+                if (!target.isAlive || target === koala || state.hitVictims.has(target)) continue;
+                if (Math.hypot(target.x - koala.x, target.y - koala.y) < 28) {
+                    state.hitVictims.add(target);
+                    if (isAuthoritativeClient) {
+                        const dmg = (weapon.dashDamage || 30) * this.getDamageMultiplier();
+                        target.takeDamage(dmg);
+                        target.applyKnockback(state.dirX * 400, -300);
+                        this.createFloatingText(target.x, target.y - 40, `-${dmg}`, '#ff5544');
+                        koala.damageDealt = (koala.damageDealt || 0) + dmg;
+                    }
+                    this.audioManager.playDamage();
+                }
+            }
+        }
+
+        // Detonate at max range, out of bounds, or in the drink
+        const out = koala.x < 0 || koala.x > this.worldWidth || koala.y < -50 || koala.y > this.waterLevel;
+        if (state.traveled >= (weapon.dashDistance || 380) || out) {
+            this.kamikazeState = null;
+
+            // The pilot doesn't come back
+            koala.health = 0;
+
+            // Final blast reuses the standard impact pipeline via a stub projectile
+            const blast = this.weaponManager.getSubMunition('kamikazeBlast');
+            this.handleProjectileImpact({ x: koala.x, y: koala.y, weapon: blast, shooter: koala });
+
+            this.phase = 'damage';
+            this.scheduleDelayedAction(800, () => this.processDamage());
+        }
+    }
+
+    /**
+     * Armageddon: meteors rain across the entire map for a few seconds
+     */
+    executeArmageddon(weapon) {
+        this.phase = 'projectile';
+        this.projectileGraceTimer = 0.3;
+
+        const rand = this.seededRandom || Math.random;
+        const meteorDef = this.weaponManager.getSubMunition('meteor');
+        const count = weapon.meteorCount || 14;
+
+        const spawnMeteor = () => {
+            if (this.isGameOver) return;
+            const x = rand() * this.worldWidth;
+            const proj = this.weaponManager.createProjectileFor(meteorDef, x, 20, Math.PI / 2, 1.0);
+            if (proj) {
+                proj.vx = (rand() - 0.5) * 220;
+                proj.vy = 300 + rand() * 150;
+                this.projectiles.push(proj);
+            }
+            this.audioManager.playMissileDrop();
+            if (this.phase !== 'projectile') {
+                this.phase = 'projectile';
+            }
+        };
+
+        spawnMeteor();
+        for (let i = 1; i < count; i++) {
+            this.scheduleDelayedAction(i * 280, spawnMeteor);
+        }
+
+        this.addScreenShake(6, 0.6);
+        console.log('☄️ ARMAGEDDON!');
+    }
+
+    /**
+     * Spawn cluster fragments after a cluster weapon's main explosion
+     */
+    spawnClusterFragments(projectile, weapon) {
+        const rand = this.seededRandom || Math.random;
+        const fragDef = this.weaponManager.getSubMunition(weapon.clusterType || 'clusterFrag');
+        if (!fragDef) return;
+
+        const count = weapon.clusters;
+        for (let i = 0; i < count; i++) {
+            const frag = this.weaponManager.createProjectileFor(fragDef, projectile.x, projectile.y - 12, 0, 1.0);
+            if (!frag) continue;
+            frag.vx = (rand() - 0.5) * 360;
+            frag.vy = -180 - rand() * 220;
+            frag.shooter = projectile.shooter;
+            this.projectiles.push(frag);
+        }
+
+        // Fragments need the projectile phase to keep running
+        if (this.phase === 'projectile') {
+            this.projectileGraceTimer = Math.max(this.projectileGraceTimer, 0.2);
+        }
+    }
+
+    /**
+     * Spawn burning fire patches around a point (petrol bomb / napalm)
+     */
+    spawnFirePatches(x, y, count) {
+        const rand = this.seededRandom || Math.random;
+        for (let i = 0; i < count; i++) {
+            this.firePatches.push({
+                x: x + (rand() - 0.5) * 70,
+                y: y - 10,
+                vx: (rand() - 0.5) * 140,
+                vy: -60 - rand() * 120,
+                settled: false,
+                age: 0,
+                lifetime: 4 + rand() * 2,
+                tickTimer: 0,
+                flicker: rand() * Math.PI * 2
+            });
+        }
+    }
+
+    /**
+     * Update fire patches: scatter, settle on terrain, burn anyone standing
+     * in them, then gutter out.
+     */
+    updateFirePatches(dt) {
+        if (this.firePatches.length === 0) return;
+
+        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
+
+        for (let i = this.firePatches.length - 1; i >= 0; i--) {
+            const fire = this.firePatches[i];
+
+            if (!fire.settled) {
+                // Ballistic scatter until it lands
+                fire.vy += 400 * dt;
+                fire.x += fire.vx * dt;
+                fire.y += fire.vy * dt;
+
+                if (this.terrain.checkCollision(fire.x, fire.y + 4)) {
+                    fire.settled = true;
+                    fire.vx = 0;
+                    fire.vy = 0;
+                }
+
+                // Fell into water or out of the world
+                if (fire.y > this.waterLevel || fire.x < 0 || fire.x > this.worldWidth) {
+                    this.firePatches.splice(i, 1);
+                    continue;
+                }
+            } else {
+                fire.age += dt;
+
+                // Ground burned away beneath it?
+                if (!this.terrain.checkCollision(fire.x, fire.y + 4) &&
+                    !this.terrain.checkCollision(fire.x, fire.y + 10)) {
+                    fire.settled = false;
+                }
+
+                // Burn nearby koalas a tick at a time
+                fire.tickTimer += dt;
+                if (fire.tickTimer >= 0.45) {
+                    fire.tickTimer = 0;
+
+                    if (isAuthoritativeClient) {
+                        for (const team of this.teams) {
+                            for (const koala of team.koalas) {
+                                if (!koala.isAlive) continue;
+                                if (Math.hypot(koala.x - fire.x, koala.y - fire.y) < 30) {
+                                    koala.takeDamage(5);
+                                    // A hop so the burn is felt and escapable
+                                    koala.applyKnockback((koala.x >= fire.x ? 1 : -1) * 60, -120);
+                                    this.createFloatingText(koala.x, koala.y - 40, '-5', '#ff8800');
+                                    this.audioManager.playDamage();
+                                }
+                            }
+                        }
+                        this.updateTeamHealth();
+                    }
+                }
+
+                // Smoke and flame particles
+                if (Math.random() > 0.7 && this.particles.length < this.maxParticles - 5) {
+                    this.addParticle({
+                        type: 'spark',
+                        x: fire.x + (Math.random() - 0.5) * 14,
+                        y: fire.y - 4,
+                        vx: (Math.random() - 0.5) * 30,
+                        vy: -40 - Math.random() * 60,
+                        color: Math.random() > 0.5 ? '#ff6600' : '#ffaa00',
+                        size: 2 + Math.random() * 3,
+                        lifetime: 0.5,
+                        time: 0
+                    });
+                }
+
+                if (fire.age >= fire.lifetime) {
+                    this.firePatches.splice(i, 1);
+                }
+            }
         }
     }
 
@@ -2852,6 +3580,8 @@ export class Game extends EventEmitter {
         this.phase = 'waiting';
         this.turnTimer = this.turnTime;
         this.shotgunShotsRemaining = 0;
+        this.firePatches = [];
+        this.kamikazeState = null;
         this.lootManager.reset();
         this.spatialGrid.clear();
 

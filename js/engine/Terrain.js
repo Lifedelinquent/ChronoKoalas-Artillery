@@ -1086,6 +1086,51 @@ export class Terrain {
     }
 
     /**
+     * Add a steel girder beam to the terrain (utility weapon).
+     * Draws solid pixels onto the terrain canvas and refreshes the
+     * collision mask for that region.
+     */
+    addGirder(cx, cy, width = 90, height = 12) {
+        const x = cx - width / 2;
+        const y = cy - height / 2;
+
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'source-over';
+
+        // Steel beam body
+        const gradient = this.ctx.createLinearGradient(x, y, x, y + height);
+        gradient.addColorStop(0, '#9aa5b1');
+        gradient.addColorStop(0.5, '#6b7684');
+        gradient.addColorStop(1, '#4a525e');
+        this.ctx.fillStyle = gradient;
+        this.ctx.fillRect(x, y, width, height);
+
+        // Top/bottom flanges
+        this.ctx.fillStyle = '#3a414b';
+        this.ctx.fillRect(x, y, width, 2);
+        this.ctx.fillRect(x, y + height - 2, width, 2);
+
+        // Rivets
+        this.ctx.fillStyle = '#2c323a';
+        for (let rx = x + 8; rx < x + width - 4; rx += 14) {
+            this.ctx.beginPath();
+            this.ctx.arc(rx, cy, 1.8, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
+
+        this.ctx.restore();
+
+        // Refresh collision data for the new beam
+        const padding = 4;
+        this.updateCollisionMask({
+            x: x - padding,
+            y: y - padding,
+            width: width + padding * 2,
+            height: height + padding * 2
+        });
+    }
+
+    /**
      * Check line of sight between two points
      */
     lineOfSight(x1, y1, x2, y2) {

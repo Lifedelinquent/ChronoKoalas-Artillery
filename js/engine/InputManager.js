@@ -3,6 +3,9 @@
  */
 
 export class InputManager {
+    // Weapon types that activate instantly (no power charging)
+    static INSTANT_FIRE_TYPES = ['melee', 'blowtorch', 'drill', 'kamikaze', 'parachute', 'skip', 'surrender', 'armageddon'];
+
     constructor(game) {
         this.game = game;
 
@@ -146,8 +149,8 @@ export class InputManager {
 
             if (this.game.phase === 'aiming') {
                 const weapon = this.game.weaponManager.currentWeapon;
-                // Instant activation for melee and blowtorch
-                if (weapon && (weapon.type === 'melee' || weapon.type === 'blowtorch')) {
+                // Instant activation for melee, tools and utilities
+                if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
                     const koala = this.game.getCurrentKoala();
                     this.game.fireWeapon(koala.aimAngle, 1.0);
                 } else if (weapon && !weapon.targetted) {
@@ -249,14 +252,10 @@ export class InputManager {
 
                     // Fire the targetted weapon
                     this.game.fireTargettedWeapon(weapon, worldX, worldY);
-                } else if (weapon && weapon.type === 'melee') {
-                    // Melee hits are instant
+                } else if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
+                    // Melee/tool/utility weapons activate instantly without charging
                     const koala = this.game.getCurrentKoala();
-                    this.game.fireWeapon(koala.aimAngle, 1.0); // Full power swing
-                } else if (weapon && weapon.type === 'blowtorch') {
-                    // Blowtorch activates immediately without charging
-                    const koala = this.game.getCurrentKoala();
-                    this.game.fireWeapon(0, 1.0); // Angle/power don't matter for blowtorch
+                    this.game.fireWeapon(koala.aimAngle, 1.0);
                 } else {
                     this.startCharging();
                 }
@@ -423,9 +422,12 @@ export class InputManager {
 
             if (koala.onGround) {
                 // Ground movement with terrain following
-                const result = this.game.physics.canWalkUp(koala, moveDir * this.moveSpeed * dt);
+                // (fast walk crate buff nearly doubles walking speed)
+                const fastWalk = this.game.getCurrentTeam()?.buffs?.fastWalk ? 1.8 : 1;
+                const step = moveDir * this.moveSpeed * fastWalk * dt;
+                const result = this.game.physics.canWalkUp(koala, step);
                 if (result.canMove) {
-                    koala.x += moveDir * this.moveSpeed * dt;
+                    koala.x += step;
                     if (result.newY !== koala.y) {
                         koala.y = result.newY;
                     }

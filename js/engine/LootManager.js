@@ -7,32 +7,58 @@ export class LootManager {
         this.game = game;
 
         // Global settings
-        this.crateDropChance = 0.20; // 20% chance per turn
+        this.crateDropChance = 0.33; // chance per turn
         this.maxCratesOnMap = 5;
 
         // Active crates on the map
         this.crates = [];
 
-        // Category weights (Health vs Weapon)
+        // Category weights: weapon crates most common, then health, then utility
         this.categoryWeights = {
-            health: 40,
-            weapon: 60
+            health: 30,
+            weapon: 50,
+            utility: 20
         };
 
-        // Health loot table
+        // Health crates: a fixed dose of HP
         this.healthLootTable = [
-            { id: 'health_small', name: 'Small Health Pack', weight: 50, healAmount: 25, rarity: 'common' },
-            { id: 'health_medium', name: 'Medium Health Pack', weight: 35, healAmount: 50, rarity: 'uncommon' },
-            { id: 'health_large', name: 'Large Health Pack', weight: 15, healAmount: 100, rarity: 'rare' }
+            { id: 'health_small', name: 'Health Pack', weight: 65, healAmount: 25, rarity: 'common' },
+            { id: 'health_medium', name: 'Big Health Pack', weight: 30, healAmount: 50, rarity: 'uncommon' },
+            { id: 'health_large', name: 'Mega Health Pack', weight: 5, healAmount: 100, rarity: 'legendary' }
         ];
 
-        // Weapon loot table
+        // Weapon crates: extra ammo, including the crate-only heavy hitters
         this.weaponLootTable = [
-            { id: 'grenade', name: 'Grenade Crate', weight: 35, ammo: 2, rarity: 'common' },
-            { id: 'dynamite', name: 'Dynamite Crate', weight: 25, ammo: 1, rarity: 'uncommon' },
-            { id: 'teleport', name: 'Teleport Crate', weight: 15, ammo: 1, rarity: 'rare' },
-            { id: 'airstrike', name: 'Airstrike Crate', weight: 15, ammo: 1, rarity: 'rare' },
-            { id: 'holygrenade', name: 'Holy Hand Grenade Crate', weight: 10, ammo: 1, rarity: 'legendary' }
+            { id: 'cluster', name: 'Cluster Bombs', weight: 10, ammo: 2, rarity: 'common' },
+            { id: 'petrol', name: 'Petrol Bombs', weight: 9, ammo: 2, rarity: 'common' },
+            { id: 'mine', name: 'Mines', weight: 9, ammo: 1, rarity: 'common' },
+            { id: 'longbow', name: 'Arrows', weight: 8, ammo: 2, rarity: 'common' },
+            { id: 'homing', name: 'Homing Missiles', weight: 8, ammo: 2, rarity: 'common' },
+            { id: 'mortar', name: 'Mortar Shells', weight: 8, ammo: 3, rarity: 'common' },
+            { id: 'dynamite', name: 'Dynamite', weight: 8, ammo: 1, rarity: 'uncommon' },
+            { id: 'bat', name: 'Baseball Bat', weight: 6, ammo: 1, rarity: 'uncommon' },
+            { id: 'sheep', name: 'Sheep', weight: 6, ammo: 1, rarity: 'uncommon' },
+            { id: 'kamikaze', name: 'Kamikaze', weight: 4, ammo: 1, rarity: 'uncommon' },
+            { id: 'airstrike', name: 'Air Strike', weight: 5, ammo: 1, rarity: 'rare' },
+            { id: 'napalmstrike', name: 'Napalm Strike', weight: 4, ammo: 1, rarity: 'rare' },
+            { id: 'minestrike', name: 'Mine Strike', weight: 3, ammo: 1, rarity: 'rare' },
+            { id: 'minigun', name: 'Minigun', weight: 3, ammo: 1, rarity: 'rare' },
+            { id: 'banana', name: 'Banana Bomb', weight: 3, ammo: 1, rarity: 'legendary' },
+            { id: 'holygrenade', name: 'Holy Hand Grenade', weight: 2, ammo: 1, rarity: 'legendary' },
+            { id: 'armageddon', name: 'Armageddon', weight: 1, ammo: 1, rarity: 'legendary' }
+        ];
+
+        // Utility crates: tools and one-turn team buffs
+        this.utilityLootTable = [
+            { id: 'rope', name: 'Ninja Ropes', weight: 18, ammo: 3, rarity: 'common' },
+            { id: 'girder', name: 'Girders', weight: 16, ammo: 2, rarity: 'common' },
+            { id: 'parachute', name: 'Parachute', weight: 14, ammo: 1, rarity: 'common' },
+            { id: 'blowtorch', name: 'Blowtorch', weight: 12, ammo: 1, rarity: 'common' },
+            { id: 'drill', name: 'Pneumatic Drill', weight: 12, ammo: 1, rarity: 'common' },
+            { id: 'teleport', name: 'Teleport', weight: 10, ammo: 1, rarity: 'uncommon' },
+            { id: 'buff_doubledamage', name: 'Double Damage', weight: 6, buff: 'doubleDamage', rarity: 'rare' },
+            { id: 'buff_lowgravity', name: 'Low Gravity', weight: 6, buff: 'lowGravity', rarity: 'rare' },
+            { id: 'buff_fastwalk', name: 'Fast Walk', weight: 6, buff: 'fastWalk', rarity: 'rare' }
         ];
 
         // Rarity colors for visual effects
@@ -70,13 +96,25 @@ export class LootManager {
     }
 
     /**
-     * Select a category (health or weapon)
+     * Select a category (health, weapon or utility)
      */
     selectCategory() {
-        const totalWeight = this.categoryWeights.health + this.categoryWeights.weapon;
-        const roll = this.random() * totalWeight;
+        const weights = this.categoryWeights;
+        const totalWeight = weights.health + weights.weapon + weights.utility;
+        let roll = this.random() * totalWeight;
 
-        return roll < this.categoryWeights.health ? 'health' : 'weapon';
+        if ((roll -= weights.health) < 0) return 'health';
+        if ((roll -= weights.weapon) < 0) return 'weapon';
+        return 'utility';
+    }
+
+    /**
+     * Get the loot table for a category
+     */
+    getLootTable(category) {
+        if (category === 'health') return this.healthLootTable;
+        if (category === 'utility') return this.utilityLootTable;
+        return this.weaponLootTable;
     }
 
     /**
@@ -98,12 +136,7 @@ export class LootManager {
         const category = this.selectCategory();
 
         // Select specific item from that category
-        let item;
-        if (category === 'health') {
-            item = this.selectFromLootTable(this.healthLootTable);
-        } else {
-            item = this.selectFromLootTable(this.weaponLootTable);
-        }
+        const item = this.selectFromLootTable(this.getLootTable(category));
 
         // Find spawn position
         const position = this.findSpawnPosition();
@@ -137,12 +170,7 @@ export class LootManager {
         console.log('📦 Remote crate spawn:', data);
 
         // Find the item from loot tables
-        let item;
-        if (data.category === 'health') {
-            item = this.healthLootTable.find(i => i.id === data.itemId);
-        } else {
-            item = this.weaponLootTable.find(i => i.id === data.itemId);
-        }
+        const item = this.getLootTable(data.category).find(i => i.id === data.itemId);
 
         if (item) {
             this.createCrate(data.category, item, data.x, data.y);
@@ -323,6 +351,14 @@ export class LootManager {
             // Create floating text
             this.game.createFloatingText?.(crate.x, crate.y - 30, `+${actualHeal}`, '#4ade80');
 
+        } else if (crate.item.buff) {
+            // Utility buff: lasts until the collecting team's turn ends
+            team.buffs = team.buffs || {};
+            team.buffs[crate.item.buff] = true;
+
+            console.log(`✨ ${team.name} collected ${crate.item.name} buff`);
+            this.game.createFloatingText?.(crate.x, crate.y - 30, crate.item.name + '!', this.rarityColors[crate.rarity]);
+
         } else {
             // Give weapon ammo to the COLLECTOR's team inventory
             // (weaponManager.weapons points at whichever team's turn it is,
@@ -414,9 +450,10 @@ export class LootManager {
             ctx.stroke();
         }
 
-        // Crate box
+        // Crate box (red = health, blue = utility, brown = weapon)
         const size = 24;
-        ctx.fillStyle = crate.category === 'health' ? '#d32f2f' : '#8B4513';
+        const boxColors = { health: '#d32f2f', utility: '#1e5f8e', weapon: '#8B4513' };
+        ctx.fillStyle = boxColors[crate.category] || boxColors.weapon;
         ctx.fillRect(-size / 2, -size / 2, size, size);
 
         // Crate border
@@ -430,6 +467,15 @@ export class LootManager {
             // Medical cross
             ctx.fillRect(-3, -8, 6, 16);
             ctx.fillRect(-8, -3, 16, 6);
+        } else if (crate.category === 'utility') {
+            // Wrench-ish icon: diagonal bar with a hook
+            ctx.save();
+            ctx.rotate(Math.PI / 4);
+            ctx.fillRect(-2, -8, 4, 14);
+            ctx.beginPath();
+            ctx.arc(0, -8, 4, Math.PI * 0.2, Math.PI * 1.8);
+            ctx.fill();
+            ctx.restore();
         } else {
             // Weapon icon (simple bomb)
             ctx.beginPath();

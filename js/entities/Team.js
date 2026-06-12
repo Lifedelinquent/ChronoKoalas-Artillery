@@ -8,6 +8,7 @@ export class Team {
         this.color = color;
         this.koalas = [];
         this.weapons = null; // Team-specific inventory
+        this.buffs = {}; // Crate utility buffs (doubleDamage, lowGravity, fastWalk)
         this.currentKoalaIndex = 0; // Track who's turn it is next
     }
 

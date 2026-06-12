@@ -41,9 +41,12 @@ export class Physics {
     updateEntity(entity, dt) {
         const prevY = entity.y;
 
+        // Low gravity crate buff: everything falls gently during that team's turn
+        const gravityScale = this.game.getCurrentTeam?.()?.buffs?.lowGravity ? 0.45 : 1;
+
         // Apply gravity (unless spawn protected)
         if (!entity.spawnTimer || entity.spawnTimer <= 0) {
-            entity.vy += this.gravity * dt;
+            entity.vy += this.gravity * gravityScale * dt;
         } else {
             // Force zero velocity during spawn protection to "stick" the landing
             entity.vy = 0;
@@ -51,6 +54,17 @@ export class Physics {
 
         // Clamp velocity
         entity.vy = Math.min(entity.vy, this.terminalVelocity);
+
+        // Parachute: caps descent to a gentle drift and rides the wind
+        if (entity.parachuteActive && !entity.onGround && entity.vy > 0) {
+            entity.parachuteDeployed = true;
+            entity.vy = Math.min(entity.vy, 70);
+            entity.vx += this.game.wind * 60 * dt;
+            // A drifting descent shouldn't count as a damaging fall
+            entity.peakY = entity.y;
+        } else {
+            entity.parachuteDeployed = false;
+        }
 
         // Apply velocity
         entity.x += entity.vx * dt;
@@ -278,9 +292,11 @@ export class Physics {
         // Wind affects projectiles
         const windForce = this.game.wind * 100;
 
-        // Apply gravity (some projectiles may have custom gravity)
+        // Apply gravity (some projectiles may have custom gravity;
+        // the low-gravity crate buff floats shots too)
+        const gravityScale = this.game.getCurrentTeam?.()?.buffs?.lowGravity ? 0.45 : 1;
         const gravityMult = proj.gravityMultiplier || 1;
-        proj.vy += this.gravity * gravityMult * dt;
+        proj.vy += this.gravity * gravityMult * gravityScale * dt;
 
         // Apply wind
         if (proj.affectedByWind !== false) {

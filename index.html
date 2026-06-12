@@ -65,6 +65,17 @@
                 </div>
                 <!-- Custom maps appended here -->
             </div>
+            <div class="match-settings">
+                <span class="match-settings-label">⏱️ Sudden Death after</span>
+                <div id="sudden-death-options" class="sudden-death-options">
+                    <button class="sd-option" data-sd-time="60">1 min</button>
+                    <button class="sd-option" data-sd-time="120">2 min</button>
+                    <button class="sd-option selected" data-sd-time="180">3 min</button>
+                    <button class="sd-option" data-sd-time="300">5 min</button>
+                    <button class="sd-option" data-sd-time="600">10 min</button>
+                    <button class="sd-option" data-sd-time="-1">Never</button>
+                </div>
+            </div>
             <div class="modal-controls">
                 <button id="btn-map-select-cancel" class="menu-btn secondary">Cancel</button>
                 <button id="btn-map-select-confirm" class="menu-btn primary">Start Game</button>
@@ -229,40 +240,130 @@
             </div>
         </div>
 
-        <!-- Weapon Selector -->
+        <!-- Weapon Selector (categorized arsenal) -->
         <div id="weapon-bar">
-            <div class="weapon" data-weapon="bazooka" title="Bazooka">
-                <img src="assets/weapon_bazooka.png" alt="Bazooka">
+            <div class="weapon-row" data-category="launchers">
+                <span class="weapon-row-label">Launchers</span>
+                <div class="weapon" data-weapon="bazooka" title="Bazooka">
+                    <img src="assets/weapon_bazooka.png" alt="Bazooka">
+                </div>
+                <div class="weapon" data-weapon="homing" title="Homing Missile - click to set target">
+                    <span class="weapon-icon">🛰️</span>
+                </div>
+                <div class="weapon" data-weapon="mortar" title="Mortar - splits into fragments">
+                    <span class="weapon-icon">🎇</span>
+                </div>
             </div>
-            <div class="weapon" data-weapon="grenade" title="Grenade">
-                <img src="assets/weapon_grenade.png" alt="Grenade">
+            <div class="weapon-row" data-category="bombs">
+                <span class="weapon-row-label">Bombs</span>
+                <div class="weapon" data-weapon="grenade" title="Grenade (1-5 sets fuse)">
+                    <img src="assets/weapon_grenade.png" alt="Grenade">
+                </div>
+                <div class="weapon" data-weapon="cluster" title="Cluster Bomb - splits into fragments">
+                    <span class="weapon-icon">💥</span>
+                </div>
+                <div class="weapon" data-weapon="banana" title="Banana Bomb - crate only, devastating">
+                    <span class="weapon-icon">🍌</span>
+                </div>
+                <div class="weapon" data-weapon="petrol" title="Petrol Bomb - sets the ground on fire">
+                    <span class="weapon-icon">🍾</span>
+                </div>
+                <div class="weapon" data-weapon="holygrenade" title="Holy Hand Grenade">
+                    <img src="assets/weapon_holygrenade.png" alt="Holy Grenade">
+                </div>
             </div>
-            <div class="weapon" data-weapon="shotgun" title="Shotgun">
-                <img src="assets/weapon_shotgun.png" alt="Shotgun">
+            <div class="weapon-row" data-category="guns">
+                <span class="weapon-row-label">Guns</span>
+                <div class="weapon" data-weapon="shotgun" title="Shotgun - two shots per turn">
+                    <img src="assets/weapon_shotgun.png" alt="Shotgun">
+                </div>
+                <div class="weapon" data-weapon="handgun" title="Handgun - 6 round burst">
+                    <span class="weapon-icon">🔫</span>
+                </div>
+                <div class="weapon" data-weapon="uzi" title="Uzi - sprays 12 rounds">
+                    <span class="weapon-icon">🔩</span>
+                </div>
+                <div class="weapon" data-weapon="minigun" title="Minigun - crate only, 25 rounds">
+                    <span class="weapon-icon">⚙️</span>
+                </div>
+                <div class="weapon" data-weapon="longbow" title="Longbow - precise arrow">
+                    <span class="weapon-icon">🏹</span>
+                </div>
             </div>
-            <div class="weapon" data-weapon="dynamite" title="Dynamite">
-                <img src="assets/weapon_dynamite.png" alt="Dynamite">
+            <div class="weapon-row" data-category="melee">
+                <span class="weapon-row-label">Melee</span>
+                <div class="weapon" data-weapon="firepunch" title="Fire Punch - uppercut launch">
+                    <span class="weapon-icon">🔥</span>
+                </div>
+                <div class="weapon" data-weapon="dragonball" title="Dragon Ball - horizontal blast">
+                    <span class="weapon-icon">🐉</span>
+                </div>
+                <div class="weapon" data-weapon="bat" title="Baseball Bat - home run!">
+                    <img src="assets/weapon_bat.png" alt="Bat">
+                </div>
+                <div class="weapon" data-weapon="prod" title="Prod - a gentle, deadly nudge">
+                    <span class="weapon-icon">👉</span>
+                </div>
+                <div class="weapon" data-weapon="kamikaze" title="Kamikaze - sacrifice your koala">
+                    <span class="weapon-icon">✈️</span>
+                </div>
             </div>
-            <div class="weapon" data-weapon="airstrike" title="Airstrike">
-                <img src="assets/weapon_airstrike.png" alt="Airstrike">
+            <div class="weapon-row" data-category="explosives">
+                <span class="weapon-row-label">Explosives</span>
+                <div class="weapon" data-weapon="dynamite" title="Dynamite">
+                    <img src="assets/weapon_dynamite.png" alt="Dynamite">
+                </div>
+                <div class="weapon" data-weapon="mine" title="Mine">
+                    <img src="assets/weapon_mine.png" alt="Mine">
+                </div>
+                <div class="weapon" data-weapon="sheep" title="Sheep - walking explosive">
+                    <span class="weapon-icon">🐑</span>
+                </div>
             </div>
-            <div class="weapon" data-weapon="teleport" title="Teleport">
-                <img src="assets/weapon_teleport.png" alt="Teleport">
+            <div class="weapon-row" data-category="strikes">
+                <span class="weapon-row-label">Strikes</span>
+                <div class="weapon" data-weapon="airstrike" title="Air Strike">
+                    <img src="assets/weapon_airstrike.png" alt="Airstrike">
+                </div>
+                <div class="weapon" data-weapon="napalmstrike" title="Napalm Strike - rains fire">
+                    <span class="weapon-icon">🧨</span>
+                </div>
+                <div class="weapon" data-weapon="minestrike" title="Mine Strike - crate only">
+                    <span class="weapon-icon">☢️</span>
+                </div>
+                <div class="weapon" data-weapon="armageddon" title="Armageddon - crate only, meteors everywhere">
+                    <span class="weapon-icon">☄️</span>
+                </div>
             </div>
-            <div class="weapon" data-weapon="rope" title="Ninja Rope">
-                <img src="assets/weapon_rope.png" alt="Rope">
+            <div class="weapon-row" data-category="tools">
+                <span class="weapon-row-label">Tools</span>
+                <div class="weapon" data-weapon="blowtorch" title="Blowtorch - dig toward the mouse">
+                    <img src="assets/weapon_blowtorch.png" alt="Blowtorch">
+                </div>
+                <div class="weapon" data-weapon="drill" title="Pneumatic Drill - dig straight down">
+                    <span class="weapon-icon">🪛</span>
+                </div>
+                <div class="weapon" data-weapon="girder" title="Girder - click to place a bridge">
+                    <span class="weapon-icon">🌉</span>
+                </div>
+                <div class="weapon" data-weapon="rope" title="Ninja Rope">
+                    <img src="assets/weapon_rope.png" alt="Rope">
+                </div>
+                <div class="weapon" data-weapon="parachute" title="Parachute - no fall damage this turn">
+                    <span class="weapon-icon">🪂</span>
+                </div>
+                <div class="weapon" data-weapon="teleport" title="Teleport">
+                    <img src="assets/weapon_teleport.png" alt="Teleport">
+                </div>
             </div>
-            <div class="weapon" data-weapon="bat" title="Baseball Bat">
-                <img src="assets/weapon_bat.png" alt="Bat">
-            </div>
-            <div class="weapon" data-weapon="mine" title="Mine">
-                <img src="assets/weapon_mine.png" alt="Mine">
-            </div>
-            <div class="weapon" data-weapon="holygrenade" title="Holy Hand Grenade">
-                <img src="assets/weapon_holygrenade.png" alt="Holy Grenade">
-            </div>
-            <div class="weapon" data-weapon="blowtorch" title="Blowtorch">
-                <img src="assets/weapon_blowtorch.png" alt="Blowtorch">
+            <div class="weapon-row" data-category="other">
+                <span class="weapon-row-label">Other</span>
+                <div class="weapon" data-weapon="skip" title="Skip Go - forfeit this turn">
+                    <span class="weapon-icon">⏭️</span>
+                </div>
+                <div class="weapon" data-weapon="surrender" title="Surrender - wave the white flag">
+                    <span class="weapon-icon">🏳️</span>
+                </div>
             </div>
         </div>
 

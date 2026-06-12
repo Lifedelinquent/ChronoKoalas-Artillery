@@ -229,9 +229,15 @@ export class AudioManager {
 
         switch (weaponType) {
             case 'bazooka':
+            case 'homing':
+            case 'mortar':
                 this._playRocketLaunch(now);
                 break;
             case 'grenade':
+            case 'cluster':
+            case 'banana':
+            case 'petrol':
+            case 'sheep':
                 this._playThrow(now);
                 break;
             case 'shotgun':
@@ -244,9 +250,16 @@ export class AudioManager {
                 this._playHolyThrow(now);
                 break;
             case 'airstrike':
+            case 'napalmstrike':
+            case 'minestrike':
+            case 'armageddon':
                 this._playAirstrikeCall(now);
                 break;
             case 'bat':
+            case 'firepunch':
+            case 'dragonball':
+            case 'prod':
+            case 'kamikaze':
                 this._playBatSwing(now);
                 break;
             case 'teleport':

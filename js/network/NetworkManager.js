@@ -313,11 +313,56 @@ export class NetworkManager extends EventEmitter {
     }
 
     /**
+     * Recursively replace non-finite numbers (Infinity / -Infinity / NaN) with a
+     * safe default. PeerJS serializes with BinaryPack, whose integer packer throws
+     * "Invalid integer" on Infinity (Math.floor(Infinity) === Infinity, so it is
+     * treated as an integer but falls outside every representable range). A single
+     * bad number — e.g. a position/velocity blown up by physics — would otherwise
+     * throw synchronously inside send() and tear down the whole data channel.
+     *
+     * We log the offending key path so the upstream physics bug stays findable.
+     */
+    sanitizeOutbound(value, path = '') {
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) {
+                console.warn(`🧹 Sanitized non-finite network value at "${path || '<root>'}":`, value);
+                return 0;
+            }
+            return value;
+        }
+
+        if (Array.isArray(value)) {
+            for (let i = 0; i < value.length; i++) {
+                value[i] = this.sanitizeOutbound(value[i], `${path}[${i}]`);
+            }
+            return value;
+        }
+
+        if (value && typeof value === 'object') {
+            for (const key of Object.keys(value)) {
+                value[key] = this.sanitizeOutbound(value[key], path ? `${path}.${key}` : key);
+            }
+            return value;
+        }
+
+        return value;
+    }
+
+    /**
      * Send a message to the connected peer
      */
     send(data) {
+        // Strip Infinity/NaN before serialization so one blown-up number can't
+        // crash BinaryPack and drop the connection mid-game.
+        data = this.sanitizeOutbound(data);
+
         if (this.connection && this.connection.open) {
-            this.connection.send(data);
+            try {
+                this.connection.send(data);
+            } catch (err) {
+                console.error('❌ Failed to send message:', data && data.type, err);
+                return false;
+            }
             return true;
         } else {
             console.warn('⚠️ Cannot send - not connected. Queueing message:', data.type);

@@ -482,8 +482,10 @@ export class TurnManager extends EventEmitter {
         // End retreat when time is up
         if (this.retreatTimer <= 0) {
             // Before ending retreat, see if any projectiles are still active
-            // If they are, switch back to 'projectile' phase until they land
-            if (this.game.projectiles.length > 0) {
+            // If they are, switch back to 'projectile' phase until they land.
+            // Use hasBlockingProjectiles (not length) so inert map hazards like
+            // resting landmines/duds don't bounce us back and loop retreat.
+            if (this.game.hasBlockingProjectiles()) {
                 this.phase = 'projectile';
             } else if (this.isPassiveClient() && !this.localFallback) {
                 // The turn owner ends its own retreat and announces the next

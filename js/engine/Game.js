@@ -1531,6 +1531,23 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * True if any projectile is still "live" and should hold up the turn from
+     * ending: still moving, counting down an active timer, or a triggered mine.
+     * Inert map hazards (resting landmines, duds) are stationary with no timer
+     * and must NOT count — they live in this.projectiles permanently, so
+     * treating them as active would loop the retreat phase forever.
+     */
+    hasBlockingProjectiles() {
+        for (let i = 0; i < this.projectiles.length; i++) {
+            const p = this.projectiles[i];
+            if (!p.stationary || (p.timer !== null && p.timerStarted) || p.isTriggered) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Update projectiles
      */
     updateProjectiles(dt) {
@@ -1541,17 +1558,7 @@ export class Game extends EventEmitter {
                 this.projectileGraceTimer -= dt;
                 // Don't check for phase transition during grace period
             } else {
-                // Count blocking projectiles without creating a new array (faster)
-                let blockingCount = 0;
-                for (let i = 0; i < this.projectiles.length; i++) {
-                    const p = this.projectiles[i];
-                    if (!p.stationary || (p.timer !== null && p.timerStarted) || p.isTriggered) {
-                        blockingCount++;
-                        break; // Early exit - we found at least one
-                    }
-                }
-
-                if (blockingCount === 0) {
+                if (!this.hasBlockingProjectiles()) {
                     console.log(`🔄 Phase transition check: shotgunShotsRemaining=${this.shotgunShotsRemaining}, projectiles=${this.projectiles.length}`);
 
                     // Special handling for shotgun multi-shot

@@ -703,8 +703,13 @@ export class WeaponManager {
     /**
      * Create a projectile for a specific weapon definition (selected weapon
      * or sub-munition). Uses object pooling for better performance.
+     *
+     * `rng` (optional) overrides the RNG used for the dud roll and the
+     * projectile's effect seed. Impact-spawned children (cluster fragments)
+     * pass their parent's effect RNG so an impact that happens on only one
+     * client can never advance the shared seeded stream.
      */
-    createProjectileFor(weapon, x, y, angle, power) {
+    createProjectileFor(weapon, x, y, angle, power, rng = null) {
         if (!weapon) return null;
 
         // Ensure minimum power of 0.2 so projectiles always move
@@ -719,8 +724,14 @@ export class WeaponManager {
         }
 
         // Roll dud chance once, using seeded random so multiplayer clients agree
-        const rand = this.game.seededRandom || Math.random;
+        const rand = rng || this.game.seededRandom || Math.random;
         const isDud = !!(weapon.dudChance && rand() < weapon.dudChance);
+
+        // Every projectile gets its own effect seed, drawn here (projectile
+        // creation is replayed symmetrically on both clients). Impact-time
+        // effects — cluster fragments, fire scatter — roll from it instead of
+        // the shared stream (see Game.getProjectileEffectRand).
+        const effectSeed = Math.floor(rand() * 0xFFFFFFFF);
 
         // Try to get from pool first
         let projectile = this.game.getProjectileFromPool();
@@ -749,6 +760,8 @@ export class WeaponManager {
             projectile.triggerDelay = weapon.triggerDelay || 3.0;
             projectile.isDud = isDud;
             projectile.dudActivated = false;
+            projectile.effectSeed = effectSeed;
+            projectile._effectRand = null;
             projectile.explodesOnSettle = weapon.explodesOnSettle || false;
             projectile.settleVelocityThreshold = weapon.settleVelocityThreshold || 100;
             projectile.settleTime = 0;
@@ -787,6 +800,8 @@ export class WeaponManager {
             });
             projectile.isDud = isDud;
             projectile.isWalker = weapon.isWalker || false;
+            projectile.effectSeed = effectSeed;
+            projectile._effectRand = null;
         }
 
         return projectile;

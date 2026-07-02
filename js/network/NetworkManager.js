@@ -172,13 +172,17 @@ export class NetworkManager extends EventEmitter {
     setupConnectionHandlers(conn) {
         conn.on('open', () => {
             console.log('✅ Data channel open!');
+            // Capture BEFORE resetting: this is how we know the channel came
+            // back from a reconnect (and therefore needs a full state sync)
+            const wasReconnect = this.reconnectAttempts > 0;
             this.isConnected = true;
             this.connectionState = 'connected';
             this.reconnectAttempts = 0; // Reset attempts on successful connection
 
             this.emit('connected', {
                 isHost: this.isHost,
-                peerId: conn.peer
+                peerId: conn.peer,
+                wasReconnect
             });
 
             // Send initial handshake
@@ -198,7 +202,8 @@ export class NetworkManager extends EventEmitter {
             }
 
             // If we are a guest that just reconnected, request state sync
-            if (!this.isHost && this.reconnectAttempts > 0) {
+            // (terrain, health, ammo, crates — we missed everything while away)
+            if (!this.isHost && wasReconnect) {
                 this.send({ type: 'requestStateSync' });
             }
         });
@@ -273,6 +278,18 @@ export class NetworkManager extends EventEmitter {
 
             case 'turnEnd':
                 this.emit('remoteTurnEnd', data);
+                break;
+
+            case 'turnStart':
+                this.emit('remoteTurnStart', data);
+                break;
+
+            case 'gameOver':
+                this.emit('remoteGameOver', data);
+                break;
+
+            case 'crateCollected':
+                this.emit('remoteCrateCollected', data);
                 break;
 
             case 'explosionSync':
@@ -365,6 +382,12 @@ export class NetworkManager extends EventEmitter {
             }
             return true;
         } else {
+            // Don't queue high-frequency cosmetic updates: replaying stale
+            // move/aim spam after a reconnect teleports things around. Turn
+            // structure and damage messages ARE queued so nothing is lost.
+            if (data.type === 'move' || data.type === 'aim') {
+                return false;
+            }
             console.warn('⚠️ Cannot send - not connected. Queueing message:', data.type);
             this.outboundQueue.push(data);
             return false;
@@ -377,6 +400,7 @@ export class NetworkManager extends EventEmitter {
     attemptReconnect() {
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
             console.error('❌ Max reconnect attempts reached');
+            this.emit('reconnectFailed');
             this.emit('error', { message: 'Lost connection to game and could not reconnect.' });
             return;
         }
@@ -443,7 +467,9 @@ export class NetworkManager extends EventEmitter {
         }
 
         const gameState = {
-            seed: Math.floor(Math.random() * 1000000),
+            // 1 + ... so the seed can never be 0 (a falsy seed would make both
+            // clients silently generate their own random seed — instant desync)
+            seed: 1 + Math.floor(Math.random() * 0x7FFFFFFE),
             teams: ['red', 'blue'],
             customMap: options.customMap,
             suddenDeathTime: options.suddenDeathTime
@@ -469,15 +495,19 @@ export class NetworkManager extends EventEmitter {
     }
 
     /**
-     * Send movement update
+     * Send movement update. teamIndex/koalaIndex identify the acting koala so
+     * the receiver can apply the update to the right entity even if its own
+     * turn indices have momentarily drifted.
      */
-    sendMove(x, y, facingLeft, blowtorchDigging) {
+    sendMove(x, y, facingLeft, blowtorchDigging, teamIndex, koalaIndex) {
         this.send({
             type: 'move',
             x,
             y,
             facingLeft,
             blowtorchDigging,
+            teamIndex,
+            koalaIndex,
             timestamp: Date.now()
         });
     }
@@ -485,10 +515,12 @@ export class NetworkManager extends EventEmitter {
     /**
      * Send aim update (throttled by caller)
      */
-    sendAim(angle) {
+    sendAim(angle, teamIndex, koalaIndex) {
         this.send({
             type: 'aim',
             angle,
+            teamIndex,
+            koalaIndex,
             timestamp: Date.now()
         });
     }
@@ -496,7 +528,7 @@ export class NetworkManager extends EventEmitter {
     /**
      * Send fire action
      */
-    sendFire(weaponId, angle, power, x, y) {
+    sendFire(weaponId, angle, power, x, y, teamIndex, koalaIndex) {
         this.send({
             type: 'fire',
             weaponId,
@@ -504,6 +536,8 @@ export class NetworkManager extends EventEmitter {
             power,
             x,
             y,
+            teamIndex,
+            koalaIndex,
             timestamp: Date.now()
         });
     }
@@ -511,12 +545,14 @@ export class NetworkManager extends EventEmitter {
     /**
      * Send targeted weapon action (airstrike, teleport)
      */
-    sendTargetWeapon(weaponId, targetX, targetY) {
+    sendTargetWeapon(weaponId, targetX, targetY, teamIndex, koalaIndex) {
         this.send({
             type: 'targetWeapon',
             weaponId,
             targetX,
             targetY,
+            teamIndex,
+            koalaIndex,
             timestamp: Date.now()
         });
     }

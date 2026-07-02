@@ -408,7 +408,8 @@ export class InputManager {
             if (this.game.networkManager && !this.game.isPractice) {
                 const now = performance.now();
                 if (!this.lastMouseAimSync || now - this.lastMouseAimSync > 66) {
-                    this.game.networkManager.sendAim(koala.aimAngle);
+                    this.game.networkManager.sendAim(koala.aimAngle,
+                        this.game.currentTeamIndex, this.game.currentKoalaIndex);
                     this.lastMouseAimSync = now;
                 }
             }
@@ -532,17 +533,20 @@ export class InputManager {
             // Throttle position updates to 20 times per second (every 50ms)
             if (positionChanged && (!this.lastMoveSync || now - this.lastMoveSync > 50)) {
                 this.game.networkManager.sendMove(
-                    koala.x, 
-                    koala.y, 
-                    koala.facingLeft, 
-                    koala.blowtorchActive ? this.mouse.down : undefined
+                    koala.x,
+                    koala.y,
+                    koala.facingLeft,
+                    koala.blowtorchActive ? this.mouse.down : undefined,
+                    this.game.currentTeamIndex,
+                    this.game.currentKoalaIndex
                 );
                 this.lastMoveSync = now;
             }
 
             // Throttle aim updates to 15 times per second (every 66ms)
             if (aimChanged && (!this.lastAimSync || now - this.lastAimSync > 66)) {
-                this.game.networkManager.sendAim(koala.aimAngle);
+                this.game.networkManager.sendAim(koala.aimAngle,
+                    this.game.currentTeamIndex, this.game.currentKoalaIndex);
                 this.lastAimSync = now;
             }
         }
@@ -764,7 +768,9 @@ export class InputManager {
             x: koala.x,
             y: koala.y,
             vx: koala.vx,
-            vy: koala.vy
+            vy: koala.vy,
+            teamIndex: this.game.currentTeamIndex,
+            koalaIndex: this.game.currentKoalaIndex
         };
         if (type === 'highJump') {
             msg.facingLeft = koala.facingLeft;

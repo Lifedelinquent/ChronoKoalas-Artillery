@@ -124,6 +124,9 @@ export class Game extends EventEmitter {
         this.turnManager.lastTeamIndex = -1;
         this.turnManager.turnTime = this.turnManager.defaultTurnTime;
         this.turnManager.elapsedGameTime = 0;
+        this.turnManager.turnCounter = 0;
+        this.turnManager.passiveWait = 0;
+        this.turnManager.localFallback = false;
         this.waterLevel = this.worldHeight - 60;
 
         // Apply the sudden-death delay chosen on the map screen. -1 means
@@ -137,8 +140,9 @@ export class Game extends EventEmitter {
         }
 
         // Get game seed for multiplayer sync (or generate random for practice)
+        // (?? not ||: a seed of 0 must not silently become a local random one)
         const initialState = this.options.initialState;
-        this.gameSeed = initialState?.seed || Math.floor(Math.random() * 1000000);
+        this.gameSeed = initialState?.seed ?? Math.floor(Math.random() * 1000000);
         console.log('🎲 Game seed:', this.gameSeed);
 
         // Create seeded random function for consistent results
@@ -219,6 +223,35 @@ export class Game extends EventEmitter {
             t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
             return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
         };
+    }
+
+    /**
+     * Derive an independent RNG from the shared seeded stream. The one draw
+     * happens at a SYMMETRIC point (weapon fire / projectile creation, which
+     * both clients replay identically), so impact-time effects can roll dice
+     * without touching the shared stream. Before this, an impact that only
+     * happened on one client — e.g. a cluster bomb that lands in water here
+     * but on the crater lip there — consumed a different number of shared
+     * rolls and silently desynced every later wind/spread/dud draw.
+     */
+    makeSubRandom(rand = this.seededRandom) {
+        if (!rand) return Math.random;
+        const seed = Math.floor(rand() * 0xFFFFFFFF);
+        return this.createSeededRandom(seed);
+    }
+
+    /**
+     * Per-projectile effect RNG, seeded when the projectile was created (a
+     * symmetric event). Used for impact-spawned effects: cluster fragments
+     * and fire patches.
+     */
+    getProjectileEffectRand(projectile) {
+        if (!projectile._effectRand) {
+            projectile._effectRand = projectile.effectSeed !== undefined
+                ? this.createSeededRandom(projectile.effectSeed)
+                : (this.seededRandom || Math.random);
+        }
+        return projectile._effectRand;
     }
 
     /**
@@ -943,7 +976,11 @@ export class Game extends EventEmitter {
                 this.updateRetreat(dt);
                 break;
             case 'damage':
-                // Damage phase is handled by processDamage timeout
+                // Damage phase is handled by processDamage timeout.
+                // A passive multiplayer client parks here until the turn
+                // owner's 'turnStart' arrives — the watchdog un-sticks us if
+                // that message never comes.
+                this.turnManager.updatePassiveWatchdog(dt);
                 break;
         }
 
@@ -2013,9 +2050,11 @@ export class Game extends EventEmitter {
             this.spawnClusterFragments(projectile, weapon);
         }
 
-        // Petrol bomb / napalm missiles seed burning ground
+        // Petrol bomb / napalm missiles seed burning ground (rolled from the
+        // projectile's own effect RNG — impacts aren't symmetric events)
         if (weapon.spawnsFire) {
-            this.spawnFirePatches(projectile.x, projectile.y, weapon.fireCount || 5);
+            this.spawnFirePatches(projectile.x, projectile.y, weapon.fireCount || 5,
+                this.getProjectileEffectRand(projectile));
         }
 
         // NETWORK SYNC: ALWAYS send explosion results to opponent for terrain sync
@@ -2286,8 +2325,10 @@ export class Game extends EventEmitter {
             this.phase = 'projectile';
 
             // Set a timer to end the "projectile" phase after the swing animation
+            // (turn-counter guard: never fire into a turn that started since)
+            const swingTurn = this.turnManager.turnCounter;
             this.scheduleDelayedAction(500, () => {
-                if (this.projectiles.length === 0) {
+                if (this.turnManager.turnCounter === swingTurn && this.projectiles.length === 0) {
                     this.startRetreat();
                 }
             });
@@ -2300,7 +2341,7 @@ export class Game extends EventEmitter {
 
             // NETWORK SYNC: Send swing to opponent
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             return;
         }
@@ -2317,7 +2358,7 @@ export class Game extends EventEmitter {
 
             // NETWORK SYNC: Send blowtorch activation to opponent
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             return;
         }
@@ -2332,7 +2373,7 @@ export class Game extends EventEmitter {
             }
 
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             return;
         }
@@ -2347,7 +2388,7 @@ export class Game extends EventEmitter {
             }
 
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             return;
         }
@@ -2364,7 +2405,7 @@ export class Game extends EventEmitter {
             }
 
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             return;
         }
@@ -2373,10 +2414,13 @@ export class Game extends EventEmitter {
         if (weapon.type === 'skip') {
             console.log('⏭️ Turn skipped');
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             this.phase = 'damage';
-            this.scheduleDelayedAction(300, () => this.processDamage());
+            const skipTurn = this.turnManager.turnCounter;
+            this.scheduleDelayedAction(300, () => {
+                if (this.turnManager.turnCounter === skipTurn) this.processDamage();
+            });
             return;
         }
 
@@ -2384,7 +2428,7 @@ export class Game extends EventEmitter {
         if (weapon.type === 'surrender') {
             console.log('🏳️ Surrender!');
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             const currentTeam = this.getCurrentTeam();
             const winner = this.teams.find(t => t !== currentTeam && t.isAlive()) || null;
@@ -2400,7 +2444,7 @@ export class Game extends EventEmitter {
             }
 
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
 
             this.executeArmageddon(weapon);
@@ -2417,7 +2461,7 @@ export class Game extends EventEmitter {
             }
 
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
             return;
         }
@@ -2464,7 +2508,7 @@ export class Game extends EventEmitter {
 
             // Network sync
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+                this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
 
             return;
@@ -2521,7 +2565,7 @@ export class Game extends EventEmitter {
 
         // Send to network (only if this is our turn)
         if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y);
+            this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
         }
     }
 
@@ -2579,7 +2623,7 @@ export class Game extends EventEmitter {
 
         // Send to network (only if this is our turn)
         if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.networkManager.sendTargetWeapon(weapon.id, targetX, targetY);
+            this.networkManager.sendTargetWeapon(weapon.id, targetX, targetY, this.currentTeamIndex, this.currentKoalaIndex);
         }
     }
 
@@ -2707,9 +2751,13 @@ export class Game extends EventEmitter {
         // Move camera to new position
         this.centerCameraOn(targetX, dropY);
 
-        // End turn after teleport
+        // End turn after teleport (turn-counter guard: a stale callback must
+        // not end a NEW turn that started in the meantime)
         this.phase = 'damage';
-        this.scheduleDelayedAction(500, () => this.processDamage());
+        const teleportTurn = this.turnManager.turnCounter;
+        this.scheduleDelayedAction(500, () => {
+            if (this.turnManager.turnCounter === teleportTurn) this.processDamage();
+        });
     }
 
     /**
@@ -2785,7 +2833,9 @@ export class Game extends EventEmitter {
 
         // Mine strike: parachute live mines instead of missiles
         if (weapon.dropsMines) {
-            const rand = this.seededRandom || Math.random;
+            // Sub-RNG snapshot: dud rolls happen on the drop schedule, which
+            // an isGameOver bail-out could cut short on one client only
+            const rand = this.makeSubRandom();
             const spawnMine = (index) => {
                 if (this.isGameOver) return;
                 const mineX = startX + (index * spacing);
@@ -2816,6 +2866,10 @@ export class Game extends EventEmitter {
             this.centerCameraOn(targetX, targetY);
             return;
         }
+
+        // Sub-RNG for per-missile effect seeds (napalm missiles spawn fire at
+        // impact, which must not draw from the shared stream — see makeSubRandom)
+        const strikeRand = this.makeSubRandom();
 
         // Helper to spawn a single missile
         const spawnMissile = (index) => {
@@ -2864,6 +2918,10 @@ export class Game extends EventEmitter {
                 // Override rotation to point downward
                 proj.rotation = Math.PI / 2;
             }
+
+            // Per-missile effect seed for impact-time fire scatter (napalm)
+            proj.effectSeed = Math.floor(strikeRand() * 0xFFFFFFFF);
+            proj._effectRand = null;
 
             this.projectiles.push(proj);
 
@@ -2956,7 +3014,9 @@ export class Game extends EventEmitter {
         // Grace period covers the whole burst so the phase can't end between rounds
         this.projectileGraceTimer = burstCount * interval + 0.25;
 
-        const rand = this.seededRandom || Math.random;
+        // Sub-RNG snapshot: the whole burst rolls from its own stream so an
+        // early isGameOver bail-out on one client can't skew the shared stream
+        const rand = this.makeSubRandom();
         const spawnOffset = 30;
 
         const fireOne = () => {
@@ -3162,7 +3222,10 @@ export class Game extends EventEmitter {
             this.handleProjectileImpact({ x: koala.x, y: koala.y, weapon: blast, shooter: koala });
 
             this.phase = 'damage';
-            this.scheduleDelayedAction(800, () => this.processDamage());
+            const kamikazeTurn = this.turnManager.turnCounter;
+            this.scheduleDelayedAction(800, () => {
+                if (this.turnManager.turnCounter === kamikazeTurn) this.processDamage();
+            });
         }
     }
 
@@ -3173,7 +3236,9 @@ export class Game extends EventEmitter {
         this.phase = 'projectile';
         this.projectileGraceTimer = 0.3;
 
-        const rand = this.seededRandom || Math.random;
+        // Sub-RNG snapshot (see fireBurstGun): keeps the shared stream safe
+        // from per-client differences in how many meteors actually spawn
+        const rand = this.makeSubRandom();
         const meteorDef = this.weaponManager.getSubMunition('meteor');
         const count = weapon.meteorCount || 14;
 
@@ -3205,13 +3270,15 @@ export class Game extends EventEmitter {
      * Spawn cluster fragments after a cluster weapon's main explosion
      */
     spawnClusterFragments(projectile, weapon) {
-        const rand = this.seededRandom || Math.random;
+        // Impact-time event: roll from the projectile's own effect RNG, never
+        // the shared stream (this impact may not happen on the other client)
+        const rand = this.getProjectileEffectRand(projectile);
         const fragDef = this.weaponManager.getSubMunition(weapon.clusterType || 'clusterFrag');
         if (!fragDef) return;
 
         const count = weapon.clusters;
         for (let i = 0; i < count; i++) {
-            const frag = this.weaponManager.createProjectileFor(fragDef, projectile.x, projectile.y - 12, 0, 1.0);
+            const frag = this.weaponManager.createProjectileFor(fragDef, projectile.x, projectile.y - 12, 0, 1.0, rand);
             if (!frag) continue;
             frag.vx = (rand() - 0.5) * 360;
             frag.vy = -180 - rand() * 220;
@@ -3228,8 +3295,8 @@ export class Game extends EventEmitter {
     /**
      * Spawn burning fire patches around a point (petrol bomb / napalm)
      */
-    spawnFirePatches(x, y, count) {
-        const rand = this.seededRandom || Math.random;
+    spawnFirePatches(x, y, count, rand = null) {
+        rand = rand || this.seededRandom || Math.random;
         for (let i = 0; i < count; i++) {
             this.firePatches.push({
                 // Initial scatter leans downwind (WA napalm drifts with the gale)
@@ -3567,11 +3634,22 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * End the game
+     * End the game. In multiplayer the client that decided the result tells
+     * the peer — game over used to be decided independently on each client
+     * from locally-drifted health/positions, so one side could see a win
+     * while the other kept playing.
      */
-    endGame(winningTeam) {
+    endGame(winningTeam, options = {}) {
+        if (this.isGameOver) return;
         this.isGameOver = true;
         this.phase = 'gameOver';
+
+        if (this.networkManager && !this.isPractice && !options.fromRemote) {
+            this.networkManager.send({
+                type: 'gameOver',
+                winnerTeamIndex: winningTeam ? this.teams.indexOf(winningTeam) : -1
+            });
+        }
 
         // Play end game sound
         if (winningTeam) {
@@ -3826,16 +3904,56 @@ export class Game extends EventEmitter {
     }
 
     /**
+     * Validate a remote action and, if our turn indices drifted, adopt the
+     * acting player's turn — each client is authoritative about its OWN turn.
+     *
+     * The old gate ("ignore remote actions while it's my turn") silently
+     * dropped legitimate actions whenever the two clients' turn clocks were a
+     * moment apart: our timer flips the turn first, the opponent's last-second
+     * shot arrives, and the projectile only ever exists on their screen. Now
+     * we only reject actions claiming to come from OUR OWN team; a mismatched
+     * turn index means we adopt theirs. Messages from old clients without
+     * teamIndex fall back to the old rule.
+     */
+    adoptRemoteTurn(data, label) {
+        if (this.isPractice || !this.networkManager) return false;
+
+        const myTeam = this.networkManager.isHost ? 0 : 1;
+        if (data.teamIndex === undefined) {
+            if (this.isMyTurn()) {
+                console.warn(`Blocked remote ${label} during local turn (no teamIndex)`);
+                return false;
+            }
+            return true;
+        }
+        if (data.teamIndex === myTeam) {
+            console.warn(`Blocked remote ${label} claiming to be our own team`);
+            return false;
+        }
+        if (this.currentTeamIndex !== data.teamIndex) {
+            console.warn(`Turn drift on remote ${label}: local team ${this.currentTeamIndex}, acting team ${data.teamIndex} — adopting theirs`);
+            this.currentTeamIndex = data.teamIndex;
+            const team = this.teams[data.teamIndex];
+            if (team && team.weapons) {
+                this.weaponManager.weapons = team.weapons;
+            }
+            this.updateTurnIndicator();
+        }
+        if (data.koalaIndex !== undefined && this.currentKoalaIndex !== data.koalaIndex) {
+            this.currentKoalaIndex = data.koalaIndex;
+            const team = this.teams[data.teamIndex];
+            if (team) team.currentKoalaIndex = data.koalaIndex;
+        }
+        return true;
+    }
+
+    /**
      * Handle remote player firing a weapon
      */
     handleRemoteFire(data) {
         console.log('🎯 Remote fire:', data);
 
-        // Security check: Ignore remote events if it's currently the local player's turn
-        if (this.isMyTurn() && !this.isPractice) {
-            console.warn('Blocked remote fire during local turn');
-            return;
-        }
+        if (!this.adoptRemoteTurn(data, 'fire')) return;
 
         const koala = this.getCurrentKoala();
         if (!koala) return;
@@ -3847,6 +3965,16 @@ export class Game extends EventEmitter {
 
         // Fire the weapon
         this.weaponManager.selectWeapon(data.weaponId);
+
+        // Never drop a replayed fire over ammo drift — the shot already
+        // happened on the acting client, so refusing it here desyncs the
+        // whole match (they have a projectile in flight, we don't)
+        const weapon = this.weaponManager.currentWeapon;
+        if (weapon && weapon.ammo !== Infinity && weapon.ammo <= 0) {
+            console.warn(`Ammo drift: ${data.weaponId} shows 0 here but the opponent fired it — correcting to 1`);
+            weapon.ammo = 1;
+        }
+
         this.fireWeapon(data.angle, data.power);
     }
 
@@ -3854,7 +3982,7 @@ export class Game extends EventEmitter {
      * Handle remote player movement
      */
     handleRemoteMove(data) {
-        if (this.isMyTurn() && !this.isPractice) return;
+        if (!this.adoptRemoteTurn(data, 'move')) return;
         const koala = this.getCurrentKoala();
         if (!koala) return;
 
@@ -3871,7 +3999,7 @@ export class Game extends EventEmitter {
      * Handle remote player aiming
      */
     handleRemoteAim(data) {
-        if (this.isMyTurn() && !this.isPractice) return;
+        if (!this.adoptRemoteTurn(data, 'aim')) return;
         const koala = this.getCurrentKoala();
         if (!koala) return;
 
@@ -3884,15 +4012,17 @@ export class Game extends EventEmitter {
     handleRemoteTargetWeapon(data) {
         console.log('🎯 Remote target weapon:', data);
 
-        if (this.isMyTurn() && !this.isPractice) {
-            console.warn('Blocked remote target weapon during local turn');
-            return;
-        }
+        if (!this.adoptRemoteTurn(data, 'target weapon')) return;
 
         this.weaponManager.selectWeapon(data.weaponId);
         const weapon = this.weaponManager.currentWeapon;
 
         if (weapon) {
+            // Same ammo-drift guard as handleRemoteFire
+            if (weapon.ammo !== Infinity && weapon.ammo <= 0) {
+                console.warn(`Ammo drift: ${data.weaponId} shows 0 here but the opponent fired it — correcting to 1`);
+                weapon.ammo = 1;
+            }
             this.fireTargettedWeapon(weapon, data.targetX, data.targetY);
         }
     }
@@ -3965,34 +4095,13 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Send authoritative full state sync to peers
+     * Serialize all koala states for sync messages
      */
-    sendFullStateSync() {
-        if (!this.networkManager || this.isPractice) return;
-
-        console.log('🔄 Sending full state sync');
-
-        const stateData = {
-            type: 'stateSync',
-            phase: this.phase,
-            currentTeamIndex: this.currentTeamIndex,
-            currentKoalaIndex: this.currentKoalaIndex,
-            wind: this.wind,
-            // Sudden-death state — active player is authoritative so guests stay
-            // in lockstep on when it triggers, how high the water is, etc.
-            suddenDeathActive: this.turnManager.suddenDeathActive,
-            roundNumber: this.turnManager.roundNumber,
-            lastTeamIndex: this.turnManager.lastTeamIndex,
-            turnTime: this.turnManager.turnTime,
-            elapsedGameTime: this.turnManager.elapsedGameTime,
-            waterLevel: this.waterLevel,
-            koalas: []
-        };
-
-        // Serialize all koalas
+    serializeKoalas() {
+        const out = [];
         for (const team of this.teams) {
             for (const koala of team.koalas) {
-                stateData.koalas.push({
+                out.push({
                     name: koala.name,
                     x: koala.x,
                     y: koala.y,
@@ -4004,8 +4113,212 @@ export class Game extends EventEmitter {
                 });
             }
         }
+        return out;
+    }
+
+    /**
+     * Apply authoritative koala states from a sync message, playing death
+     * effects for anything that died on the other side but not here (and
+     * quietly reviving anything we killed by mistake).
+     */
+    applyKoalaStates(koalas) {
+        if (!Array.isArray(koalas)) return;
+        for (const kd of koalas) {
+            const koala = this.findKoalaByName(kd.name);
+            if (!koala) continue;
+            koala.x = kd.x;
+            koala.y = kd.y;
+            koala.vx = kd.vx || 0;
+            koala.vy = kd.vy || 0;
+            koala.health = kd.health;
+            koala.onGround = kd.onGround;
+            if (koala.isAlive && !kd.isAlive) {
+                koala.die();
+                this.createDeathEffect(koala);
+            } else if (!koala.isAlive && kd.isAlive) {
+                // Local drift killed it but the authority says it lives
+                koala.isAlive = true;
+            }
+        }
+        this.updateTeamHealth();
+    }
+
+    /**
+     * Serialize per-team weapon ammo. Infinity is encoded as -1: the outbound
+     * sanitizer strips non-finite numbers, which would otherwise turn every
+     * unlimited weapon into 0 ammo on the receiving side.
+     */
+    serializeAmmo() {
+        return this.teams.map(team => {
+            const ammo = {};
+            for (const [id, w] of Object.entries(team.weapons || {})) {
+                ammo[id] = w.ammo === Infinity ? -1 : w.ammo;
+            }
+            return ammo;
+        });
+    }
+
+    /**
+     * Apply per-team ammo counts from a sync message (-1 = Infinity)
+     */
+    applyAmmoSync(ammoByTeam) {
+        if (!Array.isArray(ammoByTeam)) return;
+        ammoByTeam.forEach((ammo, i) => {
+            const team = this.teams[i];
+            if (!team || !team.weapons || !ammo) return;
+            for (const [id, count] of Object.entries(ammo)) {
+                if (team.weapons[id]) {
+                    team.weapons[id].ammo = count === -1 ? Infinity : count;
+                }
+            }
+        });
+        this.updateWeaponUI();
+    }
+
+    /**
+     * Announce the authoritative opening state of a new turn. Sent by the
+     * client that drove the turn transition (see TurnManager.nextTurn); the
+     * peer adopts it in handleRemoteTurnStart. This replaces the old
+     * every-client-advances-on-its-own-clock model that caused double turns.
+     */
+    sendTurnStartSync() {
+        if (!this.networkManager || this.isPractice) return;
+        const tm = this.turnManager;
+        this.networkManager.send({
+            type: 'turnStart',
+            turnCounter: tm.turnCounter,
+            currentTeamIndex: this.currentTeamIndex,
+            currentKoalaIndex: this.currentKoalaIndex,
+            wind: this.wind,
+            suddenDeathActive: tm.suddenDeathActive,
+            roundNumber: tm.roundNumber,
+            lastTeamIndex: tm.lastTeamIndex,
+            turnTime: tm.turnTime,
+            elapsedGameTime: tm.elapsedGameTime,
+            waterLevel: this.waterLevel,
+            ammo: this.serializeAmmo(),
+            koalas: this.serializeKoalas()
+        });
+    }
+
+    /**
+     * Adopt the new turn announced by the client that ended the previous one
+     */
+    handleRemoteTurnStart(data) {
+        if (this.isPractice || this.isGameOver) return;
+        const tm = this.turnManager;
+
+        // Stale or duplicate — e.g. our fallback watchdog already advanced us
+        if (data.turnCounter !== undefined && data.turnCounter <= tm.turnCounter) {
+            console.warn(`Ignoring stale turnStart #${data.turnCounter} (local turn #${tm.turnCounter})`);
+            return;
+        }
+
+        console.log('🔄 Remote turn start #' + data.turnCounter);
+
+        // Leave whatever phase we were parked in
+        this.cleanupTurnInputState();
+        this.kamikazeState = null;
+
+        // Authoritative state from the turn driver
+        this.applyKoalaStates(data.koalas);
+        this.applyAmmoSync(data.ammo);
+        if (data.elapsedGameTime !== undefined) tm.elapsedGameTime = data.elapsedGameTime;
+        if (data.waterLevel !== undefined) this.waterLevel = data.waterLevel;
+
+        // Adopt the new turn, then run our own startTurn so the shared RNG
+        // advances symmetrically (wind draw), music/UI update, and the host
+        // rolls loot exactly as if we had advanced ourselves
+        tm.currentTeamIndex = data.currentTeamIndex;
+        tm.currentKoalaIndex = data.currentKoalaIndex;
+        const team = this.teams[data.currentTeamIndex];
+        if (team) team.currentKoalaIndex = data.currentKoalaIndex;
+
+        tm.startTurn();
+
+        // Belt-and-braces: force anything that could still have drifted
+        tm.currentKoalaIndex = data.currentKoalaIndex;
+        if (team) team.currentKoalaIndex = data.currentKoalaIndex;
+        if (data.wind !== undefined) {
+            this.wind = data.wind;
+            this.updateWindDisplay();
+        }
+        if (data.suddenDeathActive && !tm.suddenDeathActive) {
+            tm.activateSuddenDeath();
+        }
+        if (data.roundNumber !== undefined) tm.roundNumber = data.roundNumber;
+        if (data.lastTeamIndex !== undefined) tm.lastTeamIndex = data.lastTeamIndex;
+        if (data.turnTime !== undefined) {
+            tm.turnTime = data.turnTime;
+            tm.turnTimer = Math.min(tm.turnTimer, data.turnTime);
+        }
+        if (data.turnCounter !== undefined) tm.turnCounter = data.turnCounter;
+        this.updateTurnIndicator();
+    }
+
+    /**
+     * The other client's authoritative turn flow ended the game
+     */
+    handleRemoteGameOver(data) {
+        if (this.isGameOver) return;
+        console.log('🏁 Remote game over:', data);
+        const winner = (data.winnerTeamIndex >= 0 && this.teams[data.winnerTeamIndex]) || null;
+        this.endGame(winner, { fromRemote: true });
+    }
+
+    /**
+     * Send authoritative full state sync to peers. Used for reconnect
+     * recovery — pass includeTerrain to ship a snapshot of the terrain canvas
+     * so a rejoining guest gets every crater it missed.
+     */
+    sendFullStateSync(options = {}) {
+        if (!this.networkManager || this.isPractice) return;
+
+        console.log('🔄 Sending full state sync' + (options.includeTerrain ? ' (with terrain)' : ''));
+
+        const tm = this.turnManager;
+        const stateData = {
+            type: 'stateSync',
+            phase: this.phase,
+            turnCounter: tm.turnCounter,
+            currentTeamIndex: this.currentTeamIndex,
+            currentKoalaIndex: this.currentKoalaIndex,
+            wind: this.wind,
+            // Sudden-death state — active player is authoritative so guests stay
+            // in lockstep on when it triggers, how high the water is, etc.
+            suddenDeathActive: tm.suddenDeathActive,
+            roundNumber: tm.roundNumber,
+            lastTeamIndex: tm.lastTeamIndex,
+            turnTime: tm.turnTime,
+            elapsedGameTime: tm.elapsedGameTime,
+            waterLevel: this.waterLevel,
+            ammo: this.serializeAmmo(),
+            koalas: this.serializeKoalas(),
+            crates: this.lootManager.serializeCrates()
+        };
+
+        if (options.includeTerrain) {
+            const canvas = this.terrain.getCanvas ? this.terrain.getCanvas() : this.terrain.canvas;
+            if (canvas) {
+                stateData.terrain = canvas.toDataURL('image/png');
+            }
+        }
 
         this.networkManager.send(stateData);
+    }
+
+    /**
+     * Replace the local terrain with a snapshot from the peer (reconnect sync)
+     */
+    applyTerrainSnapshot(dataUrl) {
+        const img = new Image();
+        img.onload = () => {
+            this.terrain.ctx.clearRect(0, 0, this.terrain.width, this.terrain.height);
+            this.terrain.ctx.drawImage(img, 0, 0);
+            this.terrain.updateCollisionMask();
+            console.log('🗺️ Terrain snapshot applied (reconnect sync)');
+        };
+        img.src = dataUrl;
     }
 
     /**
@@ -4095,7 +4408,7 @@ export class Game extends EventEmitter {
      */
     handleRemoteJump(data) {
         console.log('🦘 Remote jump:', data);
-        if (this.isMyTurn() && !this.isPractice) return;
+        if (!this.adoptRemoteTurn(data, 'jump')) return;
         const koala = this.getCurrentKoala();
         if (koala) {
             koala.x = data.x;
@@ -4112,7 +4425,7 @@ export class Game extends EventEmitter {
      */
     handleRemoteHighJump(data) {
         console.log('🦘 Remote high jump:', data);
-        if (this.isMyTurn() && !this.isPractice) return;
+        if (!this.adoptRemoteTurn(data, 'high jump')) return;
         const koala = this.getCurrentKoala();
         if (koala) {
             koala.x = data.x;
@@ -4136,26 +4449,24 @@ export class Game extends EventEmitter {
     handleRemoteStateSync(data) {
         console.log('🔄 Remote state sync');
 
-        // Sync all koala positions
-        if (data.koalas) {
-            for (const koalaData of data.koalas) {
-                const koala = this.findKoalaByName(koalaData.name);
-                if (koala) {
-                    koala.x = koalaData.x;
-                    koala.y = koalaData.y;
-                    koala.vx = koalaData.vx || 0;
-                    koala.vy = koalaData.vy || 0;
-                    koala.health = koalaData.health;
-                    koala.isAlive = koalaData.isAlive;
-                    koala.onGround = koalaData.onGround;
-                }
-            }
+        // Sync all koala positions (with death effects / revive handling)
+        this.applyKoalaStates(data.koalas);
+        this.applyAmmoSync(data.ammo);
+        if (data.crates) {
+            this.lootManager.applyCrateSync(data.crates);
+        }
+        if (data.terrain) {
+            this.applyTerrainSnapshot(data.terrain);
+        }
+        if (data.turnCounter !== undefined) {
+            this.turnManager.turnCounter = Math.max(this.turnManager.turnCounter, data.turnCounter);
         }
 
-        // IMPORTANT: Only sync team/koala index during aiming phase to prevent
-        // the double-turn bug where stateSync overwrites the current turn owner
-        // during projectile/retreat/damage phases
-        const safeToSyncTurn = this.phase === 'aiming';
+        // Only sync team/koala index during the aiming phase to prevent the
+        // double-turn bug where stateSync overwrites the current turn owner
+        // mid-action — except on a full reconnect sync (terrain present),
+        // where we adopt everything: our local state is stale by definition.
+        const safeToSyncTurn = this.phase === 'aiming' || data.terrain !== undefined;
 
         if (safeToSyncTurn) {
             if (data.currentTeamIndex !== undefined) {

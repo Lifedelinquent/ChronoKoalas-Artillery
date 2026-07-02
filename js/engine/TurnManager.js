@@ -35,6 +35,16 @@ export class TurnManager extends EventEmitter {
         this.elapsedGameTime = 0;
         this.roundNumber = 1;
         this.lastTeamIndex = -1;
+
+        // Multiplayer turn authority: the client whose turn it is drives the
+        // turn's end (timer expiry, settle wait, next-turn advance) and
+        // announces the new turn via a 'turnStart' message. The passive client
+        // parks and waits instead of racing its own clock — turnCounter
+        // dedupes/orders those messages, and the passiveWait watchdog forces a
+        // local advance if the message never arrives (opponent hung/vanished).
+        this.turnCounter = 0;
+        this.passiveWait = 0;
+        this.localFallback = false;
     }
 
     reset() {
@@ -50,10 +60,25 @@ export class TurnManager extends EventEmitter {
         this.elapsedGameTime = 0;
         this.roundNumber = 1;
         this.lastTeamIndex = -1;
+        this.turnCounter = 0;
+        this.passiveWait = 0;
+        this.localFallback = false;
+    }
+
+    /**
+     * True when this client is NOT the owner of the current turn in a
+     * multiplayer game. Passive clients don't end turns on their own clock —
+     * they follow the turn owner's 'turnStart' announcements.
+     */
+    isPassiveClient() {
+        return !!(this.game.networkManager && !this.game.isPractice && !this.game.isMyTurn());
     }
 
     startTurn() {
         this.phase = 'aiming';
+        this.turnCounter++;
+        this.passiveWait = 0;
+        this.localFallback = false;
 
         // Advance the round counter and trigger sudden death if it's time.
         // Done before turnTimer is set so a freshly-activated sudden death can
@@ -117,10 +142,8 @@ export class TurnManager extends EventEmitter {
             this.game.updateWeaponUI();
         }
 
-        // NETWORK SYNC: Send full state sync at start of turn
-        if (this.game.networkManager && !this.game.isPractice && this.game.isMyTurn()) {
-            this.game.sendFullStateSync();
-        }
+        // (The per-turn state sync now travels in the 'turnStart' message sent
+        // by whichever client drove the turn transition — see nextTurn().)
 
         // Check for loot crate spawn
         if (this.game.isPractice || (this.game.networkManager && this.game.networkManager.isHost)) {
@@ -263,9 +286,24 @@ export class TurnManager extends EventEmitter {
     nextTurn() {
         this.nextTeam();
         this.startTurn();
+
+        // The client that drove this transition (the previous turn's owner, or
+        // the fallback watchdog) is authoritative for the new turn's opening
+        // state — announce it so the peer advances in lockstep with corrected
+        // health/positions/ammo/wind instead of racing its own clock.
+        if (this.game.networkManager && !this.game.isPractice) {
+            this.game.sendTurnStartSync();
+        }
     }
 
     processDamage() {
+        // PASSIVE CLIENT: park here. The turn owner runs the real
+        // damage/settle/next-turn sequence and announces the result via
+        // 'turnStart'; ending the turn on our own (skewed) clock is what
+        // caused double turns and blocked/duplicated actions.
+        if (this.isPassiveClient() && !this.localFallback) {
+            return;
+        }
         // Sudden death tightens the screws each turn (poison + rising water)
         // before we tally up who died this turn.
         if (this.suddenDeathActive) {
@@ -295,6 +333,7 @@ export class TurnManager extends EventEmitter {
         // Wait for knocked-back koalas to actually land before handing over
         // the turn (with a hard timeout), instead of switching mid-flight
         this.settleWaitElapsed = 0;
+        this.settleForTurn = this.turnCounter;
         this.game.scheduleDelayedAction(anyDied ? 1000 : 300, () => this.waitForSettle());
     }
 
@@ -303,6 +342,9 @@ export class TurnManager extends EventEmitter {
      */
     waitForSettle() {
         if (this.game.isGameOver) return;
+        // A newer turn already started (e.g. a turnStart arrived from the
+        // peer while this chain was pending) — don't advance a second time
+        if (this.settleForTurn !== this.turnCounter) return;
 
         const waterLevel = this.game.waterLevel;
         const allSettled = this.game.teams.every(team =>
@@ -376,8 +418,39 @@ export class TurnManager extends EventEmitter {
 
         // Time up?
         if (this.turnTimer <= 0) {
+            if (this.isPassiveClient()) {
+                // Not our turn to end: freeze at zero and let the turn owner
+                // call it (their timer may be a moment behind ours). The
+                // watchdog forces a local advance if they never do.
+                this.turnTimer = 0;
+                this.passiveWait += dt;
+                if (this.passiveWait > 10) {
+                    console.warn('⚠️ Turn owner never ended the turn — forcing local turn end');
+                    this.passiveWait = 0;
+                    this.localFallback = true;
+                    this.endTurn();
+                }
+                return;
+            }
             console.log('⏰ Time is up!');
             this.endTurn();
+        }
+    }
+
+    /**
+     * Watchdog while a passive client is parked in the damage phase waiting
+     * for the turn owner's 'turnStart'. Called from Game.update. If the
+     * message never comes (owner hung, message lost), advance locally using
+     * the old deterministic path so the game can't soft-lock.
+     */
+    updatePassiveWatchdog(dt) {
+        if (!this.isPassiveClient() || this.localFallback) return;
+        this.passiveWait += dt;
+        if (this.passiveWait > 12) {
+            console.warn('⚠️ No turnStart from turn owner — advancing locally (fallback)');
+            this.passiveWait = 0;
+            this.localFallback = true;
+            this.processDamage();
         }
     }
 
@@ -412,6 +485,17 @@ export class TurnManager extends EventEmitter {
             // If they are, switch back to 'projectile' phase until they land
             if (this.game.projectiles.length > 0) {
                 this.phase = 'projectile';
+            } else if (this.isPassiveClient() && !this.localFallback) {
+                // The turn owner ends its own retreat and announces the next
+                // turn — hold here and wait (watchdog recovers if they don't)
+                this.retreatTimer = 0;
+                this.passiveWait += dt;
+                if (this.passiveWait > 8) {
+                    console.warn('⚠️ Turn owner never ended retreat — forcing local turn end');
+                    this.passiveWait = 0;
+                    this.localFallback = true;
+                    this.endTurn();
+                }
             } else {
                 this.endTurn();
             }

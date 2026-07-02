@@ -253,6 +253,17 @@ function setupMenuHandlers() {
     networkManager.on('connected', (data) => {
         console.log('🎮 Connected to peer!', data);
 
+        // Mid-game reconnect: resume the paused game instead of showing the
+        // lobby. The guest automatically requests a full state sync (terrain,
+        // health, ammo, crates) — see NetworkManager's open handler.
+        if (game && !game.isGameOver && data.wasReconnect) {
+            console.log('🔗 Reconnected mid-game — resuming');
+            hideConnectionBanner();
+            game.isPaused = false;
+            game.lastTime = performance.now();
+            return;
+        }
+
         // Transition to lobby
         menuManager.showLobby(networkManager.roomCode, networkManager.isHost);
 
@@ -294,9 +305,27 @@ function setupMenuHandlers() {
     networkManager.on('disconnected', (data) => {
         console.log('🔌 Disconnected:', data?.reason);
 
-        // Show disconnection message if in game
+        // Mid-game drop: don't kill the game — NetworkManager is already
+        // retrying with backoff. Pause and wait; 'connected' resumes us and
+        // 'reconnectFailed' tears down for real.
+        if (game && !game.isGameOver && networkManager.roomCode) {
+            game.isPaused = true;
+            showConnectionBanner('⚠️ Connection lost — reconnecting…');
+            return;
+        }
+
         if (game) {
             alert('Opponent disconnected!');
+            game.destroy();
+            game = null;
+        }
+        menuManager.showMenu();
+    });
+
+    networkManager.on('reconnectFailed', () => {
+        hideConnectionBanner();
+        if (game) {
+            alert('Lost connection to the opponent.');
             game.destroy();
             game = null;
         }
@@ -526,7 +555,9 @@ function setupMenuHandlers() {
 
     networkManager.on('remoteRequestStateSync', (data) => {
         if (game && game.sendFullStateSync) {
-            game.sendFullStateSync();
+            // A peer only asks for this after a reconnect — include the
+            // terrain snapshot so they get every crater they missed
+            game.sendFullStateSync({ includeTerrain: true });
         }
     });
 
@@ -535,6 +566,46 @@ function setupMenuHandlers() {
             game.lootManager.handleRemoteCrateSpawn(data);
         }
     });
+
+    networkManager.on('remoteCrateCollected', (data) => {
+        if (game) {
+            game.lootManager.handleRemoteCrateCollected(data);
+        }
+    });
+
+    networkManager.on('remoteTurnStart', (data) => {
+        if (game) {
+            game.handleRemoteTurnStart(data);
+        }
+    });
+
+    networkManager.on('remoteGameOver', (data) => {
+        if (game) {
+            game.handleRemoteGameOver(data);
+        }
+    });
+}
+
+/**
+ * Small fixed banner for connection status during mid-game reconnects
+ */
+function showConnectionBanner(text) {
+    let el = document.getElementById('connection-banner');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'connection-banner';
+        el.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);' +
+            'background:rgba(20,20,30,0.92);color:#ffd35a;padding:10px 22px;border-radius:8px;' +
+            'font-weight:700;z-index:1000;pointer-events:none;';
+        document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.display = 'block';
+}
+
+function hideConnectionBanner() {
+    const el = document.getElementById('connection-banner');
+    if (el) el.style.display = 'none';
 }
 
 /**

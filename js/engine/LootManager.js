@@ -13,6 +13,12 @@ export class LootManager {
         // Active crates on the map
         this.crates = [];
 
+        // Monotonic crate id shared across clients: the host generates it and
+        // ships it in the crateSpawn message, so 'crateCollected' messages can
+        // reference an exact crate on both sides. (The old Date.now()-based id
+        // differed per client, which made cross-client references impossible.)
+        this.nextCrateId = 1;
+
         // Category weights: weapon crates most common, then health, then utility
         this.categoryWeights = {
             health: 30,
@@ -160,6 +166,7 @@ export class LootManager {
         if (this.game.networkManager && !this.game.isPractice) {
             this.game.networkManager.send({
                 type: 'crateSpawn',
+                crateId: crate.id,
                 category,
                 itemId: item.id,
                 x: position.x,
@@ -180,7 +187,62 @@ export class LootManager {
         const item = this.getLootTable(data.category).find(i => i.id === data.itemId);
 
         if (item) {
-            this.createCrate(data.category, item, data.x, data.y);
+            this.createCrate(data.category, item, data.x, data.y, data.crateId);
+        }
+    }
+
+    /**
+     * Handle host's authoritative crate collection. The guest never detects
+     * collection itself: collection depends on koala positions, which drift
+     * between clients — one side collecting a crate the other didn't meant
+     * permanently diverged ammo, buffs and health.
+     */
+    handleRemoteCrateCollected(data) {
+        const crate = this.crates.find(c => c.id === data.crateId && !c.collected);
+        if (!crate) {
+            console.warn('📦 crateCollected for unknown crate id', data.crateId);
+            return;
+        }
+        const koala = this.game.findKoalaByName(data.koalaName);
+        const team = koala ? this.game.teams.find(t => t.koalas.includes(koala)) : null;
+        if (!koala || !team) {
+            console.warn('📦 crateCollected for unknown koala', data.koalaName);
+            return;
+        }
+        this.collectCrate(crate, koala, team);
+    }
+
+    /**
+     * Serialize crates for reconnect state sync
+     */
+    serializeCrates() {
+        return this.crates.map(c => ({
+            id: c.id,
+            category: c.category,
+            itemId: c.item.id,
+            x: c.x,
+            y: c.y,
+            falling: c.falling
+        }));
+    }
+
+    /**
+     * Rebuild the crate list from a reconnect state sync
+     */
+    applyCrateSync(crates) {
+        if (!Array.isArray(crates)) return;
+        this.crates = [];
+        for (const cd of crates) {
+            const item = this.getLootTable(cd.category).find(i => i.id === cd.itemId);
+            if (!item) continue;
+            const crate = this.createCrate(cd.category, item, cd.x, cd.y, cd.id);
+            // Place exactly where the host has it (createCrate starts crates
+            // high up for the parachute-drop animation)
+            crate.y = cd.y;
+            crate.targetY = cd.y;
+            crate.falling = cd.falling;
+            crate.parachuteOpen = false;
+            this.nextCrateId = Math.max(this.nextCrateId, (cd.id || 0) + 1);
         }
     }
 
@@ -240,9 +302,9 @@ export class LootManager {
     /**
      * Create a crate object
      */
-    createCrate(category, item, x, y) {
+    createCrate(category, item, x, y, id = null) {
         const crate = {
-            id: Date.now() + Math.floor(this.random() * 1000),
+            id: id ?? this.nextCrateId++,
             category,
             item,
             x,
@@ -311,8 +373,14 @@ export class LootManager {
                 }
             }
 
-            // Check collection by any koala using spatial grid
-            if (!crate.falling && !crate.collected) {
+            // Check collection by any koala using spatial grid.
+            // Multiplayer: HOST-ONLY. Collection depends on koala positions,
+            // which drift between clients; the host decides and broadcasts
+            // 'crateCollected' so ammo/buffs/heals stay identical (guest
+            // crates are visual until that message arrives).
+            const isCollectAuthority = this.game.isPractice ||
+                !this.game.networkManager || this.game.networkManager.isHost;
+            if (!crate.falling && !crate.collected && isCollectAuthority) {
                 const collectionRadius = 30;
                 const nearbyEntities = this.game.spatialGrid.queryRadius(crate.x, crate.y, collectionRadius);
 
@@ -342,6 +410,17 @@ export class LootManager {
      */
     collectCrate(crate, koala, team) {
         crate.collected = true;
+
+        // NETWORK SYNC: the host is the collection authority — tell the guest
+        // exactly which crate was picked up and by whom (guests reach here
+        // only via that message, and isHost=false keeps them from re-sending)
+        if (this.game.networkManager && !this.game.isPractice && this.game.networkManager.isHost) {
+            this.game.networkManager.send({
+                type: 'crateCollected',
+                crateId: crate.id,
+                koalaName: koala.name
+            });
+        }
 
         // Play collection sound
         this.game.audioManager.playPowerup?.();
@@ -508,5 +587,6 @@ export class LootManager {
      */
     reset() {
         this.crates = [];
+        this.nextCrateId = 1;
     }
 }

@@ -188,6 +188,9 @@ export class Renderer {
         // Draw loot crates
         this.drawLootCrates();
 
+        // Draw oil drums (map hazards)
+        this.drawOilDrums();
+
         // Draw koalas
         this.drawKoalas();
 
@@ -221,6 +224,17 @@ export class Renderer {
         if (this.game.customBackgroundColor) {
             this.ctx.fillStyle = this.game.customBackgroundColor;
         } else {
+            // Themed sky for generated maps (falls back to the default
+            // gradient for custom/editor maps with no theme)
+            const theme = this.game.terrain.theme;
+            if (theme && (this._skyThemeId !== theme.id || this._skyHeight !== this.canvas.height)) {
+                const grad = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+                const stops = [0, 0.35, 0.7, 1];
+                theme.sky.forEach((color, i) => grad.addColorStop(stops[i], color));
+                this.skyGradient = grad;
+                this._skyThemeId = theme.id;
+                this._skyHeight = this.canvas.height;
+            }
             this.ctx.fillStyle = this.skyGradient;
         }
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -233,7 +247,7 @@ export class Renderer {
         const ctx = this.ctx;
         const camera = this.game.camera;
 
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.fillStyle = this.game.terrain.theme?.cloud || 'rgba(255, 255, 255, 0.8)';
 
         // Simple cloud shapes with parallax
         const clouds = [
@@ -1662,5 +1676,84 @@ export class Renderer {
     drawLootCrates() {
         // Delegate to LootManager
         this.game.lootManager.render(this.ctx);
+    }
+
+    /**
+     * Draw the explosive oil drums (WA-style map hazards).
+     * drum.y is the bottom-center resting point.
+     */
+    drawOilDrums() {
+        const drums = this.game.oilDrums;
+        if (!drums || drums.length === 0) return;
+        const ctx = this.ctx;
+
+        const w = 26;
+        const h = 34;
+
+        for (const drum of drums) {
+            ctx.save();
+            ctx.translate(drum.x, drum.y);
+
+            // Body with a metallic side-lit gradient
+            const grad = ctx.createLinearGradient(-w / 2, 0, w / 2, 0);
+            grad.addColorStop(0, '#3a3f44');
+            grad.addColorStop(0.35, '#6a7178');
+            grad.addColorStop(0.55, '#7d858d');
+            grad.addColorStop(1, '#2e3236');
+            ctx.fillStyle = grad;
+            this._roundRect(ctx, -w / 2, -h, w, h, 3);
+            ctx.fill();
+
+            // Red hazard band around the middle
+            ctx.fillStyle = '#c0392b';
+            ctx.fillRect(-w / 2, -h * 0.68, w, 8);
+
+            // Rolled steel ribs
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)';
+            ctx.lineWidth = 1.5;
+            for (const ry of [-h * 0.25, -h * 0.82]) {
+                ctx.beginPath();
+                ctx.moveTo(-w / 2 + 1, ry);
+                ctx.lineTo(w / 2 - 1, ry);
+                ctx.stroke();
+            }
+
+            // Lid
+            ctx.fillStyle = '#8b939b';
+            ctx.beginPath();
+            ctx.ellipse(0, -h, w / 2 - 1, 3.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Flame warning mark on the band
+            ctx.fillStyle = '#f5d76e';
+            ctx.font = 'bold 8px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('🔥', 0, -h * 0.68 + 4);
+
+            // Lit fuse: flickering glow that ramps up as the fuse burns down
+            if (drum.igniteTimer > 0) {
+                const flicker = 0.45 + Math.sin(Date.now() / 45) * 0.25;
+                ctx.strokeStyle = `rgba(255, 140, 40, ${flicker})`;
+                ctx.lineWidth = 3;
+                this._roundRect(ctx, -w / 2 - 2, -h - 2, w + 4, h + 4, 4);
+                ctx.stroke();
+            } else if (drum.hp < drum.maxHp) {
+                // Battle damage: dent marks once it's taken hits
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(-w * 0.25, -h * 0.45);
+                ctx.lineTo(-w * 0.05, -h * 0.38);
+                ctx.moveTo(w * 0.1, -h * 0.52);
+                ctx.lineTo(w * 0.28, -h * 0.42);
+                ctx.stroke();
+            }
+
+            ctx.restore();
+        }
     }
 }

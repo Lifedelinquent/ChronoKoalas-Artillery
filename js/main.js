@@ -390,7 +390,7 @@ function setupMenuHandlers() {
             const maps = await MapManager.getAllMaps();
             menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
                 let map = null;
-                let name = 'Default Zoo';
+                let name = 'Random Map';
                 if (mapId !== 'default') {
                     map = maps[mapId];
                     name = map.name;
@@ -488,7 +488,7 @@ function setupMenuHandlers() {
         if (data.suddenDeathTime !== undefined) {
             window.selectedSuddenDeathTime = data.suddenDeathTime;
         }
-        const name = data.map ? data.map.name : 'Default Zoo';
+        const name = data.map ? data.map.name : 'Random Map';
         menuManager.updateLobbyMapName(name);
     });
 

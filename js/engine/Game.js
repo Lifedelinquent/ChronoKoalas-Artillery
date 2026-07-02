@@ -83,6 +83,10 @@ export class Game extends EventEmitter {
         // Burning patches of ground (petrol bomb / napalm strike)
         this.firePatches = [];
 
+        // Explosive oil drums scattered on the map (WA-style hazards).
+        // Landmines are stationary Projectiles and live in this.projectiles.
+        this.oilDrums = [];
+
         // Kamikaze dash state (null when inactive)
         this.kamikazeState = null;
 
@@ -168,6 +172,10 @@ export class Game extends EventEmitter {
 
         // Create teams
         this.createTeams();
+
+        // Scatter WA-style hazards (landmines + oil drums) once the koalas
+        // are placed. Seeded, so every client builds the same minefield.
+        this.spawnMapHazards();
 
         // Randomize wind (using seeded random for sync)
         this.randomizeWind();
@@ -992,6 +1000,9 @@ export class Game extends EventEmitter {
         // Burning ground keeps cooking across phases (and turns)
         this.updateFirePatches(dt);
 
+        // Oil drums: burn-down fuses and falling when ground is destroyed
+        this.updateOilDrums(dt);
+
         // Always update projectiles/traps (mines need to work even during aiming)
         if (profile) t0 = performance.now();
         this.updateProjectiles(dt);
@@ -1146,46 +1157,11 @@ export class Game extends EventEmitter {
             }
         }
 
-        // Also check map objects (barrels, etc.)
-        if (this.terrain.mapObjects) {
-            for (let i = this.terrain.mapObjects.length - 1; i >= 0; i--) {
-                const obj = this.terrain.mapObjects[i];
-                const dx = obj.x - hitX;
-                const dy = (obj.y - obj.height / 2) - hitY;
-                const dist = Math.hypot(dx, dy);
-
-                if (dist < weapon.range + 20) {
-                    // HIT MAP OBJECT
-                    if (obj.type === 'barrel') {
-                        // Remove the barrel on EVERY client. Both compute the
-                        // same hit geometry from the synced shooter position/angle
-                        // (handleRemoteFire sets x/y/aimAngle before replaying the
-                        // swing), so this stays deterministic and the barrel
-                        // disappears on both sides.
-                        this.terrain.mapObjects.splice(i, 1);
-                        this.createExplosion(obj.x, obj.y, 60); // visual only
-                        this.audioManager.playExplosion('medium');
-
-                        // Terrain destruction is host-authoritative and synced so
-                        // both clients carve an identical crater.
-                        if (isAuthoritativeClient) {
-                            this.terrain.createCrater(obj.x, obj.y, 60);
-                            if (this.networkManager && !this.isPractice) {
-                                this.networkManager.send({
-                                    type: 'explosionSync',
-                                    explosionX: obj.x,
-                                    explosionY: obj.y,
-                                    explosionRadius: 60,
-                                    results: []
-                                });
-                            }
-                        }
-                    } else {
-                        // Just create particles
-                        this.createExplosionParticles(obj.x, obj.y, 5, '#ccc');
-                    }
-                }
-            }
+        // Whacking an oil drum sets it off. Authoritative client applies the
+        // damage; the resulting detonation reaches the guest via the synced
+        // drum id in explosionSync.
+        if (isAuthoritativeClient) {
+            this.damageOilDrums(hitX, hitY, weapon.range + 10, weapon.damage || 30);
         }
 
         // Send sync to ensure players match health and positions
@@ -2000,6 +1976,10 @@ export class Game extends EventEmitter {
                         });
                     }
                 }
+
+                // Blast damage to oil drums (detonations get synced by id)
+                this.damageOilDrums(projectile.x, projectile.y,
+                    weapon.explosionRadius, weapon.damage * damageMultiplier);
             }
         }
 
@@ -3399,6 +3379,16 @@ export class Game extends EventEmitter {
                             }
                         }
                         this.updateTeamHealth();
+
+                        // Flames lick a nearby oil drum? Light its fuse.
+                        // Authoritative-only: the guest sees the detonation
+                        // via the synced drum id.
+                        for (const drum of this.oilDrums) {
+                            if (drum.detonated || drum.igniteTimer > 0) continue;
+                            if (Math.hypot(drum.x - fire.x, (drum.y - 17) - fire.y) < 34) {
+                                drum.igniteTimer = 0.6 + Math.random() * 0.5;
+                            }
+                        }
                     }
                 }
 
@@ -3433,6 +3423,279 @@ export class Game extends EventEmitter {
                 explosionRadius: 0, // no single crater — craters[] carries the burns
                 craters: burnCraters,
                 results: []
+            });
+        }
+    }
+
+    // ==================== MAP HAZARDS (landmines + oil drums) ====================
+
+    /**
+     * Scatter landmines and oil drums across the freshly generated map.
+     * Runs on every client with the shared seeded RNG right after
+     * createTeams(), so all clients place identical hazards. Spots come from
+     * the same surface scan the koala spawner uses, kept clear of spawns.
+     */
+    spawnMapHazards() {
+        this.oilDrums = [];
+        const rand = this.seededRandom || Math.random;
+
+        const spots = this.terrain.getAllSpawnPoints({
+            topY: this.mapBounds?.topY || 0,
+            waterLevel: this.waterLevel
+        });
+        if (spots.length === 0) {
+            console.warn('⚠️ No valid surfaces for map hazards');
+            return;
+        }
+
+        const koalas = [];
+        for (const team of this.teams) {
+            for (const k of team.koalas) koalas.push(k);
+        }
+
+        const placed = [];
+        const pickSpot = (minKoalaDist, minSpacing) => {
+            for (let attempt = 0; attempt < 40; attempt++) {
+                const spot = spots[Math.floor(rand() * spots.length)];
+                const gx = spot.x;
+                const gy = spot.y + 20; // getAllSpawnPoints returns surfaceY - 20
+                if (koalas.some(k => Math.hypot(k.x - gx, k.y - gy) < minKoalaDist)) continue;
+                if (placed.some(p => Math.hypot(p.x - gx, p.y - gy) < minSpacing)) continue;
+                placed.push({ x: gx, y: gy });
+                return { x: gx, y: gy };
+            }
+            return null;
+        };
+
+        // Landmines: proximity-triggered, some are duds (WA-style)
+        const mineCount = 5 + Math.floor(rand() * 3);
+        let minesPlaced = 0;
+        for (let i = 0; i < mineCount; i++) {
+            const spot = pickSpot(130, 90);
+            if (!spot) break;
+            this.spawnLandmine(spot.x, spot.y, rand);
+            minesPlaced++;
+        }
+
+        // Oil drums: explode when shot, burned or whacked
+        const drumCount = 4 + Math.floor(rand() * 3);
+        for (let i = 0; i < drumCount; i++) {
+            const spot = pickSpot(110, 120);
+            if (!spot) break;
+            this.oilDrums.push({
+                id: 'drum_' + i,
+                x: spot.x,
+                y: spot.y,          // bottom-center, resting on the ground
+                hp: 30,
+                maxHp: 30,
+                falling: false,
+                vy: 0,
+                igniteTimer: 0,     // > 0 = lit by fire, counting down to boom
+                detonated: false,   // armed for a scheduled detonation
+                effectSeed: Math.floor(rand() * 0xFFFFFFFF)
+            });
+        }
+
+        console.log(`💣 Map hazards: ${minesPlaced} mines, ${this.oilDrums.length} oil drums`);
+    }
+
+    /**
+     * Place one pre-armed landmine on the ground. It's a normal stationary
+     * mine Projectile, so proximity triggering, dud behavior, falling when
+     * the ground is destroyed, rendering and explosion sync all reuse the
+     * existing weapon-mine pipeline.
+     */
+    spawnLandmine(x, y, rand) {
+        const weapon = {
+            id: 'mapmine',
+            name: 'Mine',
+            type: 'mine',
+            damage: 45,
+            explosionRadius: 65,
+            knockback: 300,
+            triggerDelay: 1.5 + rand() * 1.5,
+            noContactExplosion: true
+        };
+        const mine = new Projectile({
+            x,
+            y: y - 5,
+            vx: 0,
+            vy: 0,
+            type: 'mine',
+            weapon,
+            timer: null,
+            triggeredByProximity: true,
+            isDud: rand() < 0.12
+        });
+        mine.stationary = true;
+        mine.hasTouchedTerrain = true;
+        mine.effectSeed = Math.floor(rand() * 0xFFFFFFFF);
+        this.projectiles.push(mine);
+    }
+
+    /**
+     * Per-frame oil drum housekeeping: lit fuses burn down, unsupported
+     * drums fall (and drown). Runs on all clients — falling converges
+     * because the terrain is synced; fuses only ever start on the
+     * authoritative client, and detonations are synced by id.
+     */
+    updateOilDrums(dt) {
+        if (this.oilDrums.length === 0) return;
+
+        for (let i = this.oilDrums.length - 1; i >= 0; i--) {
+            const drum = this.oilDrums[i];
+
+            // Lit by fire: sputter, then blow
+            if (drum.igniteTimer > 0) {
+                drum.igniteTimer -= dt;
+                if (Math.random() > 0.4 && this.particles.length < this.maxParticles - 5) {
+                    this.addParticle({
+                        type: 'spark',
+                        x: drum.x + (Math.random() - 0.5) * 10,
+                        y: drum.y - 34,
+                        vx: (Math.random() - 0.5) * 40,
+                        vy: -60 - Math.random() * 60,
+                        color: Math.random() > 0.5 ? '#ff6600' : '#ffaa00',
+                        size: 2 + Math.random() * 2,
+                        lifetime: 0.4,
+                        time: 0
+                    });
+                }
+                if (drum.igniteTimer <= 0) {
+                    this.detonateOilDrum(drum);
+                    continue;
+                }
+            }
+
+            // Ground blown away underneath? Start falling.
+            if (!drum.falling &&
+                !this.terrain.checkCollision(drum.x, drum.y + 2) &&
+                !this.terrain.checkCollision(drum.x, drum.y + 6)) {
+                drum.falling = true;
+                drum.vy = 0;
+            }
+
+            if (drum.falling) {
+                drum.vy += 800 * dt;
+                const targetY = drum.y + drum.vy * dt;
+                let y = drum.y;
+                let landed = false;
+                while (y < targetY) {
+                    y = Math.min(y + 2, targetY);
+                    if (this.terrain.checkCollision(drum.x, y + 2)) {
+                        landed = true;
+                        break;
+                    }
+                }
+                drum.y = y;
+                if (landed) {
+                    drum.falling = false;
+                    drum.vy = 0;
+                }
+
+                // Splashed into the drink — gone for good
+                if (drum.y > this.waterLevel + 10) {
+                    this.createSplash(drum.x, this.waterLevel);
+                    this.oilDrums.splice(i, 1);
+                }
+            }
+        }
+    }
+
+    /**
+     * Apply blast damage to drums near an explosion. Authoritative client
+     * only — guests hear about resulting detonations via explosionSync.
+     * Damaged-to-death drums blow after a short fuse so chain reactions pop
+     * in sequence instead of all in one frame.
+     */
+    damageOilDrums(x, y, radius, damage) {
+        for (const drum of this.oilDrums) {
+            if (drum.detonated) continue;
+            const dist = Math.hypot(drum.x - x, (drum.y - 17) - y);
+            if (dist < radius + 13) {
+                const falloff = Math.max(0.25, 1 - dist / (radius + 13));
+                drum.hp -= Math.max(5, damage * falloff);
+                if (drum.hp <= 0) {
+                    drum.detonated = true;
+                    this.scheduleDelayedAction(150 + Math.random() * 120, () => this.detonateOilDrum(drum));
+                }
+            }
+        }
+    }
+
+    /**
+     * Blow up an oil drum: big blast plus burning oil (WA-style). Visuals
+     * and fire run on whichever client calls this; crater, koala damage and
+     * the sync message are authoritative-only. Guests reach here via the
+     * drum ids in explosionSync.
+     */
+    detonateOilDrum(drum) {
+        const idx = this.oilDrums.indexOf(drum);
+        if (idx === -1) return; // already gone (e.g. synced removal won the race)
+        this.oilDrums.splice(idx, 1);
+
+        const cx = drum.x;
+        const cy = drum.y - 17;
+        const radius = 75;
+        const damage = 40;
+
+        this.createExplosion(cx, cy, radius);
+        this.createExplosionParticles(cx, cy, radius, '#ff8830');
+        this.addScreenShake(radius / 8, 0.35);
+        this.audioManager.playExplosion('large');
+
+        // Burning oil sprays out — rolled from the drum's spawn seed so both
+        // clients scatter identical flames
+        this.spawnFirePatches(cx, cy, 6, this.createSeededRandom(drum.effectSeed));
+
+        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
+        if (!isAuthoritativeClient) return;
+
+        // Terrain + damage, mirroring handleProjectileImpact
+        this.terrain.createCrater(cx, cy, radius);
+
+        const explosionResults = [];
+        const nearbyEntities = this.spatialGrid.queryRadius(cx, cy, radius);
+        for (const { entity: koala, distance } of nearbyEntities) {
+            if (koala.isAlive === undefined) continue;
+
+            const falloff = 1 - distance / radius;
+            const launchDamage = damage * falloff;
+            const knockback = Math.min(launchDamage * 9, 900);
+            const angle = Math.atan2(koala.y - (cy + 10), koala.x - cx);
+            koala.applyKnockback(Math.cos(angle) * knockback, Math.sin(angle) * knockback * 1.3);
+
+            if (koala.isAlive) {
+                const dmg = Math.round(launchDamage);
+                koala.takeDamage(dmg);
+                if (dmg > 0) {
+                    this.audioManager.playDamage();
+                    this.createFloatingText(koala.x, koala.y - 40, `-${dmg}`, '#ff5544');
+                }
+                explosionResults.push({
+                    koalaName: koala.name,
+                    damage: dmg,
+                    newHealth: koala.health,
+                    x: koala.x,
+                    y: koala.y,
+                    vx: koala.vx,
+                    vy: koala.vy
+                });
+            }
+        }
+        this.updateTeamHealth();
+
+        // Chain reaction into neighboring drums
+        this.damageOilDrums(cx, cy, radius, damage);
+
+        if (this.networkManager && !this.isPractice && this.networkManager.isHost) {
+            this.networkManager.send({
+                type: 'explosionSync',
+                explosionX: cx,
+                explosionY: cy,
+                explosionRadius: radius,
+                drums: [drum.id],
+                results: explosionResults
             });
         }
     }
@@ -3848,6 +4111,7 @@ export class Game extends EventEmitter {
         this.turnTimer = this.turnTime;
         this.shotgunShotsRemaining = 0;
         this.firePatches = [];
+        this.oilDrums = [];
         this.kamikazeState = null;
         this.lootManager.reset();
         this.spatialGrid.clear();
@@ -4344,6 +4608,16 @@ export class Game extends EventEmitter {
         if (Array.isArray(data.craters)) {
             for (const c of data.craters) {
                 this.terrain.createCrater(c.x, c.y, c.r);
+            }
+        }
+
+        // Oil drums the host detonated — replay locally (removal, blast
+        // visuals, burning oil). detonateOilDrum is visual-only on a guest;
+        // the crater and damage arrive with this same message.
+        if (Array.isArray(data.drums)) {
+            for (const id of data.drums) {
+                const drum = this.oilDrums.find(d => d.id === id);
+                if (drum) this.detonateOilDrum(drum);
             }
         }
 

@@ -458,6 +458,12 @@ export class InputManager {
             koala.facingLeft = false;
         }
 
+        // Artillery mode (scheme): koalas may turn to face either way but
+        // never walk. Facing was already updated above, so just kill motion.
+        if (this.game.scheme?.artilleryMode) {
+            moveDir = 0;
+        }
+
         let positionChanged = false;
         if (moveDir !== 0) {
             // Double-check that koala is actually on ground before allowing ground movement
@@ -704,6 +710,9 @@ export class InputManager {
      * ballistic arcs — there is no mid-air steering.
      */
     jump() {
+        // Artillery mode (scheme): no jumping
+        if (this.game.scheme?.artilleryMode) return;
+
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
 
@@ -732,6 +741,9 @@ export class InputManager {
      * (Worms-style double-tap).
      */
     highJump() {
+        // Artillery mode (scheme): no jumping
+        if (this.game.scheme?.artilleryMode) return;
+
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
 

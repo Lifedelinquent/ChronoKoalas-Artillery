@@ -472,7 +472,9 @@ export class NetworkManager extends EventEmitter {
             seed: 1 + Math.floor(Math.random() * 0x7FFFFFFE),
             teams: ['red', 'blue'],
             customMap: options.customMap,
-            suddenDeathTime: options.suddenDeathTime
+            // Full match-rule scheme (JSON-safe: infinite ammo is stored as
+            // -1, never Infinity — BinaryPack rejects non-finite numbers)
+            scheme: options.scheme
         };
 
         // Send start signal to peer
@@ -486,12 +488,12 @@ export class NetworkManager extends EventEmitter {
     }
 
     /**
-     * Send map selection (host only)
+     * Send map + scheme selection (host only)
      */
-    sendMapSelection(map, suddenDeathTime) {
+    sendMapSelection(map, scheme) {
         if (!this.isHost) return;
-        this.send({ type: 'mapSelected', map, suddenDeathTime });
-        this.emit('mapSelected', { map, suddenDeathTime });
+        this.send({ type: 'mapSelected', map, scheme });
+        this.emit('mapSelected', { map, scheme });
     }
 
     /**

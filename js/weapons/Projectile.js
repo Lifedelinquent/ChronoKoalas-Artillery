@@ -36,7 +36,8 @@ export class Projectile {
         this.triggeredByProximity = options.triggeredByProximity || false;
         this.isTriggered = false;
         this.triggerTimer = 0;
-        this.triggerDelay = options.weapon?.triggerDelay || 3.0;
+        // ?? not ||: a scheme-configured "Instant" fuse of 0 must survive
+        this.triggerDelay = options.weapon?.triggerDelay ?? 3.0;
 
         // Dud state (for mines)
         this.isDud = options.isDud ?? false;

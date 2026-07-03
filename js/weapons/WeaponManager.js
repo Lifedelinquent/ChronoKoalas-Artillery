@@ -46,9 +46,14 @@ export class WeaponManager {
      * NOTE: explosionRadius follows WA crater proportions: radius ≈ damage × 1.4
      * (WA's damage-to-crater ratio scaled from 16px worms to 30px koalas), so a
      * 50hp bazooka digs a 70px hole and a 100hp Holy Grenade digs a 140px one.
+     *
+     * The game scheme (this.game.scheme) can override each weapon's starting
+     * ammo and add an unlock delay — see applySchemeOverrides at the bottom.
+     * GameScheme.js also calls this method against a bare stub to derive the
+     * default weapon table, so it must not require a real Game instance.
      */
     createWeapons() {
-        return {
+        const weapons = {
             // ============ LAUNCHERS ============
             bazooka: {
                 id: 'bazooka',
@@ -569,6 +574,33 @@ export class WeaponManager {
                 ammo: Infinity
             }
         };
+
+        this.applySchemeOverrides(weapons);
+        return weapons;
+    }
+
+    /**
+     * Apply the match scheme's per-weapon ammo and unlock delay to a freshly
+     * built inventory. Scheme ammo uses -1 for infinite (JSON/network safe);
+     * it becomes Infinity here. skip/surrender are turn management, never
+     * limited. Safe to call without a game (scheme defaults derivation).
+     */
+    applySchemeOverrides(weapons) {
+        const schemeWeapons = this.game && this.game.scheme && this.game.scheme.weapons;
+        if (!schemeWeapons) return;
+
+        for (const id in weapons) {
+            if (id === 'skip' || id === 'surrender') continue;
+            const override = schemeWeapons[id];
+            if (!override) continue;
+
+            if (typeof override.ammo === 'number') {
+                weapons[id].ammo = override.ammo === -1 ? Infinity : override.ammo;
+            }
+            if (typeof override.delay === 'number' && override.delay > 0) {
+                weapons[id].delay = override.delay; // rounds before usable
+            }
+        }
     }
 
     /**
@@ -757,7 +789,7 @@ export class WeaponManager {
             projectile.triggeredByProximity = weapon.triggeredByProximity || false;
             projectile.isTriggered = false;
             projectile.triggerTimer = 0;
-            projectile.triggerDelay = weapon.triggerDelay || 3.0;
+            projectile.triggerDelay = weapon.triggerDelay ?? 3.0;
             projectile.isDud = isDud;
             projectile.dudActivated = false;
             projectile.effectSeed = effectSeed;

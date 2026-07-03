@@ -16,6 +16,8 @@ import { LootManager } from './LootManager.js';
 import { SpatialGrid } from './SpatialGrid.js';
 import { DOMCache } from '../utils/DOMCache.js';
 import { TurnManager } from './TurnManager.js';
+import { WeatherSystem } from './WeatherSystem.js';
+import { sanitizeScheme } from '../utils/GameScheme.js';
 
 export class Game extends EventEmitter {
     // Phases during which the active player is in control of their koala. If that
@@ -28,6 +30,12 @@ export class Game extends EventEmitter {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.options = options;
+
+        // Match-rule scheme (health, timers, ammo, hazards, crates, sudden
+        // death). Guests receive the host's scheme inside initialState.
+        // MUST be set before WeaponManager is constructed — createWeapons()
+        // reads scheme ammo/delay overrides off this.game.scheme.
+        this.scheme = sanitizeScheme(options.scheme || options.initialState?.scheme);
 
         // Game dimensions
         this.worldWidth = 2400;
@@ -112,6 +120,9 @@ export class Game extends EventEmitter {
 
         // Loot crate system (replaces old powerups)
         this.lootManager = new LootManager(this);
+
+        // Atmospheric weather particles (cosmetic, theme-driven, local-only)
+        this.weather = new WeatherSystem(this);
     }
 
     /**
@@ -121,6 +132,19 @@ export class Game extends EventEmitter {
         // Initialize audio (requires user interaction)
         this.audioManager.init();
         this.audioManager.resetTheme?.('battle');
+
+        // Apply the match scheme: timers, sudden death and crate behavior.
+        // (Weapon ammo/delays are applied inside createWeapons; health, wind,
+        // hazards and damage are read live from this.scheme where they act.)
+        const scheme = this.scheme;
+        this.turnManager.defaultTurnTime = scheme.turnTime;
+        this.turnManager.retreatTime = scheme.retreatTime;
+        this.turnManager.suddenDeathTime = scheme.suddenDeathTime === -1 ? Infinity : scheme.suddenDeathTime;
+        this.turnManager.suddenDeathHealthCap = scheme.suddenDeathHealthCap;
+        this.turnManager.suddenDeathDecay = scheme.suddenDeathDecay;
+        this.turnManager.waterRisePerTurn = scheme.waterRisePerTurn;
+        this.lootManager.crateDropChance = scheme.crateDropChance;
+        this.lootManager.maxCratesOnMap = scheme.maxCratesOnMap;
 
         // Reset per-match turn / sudden-death state so a rematch starts fresh
         this.turnManager.suddenDeathActive = false;
@@ -132,16 +156,6 @@ export class Game extends EventEmitter {
         this.turnManager.passiveWait = 0;
         this.turnManager.localFallback = false;
         this.waterLevel = this.worldHeight - 60;
-
-        // Apply the sudden-death delay chosen on the map screen. -1 means
-        // "Never" (the trigger can never fire); anything missing keeps the
-        // TurnManager default. Stored once per match so a rematch can override it.
-        const sd = this.options.suddenDeathTime;
-        if (sd === -1) {
-            this.turnManager.suddenDeathTime = Infinity;
-        } else if (typeof sd === 'number' && sd > 0) {
-            this.turnManager.suddenDeathTime = sd;
-        }
 
         // Get game seed for multiplayer sync (or generate random for practice)
         // (?? not ||: a seed of 0 must not silently become a local random one)
@@ -331,9 +345,10 @@ export class Game extends EventEmitter {
      * 3. If no markers exist, use random spawning from valid spawn points
      */
     createTeams() {
+        const koalaCount = this.scheme.koalasPerTeam;
         const teamConfigs = [
-            { name: 'Red Team', color: '#e74c3c', koalaCount: 3 },
-            { name: 'Blue Team', color: '#3498db', koalaCount: 3 }
+            { name: 'Red Team', color: '#e74c3c', koalaCount },
+            { name: 'Blue Team', color: '#3498db', koalaCount }
         ];
 
         // STEP 1: Pre-scan the entire map for valid spawn points
@@ -433,6 +448,10 @@ export class Game extends EventEmitter {
                     spawnedPositions.push(pos);
                     const koala = new Koala(pos.x, pos.y, team);
                     koala.name = this.getKoalaName(teamIndex, i);
+
+                    // Scheme-defined starting health
+                    koala.maxHealth = this.scheme.startingHealth;
+                    koala.health = this.scheme.startingHealth;
 
                     // Ensure physics state is grounded immediately
                     koala.onGround = true;
@@ -1022,6 +1041,9 @@ export class Game extends EventEmitter {
         if (profile) t0 = performance.now();
         this.updateParticles(dt);
         if (profile) { t1 = performance.now(); if (t1 - t0 > 2) console.log(`  ✨ Particles: ${(t1 - t0).toFixed(1)}ms`); }
+
+        // Ambient weather (cosmetic, wind-driven)
+        this.weather.update(dt);
 
         // Update loot crates
         if (profile) t0 = performance.now();
@@ -2298,6 +2320,15 @@ export class Game extends EventEmitter {
             return;
         }
 
+        // Scheme unlock delay. Only enforced for the local player — a remote
+        // fire already happened on the acting client, and refusing the replay
+        // here would desync the match (mirrors the ammo-drift guard).
+        if (!this.isWeaponAvailable(weapon) && (this.isPractice || this.isMyTurn())) {
+            console.log(`${weapon.name} locked for ${this.weaponDelayRemaining(weapon)} more round(s)`);
+            this.audioManager.playClick();
+            return;
+        }
+
         console.log('Firing weapon:', weapon.name, 'angle:', angle, 'power:', power);
 
         // Play fire sound
@@ -2566,6 +2597,13 @@ export class Game extends EventEmitter {
         // Check ammo
         if (weapon.ammo <= 0) {
             console.log('Out of ammo for', weapon.name);
+            this.audioManager.playClick();
+            return;
+        }
+
+        // Scheme unlock delay (local player only — see fireWeapon)
+        if (!this.isWeaponAvailable(weapon) && (this.isPractice || this.isMyTurn())) {
+            console.log(`${weapon.name} locked for ${this.weaponDelayRemaining(weapon)} more round(s)`);
             this.audioManager.playClick();
             return;
         }
@@ -2983,10 +3021,30 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Damage multiplier from the current team's crate buffs
+     * Damage multiplier: scheme-wide setting × the current team's crate buffs
      */
     getDamageMultiplier() {
-        return this.getCurrentTeam()?.buffs?.doubleDamage ? 2 : 1;
+        const buffMult = this.getCurrentTeam()?.buffs?.doubleDamage ? 2 : 1;
+        return buffMult * this.scheme.damageMultiplier;
+    }
+
+    /**
+     * Scheme weapon delays: a weapon with delay N unlocks on round N+1
+     * (WA-style). roundNumber is deterministic on both clients, so this
+     * agrees across the network.
+     */
+    isWeaponAvailable(weapon) {
+        if (!weapon) return false;
+        const delay = weapon.delay || 0;
+        return delay <= 0 || this.turnManager.roundNumber > delay;
+    }
+
+    /**
+     * Rounds left before a delayed weapon unlocks (0 when usable).
+     */
+    weaponDelayRemaining(weapon) {
+        if (!weapon || this.isWeaponAvailable(weapon)) return 0;
+        return weapon.delay - this.turnManager.roundNumber + 1;
     }
 
     /**
@@ -3474,8 +3532,10 @@ export class Game extends EventEmitter {
             return null;
         };
 
-        // Landmines: proximity-triggered, some are duds (WA-style)
-        const mineCount = 5 + Math.floor(rand() * 3);
+        // Landmines: proximity-triggered, some are duds (WA-style).
+        // Counts come from the match scheme; identical on all clients
+        // because the scheme itself ships in the gameStart message.
+        const mineCount = this.scheme.mineCount;
         let minesPlaced = 0;
         for (let i = 0; i < mineCount; i++) {
             const spot = pickSpot(130, 90);
@@ -3485,7 +3545,7 @@ export class Game extends EventEmitter {
         }
 
         // Oil drums: explode when shot, burned or whacked
-        const drumCount = 4 + Math.floor(rand() * 3);
+        const drumCount = this.scheme.oilDrumCount;
         for (let i = 0; i < drumCount; i++) {
             const spot = pickSpot(110, 120);
             if (!spot) break;
@@ -3513,6 +3573,10 @@ export class Game extends EventEmitter {
      * existing weapon-mine pipeline.
      */
     spawnLandmine(x, y, rand) {
+        // Always draw both rolls so the shared RNG stream advances identically
+        // on every client regardless of the scheme's fixed-fuse setting.
+        const fuseRoll = 1.5 + rand() * 1.5;
+        const dudRoll = rand();
         const weapon = {
             id: 'mapmine',
             name: 'Mine',
@@ -3520,7 +3584,8 @@ export class Game extends EventEmitter {
             damage: 45,
             explosionRadius: 65,
             knockback: 300,
-            triggerDelay: 1.5 + rand() * 1.5,
+            // Scheme: -1 = classic random fuse, otherwise a fixed delay
+            triggerDelay: this.scheme.mineDelay === -1 ? fuseRoll : this.scheme.mineDelay,
             noContactExplosion: true
         };
         const mine = new Projectile({
@@ -3532,7 +3597,7 @@ export class Game extends EventEmitter {
             weapon,
             timer: null,
             triggeredByProximity: true,
-            isDud: rand() < 0.12
+            isDud: dudRoll < this.scheme.mineDudChance
         });
         mine.stationary = true;
         mine.hasTouchedTerrain = true;
@@ -3726,9 +3791,11 @@ export class Game extends EventEmitter {
      * Randomize wind (uses seeded random for multiplayer sync)
      */
     randomizeWind() {
-        // Use seeded random for multiplayer sync, or regular random for practice
+        // Use seeded random for multiplayer sync, or regular random for practice.
+        // Always draw the roll (even at 0 wind strength) so the shared RNG
+        // stream advances identically no matter the scheme.
         const rand = this.seededRandom ? this.seededRandom() : Math.random();
-        this.wind = (rand - 0.5) * 2; // -1 to 1
+        this.wind = (rand - 0.5) * 2 * this.scheme.windStrength; // -1..1 at 100%
         this.updateWindDisplay();
     }
 
@@ -3877,6 +3944,18 @@ export class Game extends EventEmitter {
                 fill.style.width = '0';
                 fill.style.left = '50%';
             }
+
+            // WA-style scrolling chevrons: stronger wind scrolls faster
+            const stripeDuration = absWind > 0.01 ? (1.3 - absWind).toFixed(2) : 0;
+            fill.style.setProperty('--wind-stripe-duration', stripeDuration + 's');
+
+            // Gust pulse on the whole gauge whenever the wind changes
+            const meter = fill.parentElement;
+            if (meter) {
+                meter.classList.remove('wind-gust');
+                void meter.offsetWidth; // Restart the animation
+                meter.classList.add('wind-gust');
+            }
         }
 
         if (value) {
@@ -3891,14 +3970,17 @@ export class Game extends EventEmitter {
         for (let i = 0; i < this.teams.length; i++) {
             const team = this.teams[i];
             const totalHealth = team.getTotalHealth();
-            const maxHealth = team.koalas.length * 100;
+            // Sum real max health (scheme-defined, not always 100 per koala)
+            const maxHealth = team.koalas.reduce((sum, k) => sum + k.maxHealth, 0) || 1;
             const percent = (totalHealth / maxHealth) * 100;
 
             // Use cached elements
             const fillEl = i === 0 ? this.dom.elements.redHpFill : this.dom.elements.blueHpFill;
             const valueEl = i === 0 ? this.dom.elements.redHpValue : this.dom.elements.blueHpValue;
 
-            if (fillEl) fillEl.style.width = percent + '%';
+            // Overhealing can push totalHealth above maxHealth; clamp the bar
+            // width so it doesn't overflow, but show the true HP number.
+            if (fillEl) fillEl.style.width = Math.min(100, percent) + '%';
             if (valueEl) valueEl.textContent = totalHealth;
         }
     }
@@ -4006,6 +4088,13 @@ export class Game extends EventEmitter {
                     el.classList.toggle('selected', isSelected);
                 }
 
+                // Scheme unlock delay: locked weapons show a countdown badge
+                const delayLeft = this.weaponDelayRemaining(weapon);
+                const locked = delayLeft > 0;
+                if (locked !== el.classList.contains('locked')) {
+                    el.classList.toggle('locked', locked);
+                }
+
                 // Cache ammo element on the weapon element itself
                 // This avoids querySelector on every update
                 if (!el._cachedAmmoEl) {
@@ -4013,8 +4102,8 @@ export class Game extends EventEmitter {
                 }
                 let ammoEl = el._cachedAmmoEl;
 
-                if (weapon.ammo !== Infinity) {
-                    // Finite ammo - create or update ammo element
+                if (locked || weapon.ammo !== Infinity) {
+                    // Badge needed - create or update ammo element
                     if (!ammoEl) {
                         ammoEl = document.createElement('div');
                         ammoEl.className = 'ammo-count';
@@ -4023,18 +4112,18 @@ export class Game extends EventEmitter {
                     }
 
                     // Only update text if changed
-                    const ammoStr = weapon.ammo.toString();
+                    const ammoStr = locked ? `🔒${delayLeft}` : weapon.ammo.toString();
                     if (ammoEl.textContent !== ammoStr) {
                         ammoEl.textContent = ammoStr;
                     }
 
                     // Update disabled state (only toggle if needed)
-                    const shouldBeDisabled = weapon.ammo <= 0;
+                    const shouldBeDisabled = locked || weapon.ammo <= 0;
                     if (shouldBeDisabled !== el.classList.contains('disabled')) {
                         el.classList.toggle('disabled', shouldBeDisabled);
                     }
                 } else {
-                    // Infinite ammo - remove ammo element if exists
+                    // Infinite ammo and unlocked - remove ammo element if exists
                     if (ammoEl) {
                         ammoEl.remove();
                         el._cachedAmmoEl = null; // Clear cache
@@ -4056,8 +4145,11 @@ export class Game extends EventEmitter {
                 // Set weapon name
                 nameEl.textContent = currentWeapon.name;
 
-                // Set ammo
-                if (currentWeapon.ammo === Infinity) {
+                // Set ammo (or the scheme unlock countdown)
+                const cardDelayLeft = this.weaponDelayRemaining(currentWeapon);
+                if (cardDelayLeft > 0) {
+                    ammoEl.textContent = `🔒 Unlocks in ${cardDelayLeft} round${cardDelayLeft > 1 ? 's' : ''}`;
+                } else if (currentWeapon.ammo === Infinity) {
                     ammoEl.textContent = "Ammo: ∞";
                 } else {
                     ammoEl.textContent = `Ammo: ${currentWeapon.ammo}`;
@@ -4079,8 +4171,8 @@ export class Game extends EventEmitter {
                     iconContainer.innerHTML = currentWeapon.icon ? `<span class="weapon-icon" style="font-size: 1.4rem;">${currentWeapon.icon}</span>` : '';
                 }
 
-                // Gray out active weapon card if ammo is 0
-                if (currentWeapon.ammo !== Infinity && currentWeapon.ammo <= 0) {
+                // Gray out active weapon card if empty or still locked
+                if (cardDelayLeft > 0 || (currentWeapon.ammo !== Infinity && currentWeapon.ammo <= 0)) {
                     cardEl.classList.add('out-of-ammo');
                 } else {
                     cardEl.classList.remove('out-of-ammo');

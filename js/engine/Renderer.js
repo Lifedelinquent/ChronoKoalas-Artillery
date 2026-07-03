@@ -203,6 +203,9 @@ export class Renderer {
         // Draw particles
         this.drawParticles();
 
+        // Draw weather (rain/snow/ash in front of the action, WA-style)
+        this.game.weather.render(ctx);
+
         // Draw water
         this.drawWater();
 
@@ -249,6 +252,10 @@ export class Renderer {
 
         ctx.fillStyle = this.game.terrain.theme?.cloud || 'rgba(255, 255, 255, 0.8)';
 
+        // Clouds drift with the wind (WA-style), wrapping around the world
+        this.cloudDrift = (this.cloudDrift || 0) + this.game.wind * 0.6;
+        const span = this.game.worldWidth + 600;
+
         // Simple cloud shapes with parallax
         const clouds = [
             { x: 200, y: 100, w: 120, h: 40 },
@@ -260,7 +267,8 @@ export class Renderer {
 
         for (const cloud of clouds) {
             // Parallax effect - clouds move slower than camera
-            const parallaxX = cloud.x - camera.x * 0.3;
+            const driftX = ((cloud.x + this.cloudDrift) % span + span) % span - 300;
+            const parallaxX = driftX - camera.x * 0.3;
             const parallaxY = cloud.y;
 
             // Draw cloud as overlapping circles
@@ -538,7 +546,8 @@ export class Renderer {
         const x = koala.x;
         const y = koala.y - 38;
         const health = Math.ceil(koala.health);
-        const healthPercent = koala.health / 100;
+        // Color relative to the scheme-defined max, not a hardcoded 100
+        const healthPercent = koala.health / (koala.maxHealth || 100);
 
         // Health color based on percentage
         const healthColor = healthPercent > 0.5 ? '#2ecc71' :
@@ -1632,7 +1641,7 @@ export class Renderer {
      */
     drawWater() {
         const ctx = this.ctx;
-        const waterHeight = 200; // Extra tall to cover gaps below
+        const waterHeight = 260; // Extra tall to cover gaps below
 
         // Water surface position — ease toward the logical (possibly rising) level
         const targetWaterY = this.game.waterLevel ?? (this.game.worldHeight - 60);
@@ -1641,33 +1650,77 @@ export class Renderer {
         } else {
             this.renderWaterY += (targetWaterY - this.renderWaterY) * 0.08;
         }
-        const waterY = this.renderWaterY;
 
-        // Animate water
-        this.waterOffset += 0.02;
+        // Waves scroll with the wind (WA-style); a slight ambient drift keeps
+        // the surface alive in dead calm. Separate clock drives the tide bob.
+        this.waterOffset += 0.012 + this.game.wind * 0.06;
+        this.waterTime = (this.waterTime || 0) + 0.016;
+        const bob = Math.sin(this.waterTime * 0.9) * 1.5;
+        const waterY = this.renderWaterY + bob;
 
-        // Water gradient
-        const gradient = ctx.createLinearGradient(0, waterY, 0, waterY + waterHeight);
-        gradient.addColorStop(0, 'rgba(30, 144, 255, 0.9)');
-        gradient.addColorStop(0.3, 'rgba(0, 100, 180, 1)');
-        gradient.addColorStop(1, 'rgba(0, 30, 80, 1)');
+        // Only draw the visible stretch (plus margins) instead of the whole world
+        const camera = this.game.camera;
+        const viewLeft = camera.x - 100;
+        const viewRight = camera.x + this.canvas.width / camera.zoom + 100;
 
-        ctx.fillStyle = gradient;
-        // Extend water way beyond world boundaries to fill at any zoom
-        ctx.fillRect(-500, waterY, this.game.worldWidth + 1000, waterHeight);
+        // Sudden death turns the rising water murky and angry
+        const suddenDeath = this.game.turnManager?.suddenDeathActive;
+        const layers = suddenDeath
+            ? [
+                { amp: 5, freq: 0.014, speed: 0.5, lift: 8, color: 'rgba(70, 30, 90, 0.85)' },
+                { amp: 6, freq: 0.019, speed: 1.0, lift: 4, color: 'rgba(95, 35, 110, 0.9)' },
+                { amp: 8, freq: 0.024, speed: 1.6, lift: 0, color: null }
+            ]
+            : [
+                { amp: 3, freq: 0.014, speed: 0.5, lift: 6, color: 'rgba(15, 75, 145, 0.85)' },
+                { amp: 4, freq: 0.019, speed: 1.0, lift: 3, color: 'rgba(20, 105, 190, 0.9)' },
+                { amp: 5, freq: 0.024, speed: 1.6, lift: 0, color: null }
+            ];
 
-        // Wave effect
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        for (let x = 0; x < this.game.worldWidth; x += 5) {
-            const waveY = waterY + Math.sin((x * 0.02) + this.waterOffset) * 3;
-            if (x === 0) {
-                ctx.moveTo(x, waveY);
-            } else {
-                ctx.lineTo(x, waveY);
+        const traceWave = (layer) => {
+            ctx.beginPath();
+            let first = true;
+            for (let x = viewLeft; x <= viewRight; x += 6) {
+                const waveY = waterY - layer.lift +
+                    Math.sin(x * layer.freq + this.waterOffset * layer.speed + layer.lift) * layer.amp;
+                if (first) {
+                    ctx.moveTo(x, waveY);
+                    first = false;
+                } else {
+                    ctx.lineTo(x, waveY);
+                }
             }
+        };
+
+        for (const layer of layers) {
+            if (layer.color) {
+                ctx.fillStyle = layer.color;
+            } else {
+                // Front layer carries the main body gradient
+                const gradient = ctx.createLinearGradient(0, waterY, 0, waterY + waterHeight);
+                if (suddenDeath) {
+                    gradient.addColorStop(0, 'rgba(150, 60, 160, 0.95)');
+                    gradient.addColorStop(0.3, 'rgba(90, 30, 110, 1)');
+                    gradient.addColorStop(1, 'rgba(30, 5, 45, 1)');
+                } else {
+                    gradient.addColorStop(0, 'rgba(30, 144, 255, 0.9)');
+                    gradient.addColorStop(0.3, 'rgba(0, 100, 180, 1)');
+                    gradient.addColorStop(1, 'rgba(0, 30, 80, 1)');
+                }
+                ctx.fillStyle = gradient;
+            }
+            traceWave(layer);
+            ctx.lineTo(viewRight, waterY + waterHeight);
+            ctx.lineTo(viewLeft, waterY + waterHeight);
+            ctx.closePath();
+            ctx.fill();
         }
+
+        // Sparkling crest highlight along the front wave
+        const front = layers[layers.length - 1];
+        ctx.strokeStyle = suddenDeath ? 'rgba(255, 180, 255, 0.4)' : 'rgba(255, 255, 255, 0.35)';
+        ctx.lineWidth = 2;
+        traceWave(front);
         ctx.stroke();
     }
     /**

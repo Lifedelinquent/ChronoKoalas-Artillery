@@ -147,8 +147,9 @@ function setupMenuHandlers() {
     const hostPanel = document.getElementById('host-panel');
     const menuButtons = document.querySelector('.menu-buttons');
 
-    // Currently selected map for generic start
+    // Currently selected map + game scheme for generic start
     window.selectedMap = null;
+    window.selectedScheme = null;
 
     // Host Game - Create peer and show room code
     btnHost.addEventListener('click', async () => {
@@ -351,12 +352,12 @@ function setupMenuHandlers() {
     btnPractice.addEventListener('click', async (e) => {
         e.target.blur(); // Remove focus so spacebar doesn't re-trigger
         const maps = await MapManager.getAllMaps();
-        menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
+        menuManager.showMapSelection(maps, (mapId, scheme) => {
             let customMap = null;
             if (mapId !== 'default') {
                 customMap = maps[mapId];
             }
-            startGame(true, null, customMap, suddenDeathTime);
+            startGame(true, null, customMap, scheme);
         });
     });
 
@@ -378,17 +379,17 @@ function setupMenuHandlers() {
         const options = {
             isPractice: false,
             customMap: window.selectedMap,
-            suddenDeathTime: window.selectedSuddenDeathTime
+            scheme: window.selectedScheme
         };
         networkManager.startGame(options);
     });
 
-    // Change Map (Lobby)
+    // Change Map & Scheme (Lobby)
     const btnChangeMap = document.getElementById('btn-change-map');
     if (btnChangeMap) {
         btnChangeMap.addEventListener('click', async () => {
             const maps = await MapManager.getAllMaps();
-            menuManager.showMapSelection(maps, (mapId, suddenDeathTime) => {
+            menuManager.showMapSelection(maps, (mapId, scheme) => {
                 let map = null;
                 let name = 'Random Map';
                 if (mapId !== 'default') {
@@ -397,11 +398,12 @@ function setupMenuHandlers() {
                 }
 
                 window.selectedMap = map;
-                window.selectedSuddenDeathTime = suddenDeathTime;
+                window.selectedScheme = scheme;
                 menuManager.updateLobbyMapName(name);
+                menuManager.updateLobbySchemeName(scheme?.name || 'Classic');
 
                 // Sync with other players
-                networkManager.sendMapSelection(map, suddenDeathTime);
+                networkManager.sendMapSelection(map, scheme);
             });
         });
     }
@@ -417,7 +419,7 @@ function setupMenuHandlers() {
         } else if (networkManager.isHost) {
             // Multiplayer rematch must go through the host so both clients
             // restart with the same fresh seed (local reset would desync)
-            networkManager.startGame({ customMap: window.selectedMap, suddenDeathTime: window.selectedSuddenDeathTime });
+            networkManager.startGame({ customMap: window.selectedMap, scheme: window.selectedScheme });
         } else {
             alert('Only the host can start a rematch.');
         }
@@ -485,8 +487,9 @@ function setupMenuHandlers() {
 
     networkManager.on('mapSelected', (data) => {
         window.selectedMap = data.map;
-        if (data.suddenDeathTime !== undefined) {
-            window.selectedSuddenDeathTime = data.suddenDeathTime;
+        if (data.scheme) {
+            window.selectedScheme = data.scheme;
+            menuManager.updateLobbySchemeName(data.scheme.name || 'Classic');
         }
         const name = data.map ? data.map.name : 'Random Map';
         menuManager.updateLobbyMapName(name);
@@ -613,7 +616,7 @@ function hideConnectionBanner() {
  * @param {boolean} isPractice - Single player practice mode
  * @param {Object} networkState - Initial state from network (multiplayer)
  */
-function startGame(isPractice = false, networkState = null, customMap = null, suddenDeathTime = null) {
+function startGame(isPractice = false, networkState = null, customMap = null, scheme = null) {
     const canvas = document.getElementById('game-canvas');
 
     // Destroy any previous game so we don't leak loops and input listeners
@@ -622,9 +625,9 @@ function startGame(isPractice = false, networkState = null, customMap = null, su
         game = null;
     }
 
-    // Sudden-death timer: network clients take it from the host's game state,
-    // otherwise use the value chosen in the map-selection screen.
-    const sdTime = networkState?.suddenDeathTime ?? suddenDeathTime;
+    // Game scheme (all match rules incl. sudden death): network clients take
+    // it from the host's game state, otherwise use the map-screen selection.
+    const activeScheme = networkState?.scheme ?? scheme ?? window.selectedScheme;
 
     // Create game instance
     game = new Game(canvas, {
@@ -632,7 +635,7 @@ function startGame(isPractice = false, networkState = null, customMap = null, su
         networkManager: isPractice ? null : networkManager,
         initialState: networkState,
         customMap: customMap || window.selectedMap,
-        suddenDeathTime: sdTime
+        scheme: activeScheme
     });
 
     // Expose game instance globally for debugging/export

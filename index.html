@@ -65,16 +65,13 @@
                 </div>
                 <!-- Custom maps appended here -->
             </div>
-            <div class="match-settings">
-                <span class="match-settings-label">⏱️ Sudden Death after</span>
-                <div id="sudden-death-options" class="sudden-death-options">
-                    <button class="sd-option" data-sd-time="60">1 min</button>
-                    <button class="sd-option" data-sd-time="120">2 min</button>
-                    <button class="sd-option selected" data-sd-time="180">3 min</button>
-                    <button class="sd-option" data-sd-time="300">5 min</button>
-                    <button class="sd-option" data-sd-time="600">10 min</button>
-                    <button class="sd-option" data-sd-time="-1">Never</button>
+            <div class="match-settings scheme-picker-row">
+                <span class="match-settings-label">🎛️ Game Scheme</span>
+                <div class="scheme-picker-controls">
+                    <select id="scheme-select" class="scheme-select"></select>
+                    <button id="btn-scheme-edit" class="menu-btn secondary small">⚙️ Customize</button>
                 </div>
+                <p id="scheme-summary" class="scheme-summary"></p>
             </div>
             <div class="modal-controls">
                 <button id="btn-map-select-cancel" class="menu-btn secondary">Cancel</button>
@@ -94,6 +91,20 @@
             <div class="modal-controls">
                 <button id="btn-map-name-cancel" class="menu-btn secondary">Cancel</button>
                 <button id="btn-map-name-save" class="menu-btn primary">Save Map</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Scheme Editor Modal -->
+    <div id="scheme-editor-modal" class="modal hidden">
+        <div class="modal-content scheme-editor-content">
+            <h2 class="modal-title">🎛️ Game Scheme Editor</h2>
+            <div id="scheme-editor-body"></div>
+            <div class="modal-controls scheme-editor-controls">
+                <span id="scheme-editor-status" class="scheme-editor-status"></span>
+                <button id="btn-scheme-save" class="menu-btn secondary">💾 Save as Preset</button>
+                <button id="btn-scheme-cancel" class="menu-btn secondary">Cancel</button>
+                <button id="btn-scheme-apply" class="menu-btn primary">Use This Scheme</button>
             </div>
         </div>
     </div>
@@ -201,7 +212,8 @@
             <div id="host-controls" class="hidden">
                 <div class="map-selection">
                     <span class="map-label">Map: <span id="current-map-name">Random Map</span></span>
-                    <button id="btn-change-map" class="menu-btn secondary small">Change Map</button>
+                    <span class="map-label">Scheme: <span id="current-scheme-name">Classic</span></span>
+                    <button id="btn-change-map" class="menu-btn secondary small">Change Map &amp; Scheme</button>
                 </div>
                 <button id="btn-start-game" class="menu-btn success" disabled>Start Game</button>
             </div>

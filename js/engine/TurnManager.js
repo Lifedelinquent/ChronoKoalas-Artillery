@@ -120,8 +120,10 @@ export class TurnManager extends EventEmitter {
             this.game.weaponManager.weapons = team.weapons;
 
             // Select the team's last used weapon, or default to bazooka
+            // (must have ammo AND not still be scheme-delay locked)
             const lastWeaponId = team.lastSelectedWeapon || 'bazooka';
-            if (team.weapons[lastWeaponId] && team.weapons[lastWeaponId].ammo > 0) {
+            const lastWeapon = team.weapons[lastWeaponId];
+            if (lastWeapon && lastWeapon.ammo > 0 && this.game.isWeaponAvailable(lastWeapon)) {
                 this.game.weaponManager.selectWeapon(lastWeaponId);
             } else {
                 this.game.weaponManager.selectWeapon('bazooka');

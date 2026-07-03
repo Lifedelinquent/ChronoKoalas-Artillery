@@ -558,6 +558,46 @@ body {
     box-shadow: 0 0 10px rgba(231, 76, 60, 0.5);
 }
 
+/* WA-style scrolling chevrons inside the fill bar. Slanted stripes stream
+   in the wind direction; JS sets --wind-stripe-duration by wind strength. */
+#wind-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 7px;
+    background: repeating-linear-gradient(
+        -60deg,
+        transparent 0 5px,
+        rgba(255, 255, 255, 0.55) 5px 8px
+    );
+    background-size: 16px 100%;
+}
+
+#wind-fill.wind-left-fill::after {
+    animation: wind-stripes var(--wind-stripe-duration, 1s) linear infinite;
+    transform: scaleX(-1); /* Mirror so chevrons stream leftward */
+}
+
+#wind-fill.wind-right-fill::after {
+    animation: wind-stripes var(--wind-stripe-duration, 1s) linear infinite;
+}
+
+@keyframes wind-stripes {
+    from { background-position-x: 0; }
+    to { background-position-x: 16px; }
+}
+
+/* Gust pulse when the wind changes each turn */
+.wind-meter.wind-gust {
+    animation: wind-gust-pulse 0.6s ease-out;
+}
+
+@keyframes wind-gust-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.7); transform: scale(1); }
+    40% { transform: scale(1.08); }
+    100% { box-shadow: 0 0 0 8px rgba(255, 255, 255, 0); transform: scale(1); }
+}
+
 #wind-value {
     font-size: 0.85rem;
     font-weight: 700;
@@ -1514,4 +1554,308 @@ body {
 
 .shadow-gold {
     box-shadow: 0 0 30px rgba(241, 196, 15, 0.2);
+}
+/* ==================== GAME SCHEME PICKER (map-select modal) ==================== */
+
+.scheme-picker-row {
+    gap: 10px;
+}
+
+.scheme-picker-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.scheme-select {
+    background: rgba(255, 255, 255, 0.08);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    color: var(--text-light);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    min-width: 220px;
+}
+
+.scheme-select option {
+    background: var(--bg-dark);
+    color: var(--text-light);
+}
+
+.scheme-summary {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin: 0;
+    text-align: center;
+}
+
+/* ==================== GAME SCHEME EDITOR MODAL ==================== */
+
+.scheme-editor-content {
+    max-width: 980px;
+    padding: 1.8rem 2rem;
+}
+
+#scheme-editor-body {
+    overflow-y: auto;
+    min-height: 0;
+    padding-right: 6px;
+}
+
+.scheme-header {
+    display: flex;
+    gap: 16px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-bottom: 1.2rem;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 14px;
+    border-radius: 10px;
+}
+
+.scheme-name-label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+.scheme-name-label input {
+    background: rgba(255, 255, 255, 0.08);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    color: var(--text-light);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 1rem;
+    width: 220px;
+}
+
+.scheme-delete-btn {
+    margin-left: auto;
+}
+
+.scheme-sections {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+    margin-bottom: 14px;
+}
+
+.scheme-section {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 14px;
+}
+
+.scheme-section h3 {
+    font-size: 1rem;
+    margin-bottom: 10px;
+    color: var(--accent-gold);
+}
+
+.scheme-row {
+    margin-bottom: 10px;
+}
+
+.scheme-row-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 3px;
+}
+
+.scheme-row-label {
+    font-size: 0.88rem;
+    color: var(--text-light);
+}
+
+.scheme-row-value {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: var(--accent-gold);
+}
+
+.scheme-slider {
+    width: 100%;
+}
+
+.scheme-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.scheme-toggle {
+    background: rgba(255, 255, 255, 0.08);
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px;
+    color: var(--text-muted);
+    padding: 5px 16px;
+    font-family: inherit;
+    font-weight: 800;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+
+.scheme-toggle.on {
+    border-color: var(--accent-gold);
+    background: rgba(241, 196, 15, 0.18);
+    color: var(--accent-gold);
+}
+
+/* --- Weapons table --- */
+
+.scheme-weapons {
+    margin-bottom: 8px;
+}
+
+.scheme-weapons-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.scheme-weapons-head h3 {
+    margin-bottom: 0;
+}
+
+.scheme-quick-fill {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.scheme-weapon-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 6px 14px;
+}
+
+.scheme-weapon-category {
+    grid-column: 1 / -1;
+    font-size: 0.8rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-muted);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    padding-bottom: 3px;
+    margin-top: 8px;
+}
+
+.scheme-weapon-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    padding: 4px 8px;
+}
+
+.scheme-weapon-icon {
+    width: 26px;
+    text-align: center;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+.scheme-weapon-icon img {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+    image-rendering: pixelated;
+    vertical-align: middle;
+}
+
+.scheme-weapon-name {
+    flex: 1;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.scheme-stepper {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.scheme-stepper button {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-light);
+    font-weight: 800;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+}
+
+.scheme-stepper button:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.scheme-stepper-value {
+    min-width: 26px;
+    text-align: center;
+    font-weight: 800;
+    font-size: 0.9rem;
+    color: var(--accent-gold);
+}
+
+.scheme-stepper-value.delay {
+    color: #a78bfa;
+}
+
+.scheme-stepper-value.zero {
+    color: var(--text-muted);
+}
+
+/* --- Footer --- */
+
+.scheme-editor-controls {
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.scheme-editor-status {
+    margin-right: auto;
+    color: #4ade80;
+    font-weight: 700;
+    font-size: 0.9rem;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.scheme-editor-status.visible {
+    opacity: 1;
+}
+
+/* Weapon bar: scheme-delay locked weapons */
+.weapon.locked {
+    filter: grayscale(0.9);
+}
+
+.weapon.locked .ammo-count {
+    background: rgba(80, 60, 140, 0.9);
+    color: #e6dcff;
+    font-size: 0.62rem;
 }

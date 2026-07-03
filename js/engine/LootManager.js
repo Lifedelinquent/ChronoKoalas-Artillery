@@ -429,7 +429,9 @@ export class LootManager {
             // Heal the koala
             const healAmount = crate.item.healAmount;
             const oldHealth = koala.health;
-            koala.health = Math.min(koala.maxHealth, koala.health + healAmount);
+            // Health crates can overheal past max — grabbing HP at full health
+            // pushes you above 100 (or the scheme's starting cap).
+            koala.health = koala.health + healAmount;
             const actualHeal = koala.health - oldHealth;
 
             console.log(`❤️ ${koala.name} collected ${crate.item.name}: +${actualHeal} HP`);

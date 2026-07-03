@@ -4,9 +4,16 @@
 
 import { MapManager } from '../utils/MapManager.js';
 import { globalAudioManager } from '../engine/AudioManager.js';
+import { SchemeEditor } from './SchemeEditor.js';
+import { getPresetSchemes, loadCustomSchemes, sanitizeScheme } from '../utils/GameScheme.js';
 
 export class MenuManager {
     constructor() {
+        // Game-scheme editor modal + the scheme currently picked in the
+        // map-selection modal (survives reopening the modal)
+        this.schemeEditor = new SchemeEditor();
+        this.selectedScheme = sanitizeScheme(null); // Classic defaults
+
         this.screens = {
             menu: document.getElementById('menu-screen'),
             lobby: document.getElementById('lobby-screen'),
@@ -279,24 +286,33 @@ export class MenuManager {
         // Track selected map
         let selectedMapId = 'default';
 
-        // Sudden-death duration selector (seconds of play before it can start;
-        // -1 means "Never"). Default to whatever option is pre-marked in the markup.
-        const sdOptions = document.getElementById('sudden-death-options');
-        let selectedSuddenDeathTime = 180;
-        if (sdOptions) {
-            const preselected = sdOptions.querySelector('.sd-option.selected');
-            if (preselected) {
-                selectedSuddenDeathTime = parseInt(preselected.dataset.sdTime, 10);
-            }
-            sdOptions.onclick = (e) => {
-                const btn = e.target.closest('.sd-option');
-                if (!btn) return;
-                const buttons = sdOptions.getElementsByClassName('sd-option');
-                for (let i = 0; i < buttons.length; i++) {
-                    buttons[i].classList.remove('selected');
+        // ---- Game scheme picker (presets + saved customs + Customize) ----
+        this.refreshSchemeSelect();
+
+        const schemeSelect = document.getElementById('scheme-select');
+        if (schemeSelect) {
+            schemeSelect.onchange = () => {
+                const found = this.findSchemeByName(schemeSelect.value);
+                if (found) {
+                    this.selectedScheme = sanitizeScheme(found);
+                    this.updateSchemeSummary();
                 }
-                btn.classList.add('selected');
-                selectedSuddenDeathTime = parseInt(btn.dataset.sdTime, 10);
+            };
+        }
+
+        const btnSchemeEdit = document.getElementById('btn-scheme-edit');
+        if (btnSchemeEdit) {
+            btnSchemeEdit.onclick = () => {
+                this.schemeEditor.open(
+                    this.selectedScheme,
+                    (scheme) => {
+                        // Applied from the editor: becomes the active scheme
+                        this.selectedScheme = scheme;
+                        this.refreshSchemeSelect();
+                        this.updateSchemeSummary();
+                    },
+                    () => this.refreshSchemeSelect()
+                );
             };
         }
 
@@ -409,8 +425,73 @@ export class MenuManager {
             modal.classList.add('hidden');
             hideDeleteConfirm(); // Also close delete modal if open
             const selectedCard = list.querySelector('.map-card.selected');
-            callback(selectedCard ? selectedCard.dataset.mapId : 'default', selectedSuddenDeathTime);
+            callback(selectedCard ? selectedCard.dataset.mapId : 'default', sanitizeScheme(this.selectedScheme));
         };
+    }
+
+    /**
+     * Look up a scheme by name across built-in presets and saved customs.
+     */
+    findSchemeByName(name) {
+        return getPresetSchemes().find(s => s.name === name) ||
+            loadCustomSchemes().find(s => s.name === name) ||
+            (this.selectedScheme?.name === name ? this.selectedScheme : null);
+    }
+
+    /**
+     * Rebuild the scheme dropdown in the map-selection modal: built-in
+     * presets, saved custom schemes, and (if needed) the transient scheme
+     * currently configured in the editor but not saved.
+     */
+    refreshSchemeSelect() {
+        const select = document.getElementById('scheme-select');
+        if (!select) return;
+
+        select.innerHTML = '';
+        const names = new Set();
+        for (const s of getPresetSchemes()) {
+            select.appendChild(new Option(s.name, s.name));
+            names.add(s.name);
+        }
+        for (const s of loadCustomSchemes()) {
+            if (names.has(s.name)) continue;
+            select.appendChild(new Option(`★ ${s.name}`, s.name));
+            names.add(s.name);
+        }
+        // Unsaved scheme applied straight from the editor
+        if (this.selectedScheme && !names.has(this.selectedScheme.name)) {
+            select.appendChild(new Option(`✎ ${this.selectedScheme.name}`, this.selectedScheme.name));
+        }
+        select.value = this.selectedScheme?.name || 'Classic';
+        this.updateSchemeSummary();
+    }
+
+    /**
+     * One-line description of the selected scheme under the dropdown.
+     */
+    updateSchemeSummary() {
+        const el = document.getElementById('scheme-summary');
+        if (!el || !this.selectedScheme) return;
+        const s = this.selectedScheme;
+        const sd = s.suddenDeathTime === -1 ? 'SD never' : `SD ${Math.round(s.suddenDeathTime / 60)}min`;
+        const parts = [
+            `${s.startingHealth} HP`,
+            `${s.koalasPerTeam}v${s.koalasPerTeam}`,
+            `${s.turnTime}s turns`,
+            sd,
+            `${Math.round(s.crateDropChance * 100)}% crates`,
+            `${s.mineCount} mines`
+        ];
+        if (s.artilleryMode) parts.push('no walking');
+        el.textContent = parts.join(' · ');
+    }
+
+    /**
+     * Update current scheme name in lobby
+     */
+    updateLobbySchemeName(name) {
+        const el = document.getElementById('current-scheme-name');
+        if (el) el.textContent = name;
     }
 
     /**

@@ -114,9 +114,11 @@ export class Physics {
             const fallAmount = entity.y - entity.peakY;
 
             if (fallAmount > 0) {
-                // INSTANT FALL DAMAGE - apply on landing if over threshold
-                if (entity.isAlive && fallAmount > 260) {
-                    const damage = Math.floor((fallAmount - 260) / 5);
+                // INSTANT FALL DAMAGE - apply on landing if over threshold.
+                // Scaled by the scheme's fall-damage setting (0 disables).
+                const fallMult = this.game.scheme?.fallDamageMultiplier ?? 1;
+                if (entity.isAlive && fallAmount > 260 && fallMult > 0) {
+                    const damage = Math.floor(((fallAmount - 260) / 5) * fallMult);
                     entity.takeDamage(damage);
                     console.log(`💥 ${entity.name} took ${damage} fall damage (fell ${fallAmount.toFixed(1)}px from peak Y:${entity.peakY.toFixed(1)})`);
 
@@ -124,7 +126,7 @@ export class Physics {
                     const currentKoala = this.game.getCurrentKoala();
                     const interactivePhase = this.game.phase === 'aiming' ||
                         this.game.phase === 'firing' || this.game.phase === 'armed';
-                    if (entity === currentKoala && interactivePhase) {
+                    if (damage > 0 && entity === currentKoala && interactivePhase) {
                         console.log('🛑 Fall damage ends turn!');
                         this.game.endTurn();
                     }

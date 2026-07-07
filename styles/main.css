@@ -363,6 +363,85 @@ body {
     font-weight: 600;
 }
 
+/* 4-player lobby roster */
+.lobby-player-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.lobby-player {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 10px 16px;
+    min-height: 46px;
+}
+
+.lobby-player.ready {
+    border-color: rgba(46, 204, 113, 0.6);
+}
+
+.lobby-player.disconnected {
+    opacity: 0.5;
+}
+
+.lobby-player.empty {
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.35);
+    font-style: italic;
+    border-style: dashed;
+}
+
+.lobby-player .player-name {
+    flex: 1;
+    font-weight: 600;
+}
+
+.lobby-player .player-status {
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.lobby-player.ready .player-status {
+    color: #2ecc71;
+    font-weight: 700;
+}
+
+.team-chip {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    flex-shrink: 0;
+    padding: 0;
+}
+
+.team-chip.own {
+    cursor: pointer;
+    border-color: #fff;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+}
+
+.team-chip.own:hover {
+    transform: scale(1.15);
+}
+
+.team-chip:disabled {
+    cursor: default;
+}
+
+.lobby-hint {
+    text-align: center;
+    font-size: 0.85rem;
+    color: rgba(255, 255, 255, 0.5);
+    margin-bottom: 20px;
+}
+
 .lobby-controls {
     display: flex;
     gap: 15px;
@@ -918,7 +997,10 @@ body {
 
 .team-hp .team-name {
     font-weight: 700;
-    width: 50px;
+    width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .hp-bar {
@@ -929,16 +1011,15 @@ body {
     overflow: hidden;
 }
 
-.team-red-hp .hp-bar div {
+/* Fill colour is set inline from the team colour (up to 4 teams) */
+.hp-bar .hp-fill {
     height: 100%;
-    background: var(--team-red);
     transition: width 0.5s ease;
 }
 
-.team-blue-hp .hp-bar div {
-    height: 100%;
-    background: var(--team-blue);
-    transition: width 0.5s ease;
+.team-hp.team-dead {
+    opacity: 0.45;
+    filter: grayscale(0.8);
 }
 
 /* ========== GAME OVER ========== */
@@ -1017,22 +1098,68 @@ body {
     color: var(--team-red);
 }
 
-.volume-slider-container {
-    width: 0;
-    overflow: hidden;
-    transition: width 0.3s ease;
+/* Sound mixer panel (opens above the control pill) */
+#sound-mixer-panel {
+    position: absolute;
+    bottom: calc(100% + 12px);
+    right: 0;
+    width: 280px;
+    background: rgba(10, 15, 25, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 12px;
+    padding: 14px 16px;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+#sound-mixer-panel.hidden {
+    display: none;
+}
+
+.mixer-title {
+    color: var(--accent-gold);
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+    text-align: center;
+}
+
+.mixer-row {
     display: flex;
     align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
 }
 
-#global-audio-controls:hover .volume-slider-container {
-    width: 80px;
+.mixer-row:last-child {
+    margin-bottom: 0;
 }
 
-#global-volume-slider {
-    width: 80px;
+.mixer-row label {
+    color: var(--text-light);
+    font-size: 0.85rem;
+    width: 92px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.mixer-slider {
+    flex: 1;
+    min-width: 0;
     cursor: pointer;
     accent-color: var(--accent-gold);
+}
+
+.mixer-value {
+    color: var(--text-light);
+    opacity: 0.7;
+    font-size: 0.75rem;
+    width: 36px;
+    text-align: right;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
 }
 
 /* ========== RESPONSIVE ========== */

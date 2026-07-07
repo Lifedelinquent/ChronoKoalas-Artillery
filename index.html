@@ -193,16 +193,8 @@
                 <div class="room-code">Room: <span id="room-code-display">------</span></div>
             </div>
 
-            <div class="teams-container">
-                <div class="team team-red">
-                    <h3>🔴 Red Team</h3>
-                    <ul id="team-red-list"></ul>
-                </div>
-                <div class="team team-blue">
-                    <h3>🔵 Blue Team</h3>
-                    <ul id="team-blue-list"></ul>
-                </div>
-            </div>
+            <div id="lobby-player-list" class="lobby-player-list"></div>
+            <p class="lobby-hint">Up to 4 players. Click your colour chip to switch teams — players sharing a colour fight as allies.</p>
 
             <div class="lobby-controls">
                 <button id="btn-ready" class="menu-btn primary">Ready!</button>
@@ -400,23 +392,8 @@
             </div>
         </div>
 
-        <!-- Team Health Bars -->
-        <div id="team-health">
-            <div class="team-hp team-red-hp">
-                <span class="team-name">Red</span>
-                <div class="hp-bar">
-                    <div id="red-hp-fill"></div>
-                </div>
-                <span id="red-hp-value">300</span>
-            </div>
-            <div class="team-hp team-blue-hp">
-                <span class="team-name">Blue</span>
-                <div class="hp-bar">
-                    <div id="blue-hp-fill"></div>
-                </div>
-                <span id="blue-hp-value">300</span>
-            </div>
-        </div>
+        <!-- Team Health Bars (one row per team, built by Game.buildTeamHealthUI) -->
+        <div id="team-health"></div>
     </div>
 
     <!-- Game Over Screen -->
@@ -434,10 +411,36 @@
 
     <!-- Global Audio Controls -->
     <div id="global-audio-controls">
-        <button id="global-mute-toggle" class="audio-btn" title="Toggle Mute">🔊</button>
-        <div class="volume-slider-container">
-            <input type="range" id="global-volume-slider" min="0" max="1" step="0.01" value="0.5" title="Volume">
+        <div id="sound-mixer-panel" class="hidden">
+            <div class="mixer-title">Sound Settings</div>
+            <div class="mixer-row">
+                <label for="mix-master">🔊 Master</label>
+                <input type="range" id="mix-master" class="mixer-slider" data-channel="master" min="0" max="1" step="0.01">
+                <span class="mixer-value" data-channel="master">50%</span>
+            </div>
+            <div class="mixer-row">
+                <label for="mix-music">🎵 Music</label>
+                <input type="range" id="mix-music" class="mixer-slider" data-channel="music" min="0" max="1" step="0.01">
+                <span class="mixer-value" data-channel="music">50%</span>
+            </div>
+            <div class="mixer-row">
+                <label for="mix-ambient">🌿 Ambient</label>
+                <input type="range" id="mix-ambient" class="mixer-slider" data-channel="ambient" min="0" max="1" step="0.01">
+                <span class="mixer-value" data-channel="ambient">35%</span>
+            </div>
+            <div class="mixer-row">
+                <label for="mix-sfx">💥 Effects</label>
+                <input type="range" id="mix-sfx" class="mixer-slider" data-channel="sfx" min="0" max="1" step="0.01">
+                <span class="mixer-value" data-channel="sfx">80%</span>
+            </div>
+            <div class="mixer-row">
+                <label for="mix-voice">🐨 Voices</label>
+                <input type="range" id="mix-voice" class="mixer-slider" data-channel="voice" min="0" max="1" step="0.01">
+                <span class="mixer-value" data-channel="voice">80%</span>
+            </div>
         </div>
+        <button id="sound-mixer-toggle" class="audio-btn" title="Sound Settings">🎚️</button>
+        <button id="global-mute-toggle" class="audio-btn" title="Toggle Mute">🔊</button>
     </div>
 
     <!-- Scripts -->

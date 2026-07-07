@@ -31,11 +31,8 @@ export class DOMCache {
         this.elements.powerBarContainer = document.getElementById('power-bar-container');
         this.elements.powerFill = document.getElementById('power-fill');
 
-        // Team Health
-        this.elements.redHpFill = document.getElementById('red-hp-fill');
-        this.elements.redHpValue = document.getElementById('red-hp-value');
-        this.elements.blueHpFill = document.getElementById('blue-hp-fill');
-        this.elements.blueHpValue = document.getElementById('blue-hp-value');
+        // (Team health rows are built dynamically per team — see
+        // Game.buildTeamHealthUI — so they aren't cached here.)
 
         // Weapon Bar - Cache the weapon elements list once
         this.lists.weaponElements = document.querySelectorAll('.weapon');

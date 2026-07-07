@@ -326,8 +326,10 @@ export class TurnManager extends EventEmitter {
 
         this.game.updateTeamHealth();
 
+        // Game over when every surviving team is on the same side (allied
+        // teams share an alliance colour, so a 2v2 ends when one colour falls)
         const aliveTeams = this.game.teams.filter(t => t.isAlive());
-        if (aliveTeams.length <= 1) {
+        if (this.game.countAliveAlliances(aliveTeams) <= 1) {
             this.game.endGame(aliveTeams[0] || null);
             return;
         }
@@ -371,7 +373,7 @@ export class TurnManager extends EventEmitter {
             this.game.updateTeamHealth();
 
             const aliveTeams = this.game.teams.filter(t => t.isAlive());
-            if (aliveTeams.length <= 1) {
+            if (this.game.countAliveAlliances(aliveTeams) <= 1) {
                 this.game.endGame(aliveTeams[0] || null);
                 return;
             }

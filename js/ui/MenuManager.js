@@ -6,6 +6,7 @@ import { MapManager } from '../utils/MapManager.js';
 import { globalAudioManager } from '../engine/AudioManager.js';
 import { SchemeEditor } from './SchemeEditor.js';
 import { getPresetSchemes, loadCustomSchemes, sanitizeScheme } from '../utils/GameScheme.js';
+import { TEAM_COLORS, TEAM_COLOR_LABELS, nextTeamColor } from '../utils/TeamColors.js';
 
 export class MenuManager {
     constructor() {
@@ -139,9 +140,9 @@ export class MenuManager {
             hostControls.classList.toggle('hidden', !isHost);
         }
 
-        // Clear player lists
-        document.getElementById('team-red-list').innerHTML = '';
-        document.getElementById('team-blue-list').innerHTML = '';
+        // Clear player list until the first roster update lands
+        const list = document.getElementById('lobby-player-list');
+        if (list) list.innerHTML = '';
         this.players = [];
 
         // Reset ready button
@@ -153,96 +154,89 @@ export class MenuManager {
     }
 
     /**
-     * Add a player to the lobby (alias for addPlayer)
+     * Render the lobby roster: up to 4 players, each with a clickable colour
+     * chip (own row only — clicking cycles your colour). Players sharing a
+     * colour are allies, so this is also the team picker.
+     * main.js sets this.onColorCycle to push the change to the network.
      */
-    addPlayerToLobby(player, team) {
-        this.addPlayer(player, team);
-    }
+    renderLobbyRoster(roster, mySlot, isHost) {
+        const list = document.getElementById('lobby-player-list');
+        if (!list) return;
 
-    /**
-     * Add a player to the lobby
-     */
-    addPlayer(player, team) {
-        // Prevent duplicates
-        if (this.players.find(p => p.id === player.id)) {
-            return;
+        this.players = roster;
+        list.innerHTML = '';
+
+        for (const p of roster) {
+            const row = document.createElement('div');
+            row.className = 'lobby-player' +
+                (p.ready ? ' ready' : '') +
+                (p.connected === false ? ' disconnected' : '');
+
+            const chip = document.createElement('button');
+            chip.className = 'team-chip';
+            chip.style.background = TEAM_COLORS[p.color] || '#888';
+            chip.title = p.slot === mySlot
+                ? 'Click to change your team colour (same colour = allies)'
+                : `${TEAM_COLOR_LABELS[p.color] || p.color} team`;
+            if (p.slot === mySlot) {
+                chip.classList.add('own');
+                chip.addEventListener('click', () => {
+                    if (this.onColorCycle) this.onColorCycle(nextTeamColor(p.color));
+                });
+            } else {
+                chip.disabled = true;
+            }
+
+            const name = document.createElement('span');
+            name.className = 'player-name';
+            name.textContent = `🐨 ${p.name}` +
+                (p.slot === 0 ? ' 👑' : '') +
+                (p.slot === mySlot ? ' (You)' : '');
+
+            const status = document.createElement('span');
+            status.className = 'player-status';
+            status.textContent = p.connected === false ? '⚡ reconnecting…' : (p.ready ? '✓ Ready' : 'Not ready');
+
+            row.appendChild(chip);
+            row.appendChild(name);
+            row.appendChild(status);
+            list.appendChild(row);
         }
 
-        this.players.push({ ...player, team, ready: false });
-
-        const listId = team === 'red' ? 'team-red-list' : 'team-blue-list';
-        const list = document.getElementById(listId);
-
-        const li = document.createElement('li');
-        li.id = `player-${player.id}`;
-        li.innerHTML = `
-            <span class="player-icon">🐨</span>
-            <span class="player-name">${player.name}</span>
-        `;
-        list.appendChild(li);
-
-        this.updateStartButton();
-    }
-
-    /**
-     * Remove a player from the lobby
-     */
-    removePlayer(playerId) {
-        this.players = this.players.filter(p => p.id !== playerId);
-
-        const li = document.getElementById(`player-${playerId}`);
-        if (li) {
-            li.remove();
+        // Empty seats
+        for (let i = roster.length; i < 4; i++) {
+            const row = document.createElement('div');
+            row.className = 'lobby-player empty';
+            row.textContent = 'Waiting for player…';
+            list.appendChild(row);
         }
 
-        this.updateStartButton();
+        if (isHost) this.updateStartButton(roster);
     }
 
     /**
-     * Update player ready status (alias for setPlayerReady)
+     * Update start button state (host only). Needs 2+ connected players, all
+     * ready, and at least two different colours (someone to fight against).
      */
-    updatePlayerReady(playerId, ready) {
-        this.setPlayerReady(playerId, ready);
-    }
-
-    /**
-     * Set player ready status
-     */
-    setPlayerReady(playerId, ready) {
-        const player = this.players.find(p => p.id === playerId);
-        if (player) {
-            player.ready = ready;
-        }
-
-        const li = document.getElementById(`player-${playerId}`);
-        if (li) {
-            li.classList.toggle('ready', ready);
-        }
-
-        this.updateStartButton();
-    }
-
-    /**
-     * Update start button state
-     */
-    updateStartButton() {
+    updateStartButton(roster = this.players) {
         const btn = document.getElementById('btn-start-game');
         if (!btn) return;
 
-        // Need at least 2 players, all ready
-        const playerCount = this.players.length;
-        const readyCount = this.players.filter(p => p.ready).length;
-        const canStart = playerCount >= 2 && readyCount === playerCount;
+        const connected = roster.filter(p => p.connected !== false);
+        const readyCount = connected.filter(p => p.ready).length;
+        const colorCount = new Set(connected.map(p => p.color)).size;
+        const canStart = connected.length >= 2 && readyCount === connected.length && colorCount >= 2;
 
-        console.log(`🎮 Start button check: ${readyCount}/${playerCount} ready, canStart: ${canStart}`);
+        console.log(`🎮 Start button check: ${readyCount}/${connected.length} ready, ${colorCount} colours, canStart: ${canStart}`);
 
         btn.disabled = !canStart;
 
-        // Update button text to show status
-        if (playerCount < 2) {
+        if (connected.length < 2) {
             btn.textContent = 'Waiting for players...';
-        } else if (readyCount < playerCount) {
-            btn.textContent = `Waiting (${readyCount}/${playerCount} ready)`;
+        } else if (readyCount < connected.length) {
+            btn.textContent = `Waiting (${readyCount}/${connected.length} ready)`;
+        } else if (colorCount < 2) {
+            btn.textContent = 'Pick at least 2 team colours';
         } else {
             btn.textContent = 'Start Game';
         }

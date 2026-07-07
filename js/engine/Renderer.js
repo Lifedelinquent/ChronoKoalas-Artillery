@@ -40,6 +40,51 @@ export class Renderer {
             // Use same transparent loader for weapons
             this.loadTransparentSprite(`assets/weapon_${w}.png`, `weapon_${w}`);
         });
+
+        // Tinted koala variants for teams beyond red/blue (green/yellow in
+        // 4-player games) — built lazily from the red sprite, cached per colour
+        this.tintedSprites = {};
+    }
+
+    /**
+     * Sprite (Image or canvas) for a team colour. Red and blue have real
+     * art; any other colour gets the red sprite recoloured with a
+     * source-atop overlay so 4-player squads stay tellable apart.
+     */
+    getTeamSprite(color) {
+        const c = (color || '').toLowerCase();
+        if (c === '#3498db') return this.sprites.blue;
+        if (c === '#e74c3c' || !c) return this.sprites.red;
+
+        const base = this.sprites.red;
+        // Rebuild the tint if the base sprite was swapped for the processed
+        // (background-removed) version after we cached
+        const cached = this.tintedSprites[c];
+        if (cached && cached.base === base) return cached.canvas;
+
+        if (!base.complete || base.naturalHeight === 0) return base;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = base.naturalWidth;
+        canvas.height = base.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(base, 0, 0);
+        ctx.globalCompositeOperation = 'source-atop';
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        this.tintedSprites[c] = { base, canvas };
+        return canvas;
+    }
+
+    /**
+     * True when a team sprite (Image or tinted canvas) is drawable
+     */
+    isSpriteReady(sprite) {
+        if (!sprite) return false;
+        if (sprite instanceof HTMLCanvasElement) return true;
+        return sprite.complete && sprite.naturalHeight !== 0;
     }
 
     /**
@@ -372,13 +417,10 @@ export class Renderer {
         }
 
         // Determine sprite based on team color
-        let sprite = this.sprites.red;
-        if (koala.team.color.toLowerCase() === '#3498db') {
-            sprite = this.sprites.blue;
-        }
+        const sprite = this.getTeamSprite(koala.team.color);
 
         // Draw Koala Sprite
-        if (sprite.complete && sprite.naturalHeight !== 0) {
+        if (this.isSpriteReady(sprite)) {
             const size = 48; // Original size
             // Draw centered but slightly moved up to align feet with ground
             ctx.drawImage(sprite, -size / 2, -size / 2 - 2, size, size);
@@ -484,13 +526,10 @@ export class Renderer {
         ctx.rotate(Math.PI / 2 + (koala.onGround ? 0 : (koala.spin || 0)));
 
         // Determine sprite based on team color
-        let sprite = this.sprites.red;
-        if (koala.team.color.toLowerCase() === '#3498db') {
-            sprite = this.sprites.blue;
-        }
+        const sprite = this.getTeamSprite(koala.team.color);
 
         // Draw faded koala sprite
-        if (sprite.complete && sprite.naturalHeight !== 0) {
+        if (this.isSpriteReady(sprite)) {
             const size = 48;
             ctx.drawImage(sprite, -size / 2, -size / 2 - 2, size, size);
         } else {

@@ -18,6 +18,7 @@ import { DOMCache } from '../utils/DOMCache.js';
 import { TurnManager } from './TurnManager.js';
 import { WeatherSystem } from './WeatherSystem.js';
 import { sanitizeScheme } from '../utils/GameScheme.js';
+import { TEAM_COLORS, TEAM_COLOR_LABELS } from '../utils/TeamColors.js';
 
 export class Game extends EventEmitter {
     // Phases during which the active player is in control of their koala. If that
@@ -350,10 +351,26 @@ export class Game extends EventEmitter {
      */
     createTeams() {
         const koalaCount = this.scheme.koalasPerTeam;
-        const teamConfigs = [
-            { name: 'Red Team', color: '#e74c3c', koalaCount },
-            { name: 'Blue Team', color: '#3498db', koalaCount }
-        ];
+
+        // Multiplayer: one squad per player, in gameState.players order (so
+        // teams[i] is driven by players[i] on every client). A player's
+        // colour is their alliance — same colour means allied squads.
+        // Practice keeps the classic red-vs-blue setup.
+        const players = this.options.initialState?.players;
+        let teamConfigs;
+        if (Array.isArray(players) && players.length >= 2) {
+            teamConfigs = players.map(p => ({
+                name: p.name || `${TEAM_COLOR_LABELS[p.color] || p.color} Team`,
+                color: TEAM_COLORS[p.color] || p.color,
+                alliance: p.color,
+                koalaCount
+            }));
+        } else {
+            teamConfigs = [
+                { name: 'Red Team', color: '#e74c3c', alliance: 'red', koalaCount },
+                { name: 'Blue Team', color: '#3498db', alliance: 'blue', koalaCount }
+            ];
+        }
 
         // STEP 1: Pre-scan the entire map for valid spawn points
         // This must happen AFTER the map is loaded (which it is, since start() awaits loadCustomMap)
@@ -373,34 +390,45 @@ export class Game extends EventEmitter {
 
         console.log('🎯 Custom spawn markers:', hasCustomSpawns ? JSON.stringify(customSpawns) : 'None');
 
-        // Bias teams toward opposite sides of the map for fairer starts.
+        // Bias teams toward separate slices of the map for fairer starts.
         // Use the actual horizontal extent of standable terrain (custom maps may
-        // not fill the world width), then randomly assign each team a side using
-        // seeded RNG so all multiplayer clients agree. Only affects the random
-        // (markerless) spawn path — explicit markers always win.
+        // not fill the world width), split it into one band per team, and deal
+        // the bands out in seeded-shuffled order so all multiplayer clients
+        // agree. Only affects the random (markerless) spawn path — explicit
+        // markers always win.
         const rand = () => this.seededRandom ? this.seededRandom() : Math.random();
-        let midX = this.worldWidth / 2;
+        let extentMinX = 0, extentMaxX = this.worldWidth;
         if (this.validSpawnPoints.length > 0) {
             let minX = Infinity, maxX = -Infinity;
             for (const p of this.validSpawnPoints) {
                 if (p.x < minX) minX = p.x;
                 if (p.x > maxX) maxX = p.x;
             }
-            midX = (minX + maxX) / 2;
+            extentMinX = minX;
+            extentMaxX = maxX;
         }
-        const team1OnLeft = rand() < 0.5;
-        const teamSides = [
-            team1OnLeft ? 'left' : 'right',
-            team1OnLeft ? 'right' : 'left'
-        ];
-        console.log(`⚔️ Team sides → ${teamConfigs[0].name}: ${teamSides[0]}, ${teamConfigs[1].name}: ${teamSides[1]} (midX=${Math.round(midX)})`);
+        const bandCount = teamConfigs.length;
+        const bandWidth = (extentMaxX - extentMinX) / bandCount;
+        const bandOrder = [...Array(bandCount).keys()];
+        for (let i = bandOrder.length - 1; i > 0; i--) {
+            const j = Math.floor(rand() * (i + 1));
+            [bandOrder[i], bandOrder[j]] = [bandOrder[j], bandOrder[i]];
+        }
+        const teamBands = bandOrder.map(k => ({
+            minX: extentMinX + k * bandWidth,
+            maxX: extentMinX + (k + 1) * bandWidth
+        }));
+        console.log('⚔️ Team spawn bands →', teamConfigs.map((c, i) =>
+            `${c.name}: ${Math.round(teamBands[i].minX)}-${Math.round(teamBands[i].maxX)}`).join(', '));
 
         teamConfigs.forEach((config, teamIndex) => {
-            const team = new Team(config.name, config.color);
-            const teamKey = teamIndex === 0 ? 'team1' : 'team2';
+            const team = new Team(config.name, config.color, config.alliance);
+            // Custom-map spawn markers only define two groups; teams beyond
+            // the second fall back to random band spawning (empty marker list)
+            const teamKey = teamIndex === 0 ? 'team1' : (teamIndex === 1 ? 'team2' : null);
 
             // Get spawn markers for this team (if any)
-            const teamMarkers = customSpawns?.[teamKey] || [];
+            const teamMarkers = (teamKey && customSpawns?.[teamKey]) || [];
             console.log(`📍 ${config.name}: ${teamMarkers.length} spawn marker(s)`);
 
             // Place koalas on terrain
@@ -419,10 +447,9 @@ export class Game extends EventEmitter {
                 // PRIORITY 2: No markers - use random valid spawn
                 else {
                     pos = this.findRandomSpawnPosition(spawnedPositions, minSpawnDistance, {
-                        preferredSide: teamSides[teamIndex],
-                        midX
+                        band: teamBands[teamIndex]
                     });
-                    console.log(`🐨 ${config.name} Koala ${i + 1}: Random spawn (${teamSides[teamIndex]}) → (${pos?.x}, ${pos?.y})`);
+                    console.log(`🐨 ${config.name} Koala ${i + 1}: Random spawn → (${pos?.x}, ${pos?.y})`);
                 }
 
                 if (pos) {
@@ -473,7 +500,49 @@ export class Game extends EventEmitter {
         // Register all koalas in spatial grid
         this.rebuildSpatialGrid();
 
+        this.buildTeamHealthUI();
         this.updateTeamHealth();
+    }
+
+    /**
+     * Build one HUD health bar per team. The markup used to be two static
+     * red/blue rows in index.html; with up to 4 squads the rows are generated
+     * here and coloured from the team.
+     */
+    buildTeamHealthUI() {
+        const container = document.getElementById('team-health');
+        this.teamHpEls = [];
+        if (!container) return;
+
+        container.innerHTML = '';
+        for (const team of this.teams) {
+            const row = document.createElement('div');
+            row.className = 'team-hp';
+
+            const name = document.createElement('span');
+            name.className = 'team-name';
+            name.textContent = team.name;
+            name.style.color = team.color;
+            name.title = team.name;
+
+            const bar = document.createElement('div');
+            bar.className = 'hp-bar';
+            const fill = document.createElement('div');
+            fill.className = 'hp-fill';
+            fill.style.background = team.color;
+            bar.appendChild(fill);
+
+            const value = document.createElement('span');
+            value.className = 'hp-value';
+            value.textContent = team.getTotalHealth();
+
+            row.appendChild(name);
+            row.appendChild(bar);
+            row.appendChild(value);
+            container.appendChild(row);
+
+            this.teamHpEls.push({ row, fill, value });
+        }
     }
 
     /**
@@ -675,17 +744,15 @@ export class Game extends EventEmitter {
             [shuffledPoints[i], shuffledPoints[j]] = [shuffledPoints[j], shuffledPoints[i]];
         }
 
-        // 3b. Bias toward the team's side of the map: put preferred-side points
-        // first (still randomly ordered within the side), with the rest kept as
-        // fallback so we never fail to place a koala on cramped maps.
+        // 3b. Bias toward the team's slice of the map: put in-band points
+        // first (still randomly ordered within the band), with the rest kept
+        // as fallback so we never fail to place a koala on cramped maps.
         let orderedPoints = shuffledPoints;
-        if (options.preferredSide && options.midX !== undefined) {
+        if (options.band) {
             const near = [], far = [];
             for (const p of shuffledPoints) {
-                const onSide = options.preferredSide === 'left'
-                    ? p.x <= options.midX
-                    : p.x >= options.midX;
-                (onSide ? near : far).push(p);
+                const inBand = p.x >= options.band.minX && p.x <= options.band.maxX;
+                (inBand ? near : far).push(p);
             }
             orderedPoints = near.concat(far);
         }
@@ -801,11 +868,15 @@ export class Game extends EventEmitter {
      * Get a fun koala name
      */
     getKoalaName(teamIndex, index) {
+        // One pool per team slot. Names must stay unique across ALL teams:
+        // network sync messages identify koalas by name (findKoalaByName).
         const names = [
             ['DelinquentKoala', 'Sleepy Steve', 'Chompy Charlie'],
-            ['ChronoKoala', 'Koala Kate', 'Dropbear Dan']
+            ['ChronoKoala', 'Koala Kate', 'Dropbear Dan'],
+            ['Gumleaf Gus', 'Wombat Wally', 'Eucalyptus Ed'],
+            ['Bushfire Betty', 'Outback Ozzy', 'Didgeri Dee']
         ];
-        return names[teamIndex][index] || `Koala ${index + 1}`;
+        return names[teamIndex]?.[index] || `Koala ${teamIndex + 1}-${index + 1}`;
     }
 
     /**
@@ -2446,15 +2517,21 @@ export class Game extends EventEmitter {
             return;
         }
 
-        // Handle Surrender (white flag - the other team wins)
+        // Handle Surrender (white flag). With more than two sides the match
+        // keeps going: the surrendering squad dies and play moves on; the
+        // normal alliance win check in processDamage ends the game when only
+        // one colour is left. (Replayed on every client, so it's symmetric.)
         if (weapon.type === 'surrender') {
             console.log('🏳️ Surrender!');
             if (this.networkManager && !this.isPractice && this.isMyTurn()) {
                 this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
             }
-            const currentTeam = this.getCurrentTeam();
-            const winner = this.teams.find(t => t !== currentTeam && t.isAlive()) || null;
-            this.endGame(winner);
+            this.forfeitTeam(this.currentTeamIndex);
+            this.phase = 'damage';
+            const surrenderTurn = this.turnManager.turnCounter;
+            this.scheduleDelayedAction(600, () => {
+                if (this.turnManager.turnCounter === surrenderTurn) this.processDamage();
+            });
             return;
         }
 
@@ -3903,10 +3980,17 @@ export class Game extends EventEmitter {
         const team = this.getCurrentTeam();
         const indicator = this.dom.elements.turnIndicator;
         if (indicator && team) {
-            // In multiplayer, show if it's your turn or opponent's turn
+            // In multiplayer, show if it's your, an ally's, or an enemy's turn
             if (!this.isPractice && this.networkManager) {
                 const isMyTurn = this.isMyTurn();
-                const turnText = isMyTurn ? 'Your Turn!' : 'Opponent\'s Turn';
+                let turnText;
+                if (isMyTurn) {
+                    turnText = 'Your Turn!';
+                } else if (team.alliance && team.alliance === this.getMyAlliance()) {
+                    turnText = "Ally's Turn";
+                } else {
+                    turnText = 'Enemy Turn';
+                }
                 indicator.innerHTML = `<span id="current-team" style="color: ${team.color}; ${isMyTurn ? 'font-weight: bold; text-shadow: 0 0 10px ' + team.color : ''}">${team.name}</span> - ${turnText}`;
             } else {
                 indicator.innerHTML = `<span id="current-team" style="color: ${team.color}">${team.name}</span>'s Turn`;
@@ -3971,21 +4055,22 @@ export class Game extends EventEmitter {
     }
 
     updateTeamHealth() {
+        if (!this.teamHpEls) return;
         for (let i = 0; i < this.teams.length; i++) {
             const team = this.teams[i];
+            const els = this.teamHpEls[i];
+            if (!els) continue;
+
             const totalHealth = team.getTotalHealth();
             // Sum real max health (scheme-defined, not always 100 per koala)
             const maxHealth = team.koalas.reduce((sum, k) => sum + k.maxHealth, 0) || 1;
             const percent = (totalHealth / maxHealth) * 100;
 
-            // Use cached elements
-            const fillEl = i === 0 ? this.dom.elements.redHpFill : this.dom.elements.blueHpFill;
-            const valueEl = i === 0 ? this.dom.elements.redHpValue : this.dom.elements.blueHpValue;
-
             // Overhealing can push totalHealth above maxHealth; clamp the bar
             // width so it doesn't overflow, but show the true HP number.
-            if (fillEl) fillEl.style.width = Math.min(100, percent) + '%';
-            if (valueEl) valueEl.textContent = totalHealth;
+            els.fill.style.width = Math.min(100, percent) + '%';
+            els.value.textContent = totalHealth;
+            els.row.classList.toggle('team-dead', !team.isAlive());
         }
     }
 
@@ -4014,10 +4099,62 @@ export class Game extends EventEmitter {
             this.audioManager.playDefeat();
         }
 
+        // Winner display: a lone squad wins under its own name; allied squads
+        // (same colour) win together as "<Colour> Team".
+        let winnerDisplay = null;
+        if (winningTeam) {
+            const allies = this.teams.filter(t => t.alliance === winningTeam.alliance);
+            winnerDisplay = allies.length > 1
+                ? {
+                    name: `${TEAM_COLOR_LABELS[winningTeam.alliance] || winningTeam.alliance} Team (${allies.map(t => t.name).join(' & ')})`,
+                    color: winningTeam.color
+                }
+                : { name: winningTeam.name, color: winningTeam.color };
+        }
+
         this.emit('gameOver', {
-            winner: winningTeam,
+            winner: winnerDisplay,
             stats: this.calculateStats()
         });
+    }
+
+    /**
+     * Number of distinct alliances still standing. The match is over when
+     * this drops to 1 (or 0 — mutual destruction).
+     */
+    countAliveAlliances(aliveTeams = this.teams.filter(t => t.isAlive())) {
+        return new Set(aliveTeams.map(t => t.alliance || t.color)).size;
+    }
+
+    /**
+     * Alliance colour of the local player's squad (null in practice)
+     */
+    getMyAlliance() {
+        if (this.isPractice || !this.networkManager) return null;
+        for (let i = 0; i < this.teams.length; i++) {
+            if (this.networkManager.isMyTeam(i)) {
+                return this.teams[i].alliance;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Kill an entire team (player left and never came back, or surrendered).
+     * Deterministic, so every client can apply it from the same message.
+     */
+    forfeitTeam(teamIndex) {
+        const team = this.teams[teamIndex];
+        if (!team) return;
+        console.log(`🏳️ ${team.name} forfeits`);
+        for (const koala of team.koalas) {
+            if (koala.isAlive) {
+                koala.health = 0;
+                koala.die();
+                this.createDeathEffect(koala);
+            }
+        }
+        this.updateTeamHealth();
     }
 
     /**
@@ -4285,7 +4422,6 @@ export class Game extends EventEmitter {
     adoptRemoteTurn(data, label) {
         if (this.isPractice || !this.networkManager) return false;
 
-        const myTeam = this.networkManager.isHost ? 0 : 1;
         if (data.teamIndex === undefined) {
             if (this.isMyTurn()) {
                 console.warn(`Blocked remote ${label} during local turn (no teamIndex)`);
@@ -4293,7 +4429,7 @@ export class Game extends EventEmitter {
             }
             return true;
         }
-        if (data.teamIndex === myTeam) {
+        if (this.networkManager.isMyTeam(data.teamIndex)) {
             console.warn(`Blocked remote ${label} claiming to be our own team`);
             return false;
         }

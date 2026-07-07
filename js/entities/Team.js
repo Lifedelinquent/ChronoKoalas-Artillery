@@ -3,9 +3,13 @@
  */
 
 export class Team {
-    constructor(name, color) {
+    constructor(name, color, alliance = null) {
         this.name = name;
         this.color = color;
+        // Alliance id (colour name, e.g. 'red'). Teams sharing an alliance
+        // are allies: they don't win against each other. Defaults to the
+        // team's own colour so every team is its own alliance (FFA/1v1).
+        this.alliance = alliance || color;
         this.koalas = [];
         this.weapons = null; // Team-specific inventory
         this.buffs = {}; // Crate utility buffs (doubleDamage, lowGravity, fastWalk)

@@ -151,9 +151,10 @@ function setupMenuHandlers() {
     window.selectedMap = null;
     window.selectedScheme = null;
 
-    // Host Game - Create peer and show room code
+    // Host Game - create the room, then sit in the lobby while up to 3
+    // guests join (the room code is shown in the lobby header)
     btnHost.addEventListener('click', async () => {
-        // Hide menu buttons, show host panel
+        // Hide menu buttons, show host panel while the room is created
         menuButtons.classList.add('hidden');
         hostPanel.classList.remove('hidden');
         joinPanel.classList.add('hidden');
@@ -168,7 +169,11 @@ function setupMenuHandlers() {
             const roomCode = await networkManager.hostGame();
             if (roomCode) {
                 hostRoomCode.textContent = roomCode;
-                hostStatus.textContent = 'Waiting for player to join...';
+                // Straight to the lobby — guests appear as they connect
+                hostPanel.classList.add('hidden');
+                menuButtons.classList.remove('hidden');
+                menuManager.showLobby(roomCode, true);
+                renderLobby();
             }
         } catch (error) {
             hostStatus.textContent = 'Failed to create room. Try again.';
@@ -250,9 +255,27 @@ function setupMenuHandlers() {
         }
     });
 
+    // Render the lobby from the current authoritative roster
+    function renderLobby() {
+        menuManager.renderLobbyRoster(
+            networkManager.roster,
+            networkManager.mySlot,
+            networkManager.isHost
+        );
+        // Keep the ready button label in sync with our roster entry
+        const me = networkManager.roster.find(r => r.slot === networkManager.mySlot);
+        if (me) {
+            btnReady.textContent = me.ready ? 'Not Ready' : 'Ready!';
+            btnReady.classList.toggle('success', me.ready);
+        }
+    }
+
+    // Clicking your colour chip cycles your team colour (= alliance)
+    menuManager.onColorCycle = (color) => networkManager.requestColor(color);
+
     // Network event handlers
     networkManager.on('connected', (data) => {
-        console.log('🎮 Connected to peer!', data);
+        console.log('🎮 Connected to host!', data);
 
         // Mid-game reconnect: resume the paused game instead of showing the
         // lobby. The guest automatically requests a full state sync (terrain,
@@ -264,26 +287,30 @@ function setupMenuHandlers() {
             game.lastTime = performance.now();
             return;
         }
+        // Fresh guest connection: the lobby appears when 'welcome' arrives
+        // with our slot assignment and the current roster.
+    });
 
-        // Transition to lobby
-        menuManager.showLobby(networkManager.roomCode, networkManager.isHost);
+    // Guest: the host accepted us and told us our seat
+    networkManager.on('welcome', (data) => {
+        // Mid-game reconnect welcome: stay in the game, don't pop the lobby
+        if (data.midGame && game && !game.isGameOver) return;
 
-        // Add SELF to the lobby first
-        const selfTeam = networkManager.isHost ? 'red' : 'blue';
-        const selfName = networkManager.isHost ? 'You (Host)' : 'You (Guest)';
-        menuManager.addPlayerToLobby(
-            { id: networkManager.playerId, name: selfName },
-            selfTeam
-        );
-
-        // The peer will be added when we receive the handshake message
-        // (see playerJoined handler below)
+        menuManager.showLobby(networkManager.roomCode, false);
+        renderLobby();
 
         // Reset UI states
         hostPanel.classList.add('hidden');
         joinPanel.classList.add('hidden');
         menuButtons.classList.remove('hidden');
         btnConnect.disabled = false;
+    });
+
+    // Roster changed (join/leave/colour/ready) — rerender if we're in the lobby
+    networkManager.on('lobbyUpdate', () => {
+        if (menuManager.currentScreen === 'lobby') {
+            renderLobby();
+        }
     });
 
     networkManager.on('error', (data) => {
@@ -303,6 +330,7 @@ function setupMenuHandlers() {
         btnConnect.disabled = false;
     });
 
+    // Guest lost ITS connection to the host
     networkManager.on('disconnected', (data) => {
         console.log('🔌 Disconnected:', data?.reason);
 
@@ -316,7 +344,7 @@ function setupMenuHandlers() {
         }
 
         if (game) {
-            alert('Opponent disconnected!');
+            alert('Connection to the game was lost!');
             game.destroy();
             game = null;
         }
@@ -326,21 +354,85 @@ function setupMenuHandlers() {
     networkManager.on('reconnectFailed', () => {
         hideConnectionBanner();
         if (game) {
-            alert('Lost connection to the opponent.');
+            alert('Lost connection to the game.');
             game.destroy();
             game = null;
         }
         menuManager.showMenu();
     });
 
-    networkManager.on('playerJoined', (data) => {
-        console.log('👤 Player joined:', data);
-        menuManager.addPlayerToLobby(data.player, data.team);
+    // ---- Another player dropped mid-game (host detects, everyone is told) ----
+    // The game pauses for everyone. If they don't come back in time, the host
+    // forfeits their squad and play resumes without them.
+    const FORFEIT_TIMEOUT_MS = 45000;
+    const forfeitTimers = new Map(); // slot -> timeout id (host only)
+
+    function hostForfeitDroppedPlayer(slot) {
+        forfeitTimers.delete(slot);
+        if (!game || game.isGameOver || !networkManager.isHost) return;
+
+        const teamIndex = networkManager.gamePlayers
+            ? networkManager.gamePlayers.findIndex(p => p.slot === slot)
+            : -1;
+        if (teamIndex < 0) return;
+
+        console.warn(`⏱️ Player in slot ${slot} never returned — forfeiting team ${teamIndex}`);
+        networkManager.send({ type: 'teamForfeit', teamIndex });
+        game.forfeitTeam(teamIndex);
+
+        hideConnectionBanner();
+        game.isPaused = false;
+        game.lastTime = performance.now();
+
+        // Only one colour left? Host ends the game (broadcasts gameOver).
+        const alive = game.teams.filter(t => t.isAlive());
+        if (game.countAliveAlliances(alive) <= 1) {
+            game.endGame(alive[0] || null);
+            return;
+        }
+
+        // If it was the dropped player's turn, the host drives the handover
+        if (game.currentTeamIndex === teamIndex) {
+            game.turnManager.localFallback = true;
+            game.turnManager.processDamage();
+        }
+    }
+
+    networkManager.on('playerDropped', (data) => {
+        console.log('🔌 Player dropped:', data);
+
+        if (game && !game.isGameOver) {
+            game.isPaused = true;
+            showConnectionBanner(`⚠️ ${data.name || 'A player'} disconnected — waiting for them to return…`);
+            if (networkManager.isHost) {
+                forfeitTimers.set(data.slot, setTimeout(() => hostForfeitDroppedPlayer(data.slot), FORFEIT_TIMEOUT_MS));
+            }
+        }
+        // In the lobby the host already removed them from the roster and
+        // broadcast a lobbyUpdate — nothing more to do here.
     });
 
-    networkManager.on('playerReady', (data) => {
-        console.log('✅ Player ready:', data);
-        menuManager.updatePlayerReady(data.playerId, data.ready);
+    networkManager.on('playerReturned', (data) => {
+        console.log('🔗 Player returned:', data);
+        if (networkManager.isHost && forfeitTimers.has(data.slot)) {
+            clearTimeout(forfeitTimers.get(data.slot));
+            forfeitTimers.delete(data.slot);
+        }
+        if (game && !game.isGameOver) {
+            hideConnectionBanner();
+            game.isPaused = false;
+            game.lastTime = performance.now();
+        }
+    });
+
+    networkManager.on('remoteTeamForfeit', (data) => {
+        console.log('🏳️ Team forfeited:', data);
+        if (game && !game.isGameOver) {
+            game.forfeitTeam(data.teamIndex);
+            hideConnectionBanner();
+            game.isPaused = false;
+            game.lastTime = performance.now();
+        }
     });
 
     networkManager.on('gameStart', (data) => {
@@ -658,13 +750,23 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
  */
 function setupGlobalAudioControls() {
     const muteBtn = document.getElementById('global-mute-toggle');
-    const volSlider = document.getElementById('global-volume-slider');
+    const mixerBtn = document.getElementById('sound-mixer-toggle');
+    const panel = document.getElementById('sound-mixer-panel');
+
+    const updateMuteBtn = () => {
+        if (!muteBtn) return;
+        const muted = globalAudioManager.isMuted;
+        muteBtn.textContent = muted ? '🔇' : '🔊';
+        muteBtn.classList.toggle('muted', muted);
+    };
+
+    // Reflect persisted mute state on load
+    updateMuteBtn();
 
     if (muteBtn) {
         muteBtn.addEventListener('click', () => {
             const isMuted = globalAudioManager.toggleMute();
-            muteBtn.textContent = isMuted ? '🔇' : '🔊';
-            muteBtn.classList.toggle('muted', isMuted);
+            updateMuteBtn();
             // Play click if just unmuted
             if (!isMuted) {
                 globalAudioManager.playClick();
@@ -672,27 +774,46 @@ function setupGlobalAudioControls() {
         });
     }
 
-    if (volSlider) {
-        // Set initial value based on AudioManager volume
-        volSlider.value = globalAudioManager.volume;
+    if (mixerBtn && panel) {
+        mixerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            panel.classList.toggle('hidden');
+        });
+        // Clicks inside the panel shouldn't close it; clicks anywhere else do
+        panel.addEventListener('click', (e) => e.stopPropagation());
+        document.addEventListener('click', () => panel.classList.add('hidden'));
+    }
 
-        volSlider.addEventListener('input', (e) => {
+    for (const slider of document.querySelectorAll('.mixer-slider')) {
+        const channel = slider.dataset.channel;
+        const valueLabel = panel?.querySelector(`.mixer-value[data-channel="${channel}"]`);
+
+        // Initialize from persisted settings
+        slider.value = globalAudioManager.volumes[channel];
+        if (valueLabel) {
+            valueLabel.textContent = `${Math.round(globalAudioManager.volumes[channel] * 100)}%`;
+        }
+
+        slider.addEventListener('input', (e) => {
             const vol = parseFloat(e.target.value);
-            globalAudioManager.setVolume(vol);
+            globalAudioManager.setCategoryVolume(channel, vol);
+            if (valueLabel) {
+                valueLabel.textContent = `${Math.round(vol * 100)}%`;
+            }
+            // Sliding master up while muted auto-unmutes
+            if (channel === 'master' && vol > 0 && globalAudioManager.isMuted) {
+                globalAudioManager.toggleMute();
+                updateMuteBtn();
+            }
+        });
 
-            // If they are sliding volume up while muted, auto-unmute
-            if (vol > 0 && globalAudioManager.isMuted) {
-                globalAudioManager.toggleMute();
-                if (muteBtn) {
-                    muteBtn.textContent = '🔊';
-                    muteBtn.classList.remove('muted');
-                }
-            } else if (vol === 0 && !globalAudioManager.isMuted) {
-                globalAudioManager.toggleMute();
-                if (muteBtn) {
-                    muteBtn.textContent = '🔇';
-                    muteBtn.classList.add('muted');
-                }
+        // Audible preview on release (music/ambient demo themselves live)
+        slider.addEventListener('change', () => {
+            if (globalAudioManager.isMuted) return;
+            if (channel === 'voice') {
+                globalAudioManager.playVoice('gday');
+            } else if (channel === 'sfx' || channel === 'master') {
+                globalAudioManager.playClick();
             }
         });
     }

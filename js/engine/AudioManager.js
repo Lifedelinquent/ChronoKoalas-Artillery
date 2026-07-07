@@ -34,18 +34,48 @@ const FIRE_SAMPLE_MAP = {
     rope: 'rope_fire', parachute: 'parachute_open', mine: 'mine_beep'
 };
 
+// localStorage key for persisted mixer settings
+const AUDIO_SETTINGS_KEY = 'koala_audio_settings';
+
+// User-facing mixer defaults (0–1 per channel)
+const DEFAULT_VOLUMES = {
+    master: 0.5,
+    music: 0.5,
+    ambient: 0.35,
+    sfx: 0.8,
+    voice: 0.8
+};
+
+// Per-channel base trim so a channel at 100% still sits at a sensible level
+// relative to the others (music/ambient sources are mastered much hotter
+// than the one-shot SFX).
+const CHANNEL_TRIM = {
+    music: 0.1,
+    ambient: 0.4,
+    sfx: 1.0,
+    voice: 1.0
+};
+
 export class AudioManager {
     constructor() {
         this.audioContext = null;
         this.masterGain = null;
+        // Per-category buses (created in init): source → bus → masterGain
+        this.sfxBus = null;
+        this.voiceBus = null;
+        this.ambientBus = null;
         this.isMuted = false;
-        this.volume = 0.5;
         this.isInitialized = false;
+
+        // Mixer settings (persisted). this.volume mirrors volumes.master for
+        // backwards compatibility with existing callers.
+        this.volumes = { ...DEFAULT_VOLUMES };
+        this._loadSettings();
+        this.volume = this.volumes.master;
 
         // Background Music
         this.music = null;
         this.currentTheme = null;
-        this.musicVolume = 0.05; // Lowered to 5% as 20% was reported too loud
 
         // Define audio tracks (ElevenLabs-generated loops; the original
         // tracks remain on disk and playMusic falls back to them on error)
@@ -66,9 +96,36 @@ export class AudioManager {
         this.samplesLoading = false;
         this._lastSampleTime = {};
 
-        // Looping map ambience (Audio element, theme-driven)
-        this.ambient = null;
-        this.ambientVolume = 0.15;
+        // Looping map ambience — decoded into a crossfaded AudioBuffer and
+        // looped sample-accurately via Web Audio (HTMLAudio loop has an
+        // audible gap at the MP3 loop point due to encoder padding).
+        this.ambient = null;            // { src, fade } while playing
+        this._ambientBuffers = {};      // themeId → seamless AudioBuffer (null = missing)
+        this._ambientToken = 0;         // invalidates in-flight async loads
+    }
+
+    _loadSettings() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(AUDIO_SETTINGS_KEY));
+            if (saved && typeof saved === 'object') {
+                for (const key of Object.keys(DEFAULT_VOLUMES)) {
+                    const v = saved.volumes?.[key];
+                    if (typeof v === 'number' && isFinite(v)) {
+                        this.volumes[key] = Math.max(0, Math.min(1, v));
+                    }
+                }
+                this.isMuted = !!saved.isMuted;
+            }
+        } catch { /* corrupt/blocked storage → defaults */ }
+    }
+
+    _saveSettings() {
+        try {
+            localStorage.setItem(AUDIO_SETTINGS_KEY, JSON.stringify({
+                volumes: this.volumes,
+                isMuted: this.isMuted
+            }));
+        } catch { /* storage blocked → session-only settings */ }
     }
 
     /**
@@ -81,7 +138,17 @@ export class AudioManager {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
             this.masterGain = this.audioContext.createGain();
             this.masterGain.connect(this.audioContext.destination);
-            this.masterGain.gain.value = this.volume;
+            this.masterGain.gain.value = this.isMuted ? 0 : this.volumes.master;
+
+            // Category buses feeding the master gain
+            this.sfxBus = this.audioContext.createGain();
+            this.voiceBus = this.audioContext.createGain();
+            this.ambientBus = this.audioContext.createGain();
+            for (const bus of [this.sfxBus, this.voiceBus, this.ambientBus]) {
+                bus.connect(this.masterGain);
+            }
+            this._applyBusVolumes();
+
             this.isInitialized = true;
             console.log('🔊 Audio system initialized');
 
@@ -111,14 +178,14 @@ export class AudioManager {
                 audio.loop = true;
             }
 
-            audio.volume = this.musicVolume;
+            audio.volume = this._musicVolume();
             this.audioElements[key] = audio;
         }
 
         // Fallback original track for battle if custom track fails
         this.audioElements.fallback = new Audio('01. Worms - Armageddon - Original Mix.mp3');
         this.audioElements.fallback.loop = true;
-        this.audioElements.fallback.volume = this.musicVolume;
+        this.audioElements.fallback.volume = this._musicVolume();
 
         this.isInitializedTheme = true;
     }
@@ -149,7 +216,7 @@ export class AudioManager {
      * back to its procedural sound). `throttleMs` skips the play if the
      * same sample was triggered too recently (rapid-fire tools).
      */
-    playSample(name, { volume = 1, loop = false, rate = 1, throttleMs = 0 } = {}) {
+    playSample(name, { volume = 1, loop = false, rate = 1, throttleMs = 0, bus = 'sfx' } = {}) {
         if (!this.isInitialized || this.isMuted) return null;
         const buffer = this.samples[name];
         if (!buffer) return null;
@@ -170,7 +237,7 @@ export class AudioManager {
         const gain = ctx.createGain();
         gain.gain.value = volume;
         src.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(bus === 'voice' ? this.voiceBus : this.sfxBus);
         src.start();
         return src;
     }
@@ -184,33 +251,118 @@ export class AudioManager {
         if (chance < 1 && Math.random() > chance) return;
         // Slight pitch variance so repeated barks don't sound identical
         const rate = 0.95 + Math.random() * 0.1;
-        this.playSample(`voice_${name}`, { volume: 0.9, rate, throttleMs: 400 });
+        this.playSample(`voice_${name}`, { volume: 0.9, rate, throttleMs: 400, bus: 'voice' });
     }
 
     /**
      * Start the looping ambience for a map theme
      * ('grassland' | 'desert' | 'tundra' | 'volcanic'). No-op if the theme
      * is unknown (custom/editor maps) or the asset is missing.
+     *
+     * The track is decoded and rebuilt as a crossfaded loop buffer, then
+     * looped sample-accurately with an AudioBufferSourceNode. An HTMLAudio
+     * element with loop=true can't do this: MP3 encoder padding leaves a
+     * silent gap at the loop seam (the audible "blip").
      */
-    playAmbient(themeId) {
+    async playAmbient(themeId) {
         this.stopAmbient();
-        if (!themeId) return;
+        if (!themeId || !this.isInitialized) return;
 
-        const audio = new Audio(`assets/audio/ambient/ambient_${themeId}.mp3`);
-        audio.loop = true;
-        audio.volume = this.isMuted ? 0 : this.ambientVolume * (this.volume / 0.5);
-        audio.play().catch(() => { /* missing asset or autoplay block */ });
-        this.ambient = audio;
+        const token = ++this._ambientToken;
+
+        let buffer = this._ambientBuffers[themeId];
+        if (buffer === undefined) {
+            try {
+                const res = await fetch(`assets/audio/ambient/ambient_${themeId}.mp3`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const decoded = await this.audioContext.decodeAudioData(await res.arrayBuffer());
+                buffer = this._makeSeamlessLoop(decoded);
+            } catch {
+                buffer = null; // missing asset → stay silent
+            }
+            this._ambientBuffers[themeId] = buffer;
+        }
+
+        // A stopAmbient()/playAmbient() may have happened while decoding
+        if (!buffer || token !== this._ambientToken) return;
+
+        const ctx = this.audioContext;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.loop = true;
+
+        // Ease in so the ambience doesn't slam on with the battle start
+        const fade = ctx.createGain();
+        fade.gain.setValueAtTime(0.0001, ctx.currentTime);
+        fade.gain.exponentialRampToValueAtTime(1, ctx.currentTime + 2);
+
+        src.connect(fade);
+        fade.connect(this.ambientBus);
+        src.start();
+        this.ambient = { src, fade };
     }
 
     /**
-     * Stop map ambience
+     * Stop map ambience (short fade-out to avoid a click)
      */
     stopAmbient() {
-        if (this.ambient) {
-            this.ambient.pause();
-            this.ambient = null;
+        this._ambientToken++;
+        if (!this.ambient) return;
+        const { src, fade } = this.ambient;
+        this.ambient = null;
+        try {
+            const t = this.audioContext.currentTime;
+            fade.gain.cancelScheduledValues(t);
+            fade.gain.setValueAtTime(Math.max(fade.gain.value, 0.0001), t);
+            fade.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
+            src.stop(t + 0.25);
+        } catch {
+            try { src.stop(); } catch { /* already stopped */ }
         }
+    }
+
+    /**
+     * Rebuild a decoded buffer as a seamless loop: trim the near-silent
+     * encoder padding at both ends, then equal-power crossfade the tail
+     * into the head so the loop seam is inaudible.
+     */
+    _makeSeamlessLoop(buffer, fadeSeconds = 1.5) {
+        const ctx = this.audioContext;
+        const channels = buffer.numberOfChannels;
+        const threshold = 0.003; // below this is encoder padding / room noise floor
+
+        // Find first/last sample above the threshold on any channel
+        let start = buffer.length, end = 0;
+        for (let c = 0; c < channels; c++) {
+            const data = buffer.getChannelData(c);
+            let s = 0;
+            while (s < data.length && Math.abs(data[s]) < threshold) s++;
+            let e = data.length - 1;
+            while (e > s && Math.abs(data[e]) < threshold) e--;
+            start = Math.min(start, s);
+            end = Math.max(end, e + 1);
+        }
+        if (end - start < ctx.sampleRate) { start = 0; end = buffer.length; } // degenerate → keep as-is
+
+        const trimmed = end - start;
+        const fadeLen = Math.min(Math.floor(fadeSeconds * buffer.sampleRate), Math.floor(trimmed / 4));
+        const outLen = trimmed - fadeLen;
+
+        const out = ctx.createBuffer(channels, outLen, buffer.sampleRate);
+        for (let c = 0; c < channels; c++) {
+            const src = buffer.getChannelData(c);
+            const dst = out.getChannelData(c);
+            // Head region: head fades in while the surplus tail fades out
+            for (let i = 0; i < fadeLen; i++) {
+                const theta = (i / fadeLen) * Math.PI / 2;
+                dst[i] = src[start + i] * Math.sin(theta) +
+                         src[start + outLen + i] * Math.cos(theta);
+            }
+            for (let i = fadeLen; i < outLen; i++) {
+                dst[i] = src[start + i];
+            }
+        }
+        return out;
     }
 
     /**
@@ -263,7 +415,7 @@ export class AudioManager {
         this.currentTheme = themeName;
 
         if (this.music) {
-            this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
+            this.music.volume = this._musicVolume();
             this.playMusic();
 
             // Limit victory and defeat themes to 10 seconds
@@ -331,20 +483,51 @@ export class AudioManager {
     }
 
     /**
+     * Effective HTMLAudio volume for music: channel trim × music slider ×
+     * master (normalized so master=0.5 is unity, matching the old scale).
+     */
+    _musicVolume() {
+        if (this.isMuted) return 0;
+        const v = CHANNEL_TRIM.music * this.volumes.music * (this.volumes.master / 0.5);
+        return Math.max(0, Math.min(1, v));
+    }
+
+    /** Push music/ambient/sfx/voice slider values onto their outputs */
+    _applyBusVolumes() {
+        if (this.sfxBus) this.sfxBus.gain.value = CHANNEL_TRIM.sfx * this.volumes.sfx;
+        if (this.voiceBus) this.voiceBus.gain.value = CHANNEL_TRIM.voice * this.volumes.voice;
+        if (this.ambientBus) this.ambientBus.gain.value = CHANNEL_TRIM.ambient * this.volumes.ambient;
+    }
+
+    /** Push current music volume onto every preloaded track */
+    _applyMusicVolumes() {
+        const vol = this._musicVolume();
+        for (const audio of Object.values(this.audioElements)) {
+            audio.volume = vol;
+        }
+    }
+
+    /**
      * Set master volume (0-1)
      */
     setVolume(vol) {
-        this.volume = Math.max(0, Math.min(1, vol));
+        this.setCategoryVolume('master', vol);
+    }
+
+    /**
+     * Set one mixer channel: 'master' | 'music' | 'ambient' | 'sfx' | 'voice'
+     */
+    setCategoryVolume(channel, vol) {
+        if (!(channel in this.volumes)) return;
+        this.volumes[channel] = Math.max(0, Math.min(1, vol));
+        this.volume = this.volumes.master;
+
         if (this.masterGain) {
-            this.masterGain.gain.value = this.isMuted ? 0 : this.volume;
+            this.masterGain.gain.value = this.isMuted ? 0 : this.volumes.master;
         }
-        // Sync music volume too (optional, but keeps it proportional)
-        if (this.music) {
-            this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
-        }
-        if (this.ambient) {
-            this.ambient.volume = this.isMuted ? 0 : this.ambientVolume * (this.volume / 0.5);
-        }
+        this._applyBusVolumes();
+        this._applyMusicVolumes();
+        this._saveSettings();
     }
 
     /**
@@ -353,14 +536,10 @@ export class AudioManager {
     toggleMute() {
         this.isMuted = !this.isMuted;
         if (this.masterGain) {
-            this.masterGain.gain.value = this.isMuted ? 0 : this.volume;
+            this.masterGain.gain.value = this.isMuted ? 0 : this.volumes.master;
         }
-        if (this.music) {
-            this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
-        }
-        if (this.ambient) {
-            this.ambient.volume = this.isMuted ? 0 : this.ambientVolume * (this.volume / 0.5);
-        }
+        this._applyMusicVolumes();
+        this._saveSettings();
         return this.isMuted;
     }
 
@@ -449,7 +628,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.2);
 
@@ -464,7 +643,7 @@ export class AudioManager {
         oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
 
         osc.connect(oscGain);
-        oscGain.connect(this.masterGain);
+        oscGain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.1);
     }
@@ -486,7 +665,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.35);
 
@@ -508,7 +687,7 @@ export class AudioManager {
 
             noise.connect(filter);
             filter.connect(gain2);
-            gain2.connect(this.masterGain);
+            gain2.connect(this.sfxBus);
             noise.start(now2);
             noise.stop(now2 + 0.8);
         }, 300);
@@ -536,7 +715,7 @@ export class AudioManager {
 
         osc.connect(gain);
         osc2.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc2.start(now);
         osc.stop(now + 0.3);
@@ -560,7 +739,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.3);
 
@@ -575,7 +754,7 @@ export class AudioManager {
         oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
 
         osc.connect(oscGain);
-        oscGain.connect(this.masterGain);
+        oscGain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.15);
     }
@@ -595,7 +774,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.15);
     }
@@ -616,7 +795,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.1);
     }
@@ -636,7 +815,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.5);
     }
@@ -659,7 +838,7 @@ export class AudioManager {
 
         osc.connect(gain);
         osc2.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc2.start(now);
         osc.stop(now + 0.4);
@@ -700,7 +879,7 @@ export class AudioManager {
         oscGain.gain.exponentialRampToValueAtTime(0.01, now + duration);
 
         osc.connect(oscGain);
-        oscGain.connect(this.masterGain);
+        oscGain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + duration);
 
@@ -717,7 +896,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(noiseGain);
-        noiseGain.connect(this.masterGain);
+        noiseGain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + duration * 0.7);
     }
@@ -745,7 +924,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.08);
     }
@@ -777,7 +956,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.1);
 
@@ -800,7 +979,7 @@ export class AudioManager {
 
             osc2.connect(filter);
             filter.connect(gain2);
-            gain2.connect(this.masterGain);
+            gain2.connect(this.sfxBus);
             osc2.start(now2);
             osc2.stop(now2 + 0.15);
         }, 50);
@@ -829,7 +1008,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.6);
     }
@@ -862,7 +1041,7 @@ export class AudioManager {
             gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.12 + 0.25);
 
             osc.connect(gain);
-            gain.connect(this.masterGain);
+            gain.connect(this.sfxBus);
             osc.start(now + i * 0.12);
             osc.stop(now + i * 0.12 + 0.25);
         });
@@ -889,7 +1068,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.05);
     }
@@ -921,7 +1100,7 @@ export class AudioManager {
             gain.gain.exponentialRampToValueAtTime(0.01, start + 0.4);
 
             osc.connect(gain);
-            gain.connect(this.masterGain);
+            gain.connect(this.sfxBus);
             osc.start(start);
             osc.stop(start + 0.4);
         });
@@ -950,7 +1129,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.8);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.8);
     }
@@ -976,7 +1155,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.04);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.04);
     }
@@ -1006,7 +1185,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.4);
 
@@ -1021,7 +1200,7 @@ export class AudioManager {
         oscGain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
 
         osc.connect(oscGain);
-        oscGain.connect(this.masterGain);
+        oscGain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.2);
     }
@@ -1051,7 +1230,7 @@ export class AudioManager {
             gain.gain.exponentialRampToValueAtTime(0.01, start + 0.2);
 
             osc.connect(gain);
-            gain.connect(this.masterGain);
+            gain.connect(this.sfxBus);
             osc.start(start);
             osc.stop(start + 0.2);
         });
@@ -1082,7 +1261,7 @@ export class AudioManager {
             gain.gain.exponentialRampToValueAtTime(0.001, start + 0.07);
 
             osc.connect(gain);
-            gain.connect(this.masterGain);
+            gain.connect(this.sfxBus);
             osc.start(start);
             osc.stop(start + 0.08);
         });
@@ -1112,7 +1291,7 @@ export class AudioManager {
         gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
 
         osc.connect(gain);
-        gain.connect(this.masterGain);
+        gain.connect(this.sfxBus);
         osc.start(now);
         osc.stop(now + 0.5);
 
@@ -1129,7 +1308,7 @@ export class AudioManager {
 
         noise.connect(filter);
         filter.connect(noiseGain);
-        noiseGain.connect(this.masterGain);
+        noiseGain.connect(this.sfxBus);
         noise.start(now);
         noise.stop(now + 0.5);
     }

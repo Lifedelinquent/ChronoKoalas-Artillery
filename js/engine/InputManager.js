@@ -4,7 +4,7 @@
 
 export class InputManager {
     // Weapon types that activate instantly (no power charging)
-    static INSTANT_FIRE_TYPES = ['melee', 'blowtorch', 'drill', 'kamikaze', 'parachute', 'skip', 'surrender', 'armageddon'];
+    static INSTANT_FIRE_TYPES = ['melee', 'blowtorch', 'drill', 'kamikaze', 'parachute', 'rope', 'skip', 'surrender', 'armageddon'];
 
     constructor(game) {
         this.game = game;
@@ -166,6 +166,19 @@ export class InputManager {
             return;
         }
 
+        // On the ninja rope: Space re-fires toward the crosshair, Enter lets
+        // go (swing velocity carries). Left/right/up/down are read as held
+        // keys by Game.updateRopeSwing.
+        if (this.game.phase === 'rope') {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                this.game.ropeRefire();
+            } else if (e.code === 'Enter') {
+                this.game.releaseRope();
+            }
+            return;
+        }
+
         // Number keys for weapon timer
         if (e.code >= 'Digit1' && e.code <= 'Digit5') {
             const timer = parseInt(e.code.replace('Digit', ''));
@@ -233,8 +246,10 @@ export class InputManager {
         this.mouse.x = (e.clientX - rect.left) / this.game.camera.zoom + this.game.camera.x;
         this.mouse.y = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
 
-        // Update aim angle based on mouse position
-        if (this.game.phase === 'aiming' || this.game.phase === 'firing' || this.game.phase === 'armed') {
+        // Update aim angle based on mouse position (also while roping, so the
+        // crosshair shows where a rope re-fire would go)
+        if (this.game.phase === 'aiming' || this.game.phase === 'firing' ||
+            this.game.phase === 'armed' || this.game.phase === 'rope') {
             this.updateAimFromMouse();
         }
 
@@ -277,6 +292,12 @@ export class InputManager {
             // Aim is locked and waiting for confirmation — this click fires
             if (this.game.phase === 'armed') {
                 this.confirmFire();
+                return;
+            }
+
+            // On the rope: click = re-fire toward the crosshair (same as Space)
+            if (this.game.phase === 'rope') {
+                this.game.ropeRefire();
                 return;
             }
 
@@ -424,7 +445,8 @@ export class InputManager {
 
         // Premium touch: show a crosshair cursor while we can aim/fire
         const canAim = this.game.isMyTurn() &&
-            (this.game.phase === 'aiming' || this.game.phase === 'firing' || this.game.phase === 'armed');
+            (this.game.phase === 'aiming' || this.game.phase === 'firing' ||
+                this.game.phase === 'armed' || this.game.phase === 'rope');
         const desiredCursor = canAim ? 'crosshair' : 'default';
         if (this.game.canvas.style.cursor !== desiredCursor) {
             this.game.canvas.style.cursor = desiredCursor;

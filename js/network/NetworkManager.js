@@ -26,7 +26,7 @@ export const MAX_PLAYERS = 4;
 // relayed; host-authored broadcasts (damage, crates, lobbyUpdate, gameStart)
 // never arrive FROM a guest so they don't need to be here.
 const RELAY_TYPES = new Set([
-    'move', 'aim', 'fire', 'targetWeapon', 'jump', 'highJump',
+    'move', 'aim', 'fire', 'targetWeapon', 'jump', 'highJump', 'ropeRelease',
     'weaponSelect', 'turnEnd', 'turnStart', 'gameOver', 'chat'
 ]);
 
@@ -583,6 +583,10 @@ export class NetworkManager extends EventEmitter {
 
             case 'highJump':
                 this.emit('remoteHighJump', data);
+                break;
+
+            case 'ropeRelease':
+                this.emit('remoteRopeRelease', data);
                 break;
 
             case 'stateSync':

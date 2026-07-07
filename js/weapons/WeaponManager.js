@@ -529,8 +529,13 @@ export class WeaponManager {
                 icon: null,
                 type: 'rope',
                 utility: true,
-                speed: 1000,
-                gravity: 0,
+                // WA-style swinging rope (see Game.updateRope). One ammo is
+                // consumed per turn the rope is used; re-shots while swinging
+                // or falling within that turn are free.
+                hookSpeed: 1500,   // px/s, straight-line hook flight
+                maxLength: 420,    // rope length = max hook range
+                swingAccel: 380,   // px/s² left/right pump while hanging
+                climbSpeed: 150,   // px/s up/down the rope
                 ammo: 5
             },
             parachute: {

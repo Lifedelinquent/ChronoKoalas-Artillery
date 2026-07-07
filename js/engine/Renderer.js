@@ -236,6 +236,9 @@ export class Renderer {
         // Draw oil drums (map hazards)
         this.drawOilDrums();
 
+        // Draw the ninja rope (behind its koala)
+        this.drawRope();
+
         // Draw koalas
         this.drawKoalas();
 
@@ -662,7 +665,7 @@ export class Renderer {
      */
     drawAimingIndicator() {
         const phase = this.game.phase;
-        if (phase !== 'aiming' && phase !== 'firing' && phase !== 'armed') return;
+        if (phase !== 'aiming' && phase !== 'firing' && phase !== 'armed' && phase !== 'rope') return;
 
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
@@ -978,6 +981,57 @@ export class Renderer {
                 ctx.stroke();
             }
         }
+    }
+
+    /**
+     * Draw the ninja rope: taut segments from the koala's hands through every
+     * wrap pivot to the anchor, plus a little grapple claw at the hook.
+     */
+    drawRope() {
+        const rs = this.game.ropeState;
+        if (!rs || !rs.koala) return;
+
+        const ctx = this.ctx;
+        const koala = rs.koala;
+        const hx = koala.x;
+        const hy = koala.y - 8; // Game.ROPE_HAND_OFFSET
+
+        // Points from anchor to hands
+        const points = rs.mode === 'attached'
+            ? [...rs.pivots.map(p => ({ x: p.x, y: p.y })), { x: hx, y: hy }]
+            : [{ x: rs.hook.x, y: rs.hook.y }, { x: hx, y: hy }];
+
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // Dark core with a light highlight on top reads as a twisted rope
+        ctx.strokeStyle = '#5b3d22';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#a97b4d';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+
+        // Grapple claw at the hook end
+        const hook = points[0];
+        const next = points[1];
+        const ang = Math.atan2(hook.y - next.y, hook.x - next.x);
+        ctx.strokeStyle = '#c8ccd4';
+        ctx.lineWidth = 2.5;
+        for (const spread of [-0.7, 0, 0.7]) {
+            ctx.beginPath();
+            ctx.moveTo(hook.x, hook.y);
+            ctx.lineTo(hook.x + Math.cos(ang + spread) * 7,
+                hook.y + Math.sin(ang + spread) * 7);
+            ctx.stroke();
+        }
+
+        ctx.restore();
     }
 
     /**

@@ -53,6 +53,16 @@ export class Physics {
      * Update a single entity (koala)
      */
     updateEntity(entity, dt) {
+        // Ninja rope: while attached, Game.updateRope owns this entity's
+        // motion (pendulum constraint + its own terrain handling). Pin peakY
+        // so swinging never accrues fall damage — the drop after release does
+        // (Game.clearRope resets peakY to the release point).
+        if (entity.onRope) {
+            entity.peakY = entity.y;
+            entity.isSliding = false;
+            return;
+        }
+
         const prevY = entity.y;
 
         // Low gravity crate buff: everything falls gently during that team's turn

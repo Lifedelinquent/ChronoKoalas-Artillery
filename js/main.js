@@ -642,6 +642,12 @@ function setupMenuHandlers() {
         }
     });
 
+    networkManager.on('remoteRopeRelease', (data) => {
+        if (game) {
+            game.handleRemoteRopeRelease(data);
+        }
+    });
+
     networkManager.on('remoteStateSync', (data) => {
         if (game) {
             game.handleRemoteStateSync(data);

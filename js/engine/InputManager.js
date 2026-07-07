@@ -154,9 +154,18 @@ export class InputManager {
             return;
         }
 
-        // Escape to close weapon selection menu
+        // Escape to close weapon selection menu, or clear a placed homing
+        // target so it can be re-placed
         if (e.code === 'Escape') {
-            this.closeWeaponMenu();
+            if (this.isWeaponMenuOpen) {
+                this.closeWeaponMenu();
+                return;
+            }
+            const weapon = this.game.weaponManager.currentWeapon;
+            if (this.game.phase === 'aiming' && this.game.isMyTurn() &&
+                weapon && weapon.requiresTarget && this.game.homingTarget) {
+                this.game.clearHomingTarget();
+            }
             return;
         }
 
@@ -201,6 +210,11 @@ export class InputManager {
                 if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
                     const koala = this.game.getCurrentKoala();
                     this.game.fireWeapon(koala.aimAngle, 1.0);
+                } else if (weapon && weapon.requiresTarget && !this.game.homingTarget) {
+                    // Homing missile can't charge until a target is placed
+                    const koala = this.game.getCurrentKoala();
+                    this.game.createFloatingText(koala.x, koala.y - 40, 'Click to mark a target first!', '#ff6b6b');
+                    this.game.audioManager.playClick();
                 } else if (weapon && !weapon.targetted) {
                     // Don't start charging for targetted weapons (use mouse click instead)
                     this.startCharging();
@@ -304,6 +318,16 @@ export class InputManager {
             if (this.game.phase === 'aiming') {
                 const weapon = this.game.weaponManager.currentWeapon;
 
+                // Homing missile: the first click places the target marker;
+                // once it's set, clicks charge and fire like any other weapon
+                if (weapon && weapon.requiresTarget && !this.game.homingTarget) {
+                    const rect = this.game.canvas.getBoundingClientRect();
+                    const worldX = (e.clientX - rect.left) / this.game.camera.zoom + this.game.camera.x;
+                    const worldY = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
+                    this.game.setHomingTarget(worldX, worldY);
+                    return;
+                }
+
                 // Check if this is a targetted weapon (airstrike, teleport)
                 if (weapon && weapon.targetted) {
                     // Get click position in world coordinates (zoom-aware)
@@ -326,10 +350,22 @@ export class InputManager {
             this.mouse.rightStartX = e.clientX;
             this.mouse.rightStartY = e.clientY;
             this.mouse.rightHasDragged = false;
+            this.mouse.rightClearedTarget = false;
 
             // Cancel a charging or locked-in shot so the player can re-aim
             if ((this.game.phase === 'firing' || this.game.phase === 'armed') && this.game.isMyTurn()) {
                 this.cancelCharge();
+                return;
+            }
+
+            // Clear a placed homing target so the next left click re-places it
+            // (suppresses the weapon menu toggle on this click's release)
+            if (this.game.phase === 'aiming' && this.game.isMyTurn()) {
+                const weapon = this.game.weaponManager.currentWeapon;
+                if (weapon && weapon.requiresTarget && this.game.homingTarget) {
+                    this.game.clearHomingTarget();
+                    this.mouse.rightClearedTarget = true;
+                }
             }
         }
     }
@@ -348,9 +384,11 @@ export class InputManager {
             }
         } else if (e.button === 2) {
             this.mouse.rightDown = false;
-            if (!this.mouse.rightHasDragged && this.game.isMyTurn() && (this.game.phase === 'aiming' || this.game.phase === 'retreat')) {
+            if (!this.mouse.rightHasDragged && !this.mouse.rightClearedTarget &&
+                this.game.isMyTurn() && (this.game.phase === 'aiming' || this.game.phase === 'retreat')) {
                 this.toggleWeaponMenu();
             }
+            this.mouse.rightClearedTarget = false;
         }
     }
 

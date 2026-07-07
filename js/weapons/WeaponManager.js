@@ -80,10 +80,10 @@ export class WeaponManager {
                 directDamage: 0,
                 explosionRadius: 70,
                 knockback: 300,
-                speed: 500,
-                gravity: 0.15,
+                speed: 900,
+                gravity: 1,
                 affectedByWind: false,
-                targetted: true,        // click to set the target, missile launches instantly
+                requiresTarget: true,   // click marks the target, then aim + charge like a bazooka
                 homing: true,
                 ammo: 2
             },

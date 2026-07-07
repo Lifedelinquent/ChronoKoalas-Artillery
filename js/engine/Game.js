@@ -92,6 +92,10 @@ export class Game extends EventEmitter {
         // Multi-shot weapon tracking (shotgun)
         this.shotgunShotsRemaining = 0;
 
+        // Homing missile target marker, placed by clicking before firing
+        // (WA-style: cleared at the start of every turn)
+        this.homingTarget = null;
+
         // Burning patches of ground (petrol bomb / napalm strike)
         this.firePatches = [];
 
@@ -1697,7 +1701,8 @@ export class Game extends EventEmitter {
             const prevX = proj.x;
             const prevY = proj.y;
 
-            // Homing missiles steer toward their locked target after a boost phase
+            // Homing missiles fly ballistic for the boost phase, then the
+            // engine ignites and steers toward the locked target (WA-style)
             if (proj.homingTarget && !proj.stationary) {
                 proj.homingDelay -= dt;
                 if (proj.homingDelay <= 0 && proj.homingFuel > 0) {
@@ -1710,10 +1715,16 @@ export class Game extends EventEmitter {
                         // otherwise an in-air target makes it hover forever
                         proj.homingFuel = 0;
                     } else {
+                        // Engine burning: gravity off, velocity blends toward the target
+                        proj.gravityMultiplier = 0;
                         const cruiseSpeed = 750;
                         const blend = Math.min(1, 6 * dt);
                         proj.vx += ((hx / hd) * cruiseSpeed - proj.vx) * blend;
                         proj.vy += ((hy / hd) * cruiseSpeed - proj.vy) * blend;
+                    }
+                    // Out of fuel (or flew past the marker): back to ballistic
+                    if (proj.homingFuel <= 0) {
+                        proj.gravityMultiplier = proj.weapon?.gravity ?? 1;
                     }
                 }
             }
@@ -2414,6 +2425,15 @@ export class Game extends EventEmitter {
             return;
         }
 
+        // Homing missile needs its target placed first. Local only — a remote
+        // replay always carries the target in the fire message (handleRemoteFire
+        // restores it into this.homingTarget before calling us).
+        if (weapon.requiresTarget && !this.homingTarget && (this.isPractice || this.isMyTurn())) {
+            this.createFloatingText(koala.x, koala.y - 40, 'Click to mark a target first!', '#ff6b6b');
+            this.audioManager.playClick();
+            return;
+        }
+
         console.log('Firing weapon:', weapon.name, 'angle:', angle, 'power:', power);
 
         // Play fire sound
@@ -2684,6 +2704,15 @@ export class Game extends EventEmitter {
         // Track the shooter so we don't damage them with their own projectile
         projectile.shooter = koala;
 
+        // Homing missile: flies straight for the boost phase, then locks onto
+        // the pre-placed target marker (which now travels with the projectile)
+        if (weapon.homing && this.homingTarget) {
+            projectile.homingTarget = { x: this.homingTarget.x, y: this.homingTarget.y };
+            projectile.homingDelay = 0.5; // straight flight before lock-on
+            projectile.homingFuel = 5;    // seconds of steering before it goes ballistic
+            this.homingTarget = null;
+        }
+
         // Sheep walks in the direction it was thrown
         if (weapon.isWalker) {
             projectile.walkDir = Math.cos(angle) >= 0 ? 1 : -1;
@@ -2702,9 +2731,14 @@ export class Game extends EventEmitter {
             this.followProjectile(projectile);
         }
 
-        // Send to network (only if this is our turn)
+        // Send to network (only if this is our turn). A homing shot carries
+        // its target so the remote replay steers to the same point.
         if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.networkManager.sendFire(weapon.id, angle, power, koala.x, koala.y, this.currentTeamIndex, this.currentKoalaIndex);
+            this.networkManager.sendFire(
+                weapon.id, angle, power, koala.x, koala.y,
+                this.currentTeamIndex, this.currentKoalaIndex,
+                projectile.homingTarget?.x, projectile.homingTarget?.y
+            );
         }
     }
 
@@ -2740,9 +2774,6 @@ export class Game extends EventEmitter {
                 break;
             case 'airstrike':
                 this.executeAirstrike(targetX, targetY, weapon);
-                break;
-            case 'homing':
-                this.executeHomingMissile(koala, weapon, targetX, targetY);
                 break;
             case 'girder':
                 success = this.placeGirder(targetX, targetY);
@@ -2907,26 +2938,25 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Launch a homing missile from the koala toward a clicked target
+     * Place / move the homing missile's target marker (WA-style: click marks
+     * the target, then the missile is aimed and fired like a normal launcher)
      */
-    executeHomingMissile(koala, weapon, targetX, targetY) {
-        this.phase = 'projectile';
-        this.projectileGraceTimer = 0.2;
+    setHomingTarget(x, y) {
+        this.homingTarget = { x, y };
+        this.audioManager.playClick();
+        this.createFloatingText(x, y - 30, 'Target locked!', '#ff6b6b');
+    }
 
-        // Launch upward-ish toward the target side, then steer in
-        const launchAngle = targetX >= koala.x ? -Math.PI / 3 : -Math.PI * 2 / 3;
-        const spawnX = koala.x + Math.cos(launchAngle) * 30;
-        const spawnY = (koala.y - 10) + Math.sin(launchAngle) * 30;
-
-        const proj = this.weaponManager.createProjectileFor(weapon, spawnX, spawnY, launchAngle, 1.0);
-        if (!proj) return;
-
-        proj.shooter = koala;
-        proj.homingTarget = { x: targetX, y: targetY };
-        proj.homingDelay = 0.35; // straight boost before lock-on
-        proj.homingFuel = 5;     // seconds of steering before it goes ballistic
-        this.projectiles.push(proj);
-        this.followProjectile(proj);
+    /**
+     * Clear the placed homing target (right-click / Escape) so the next
+     * left click can place a fresh one
+     */
+    clearHomingTarget() {
+        if (!this.homingTarget) return;
+        const { x, y } = this.homingTarget;
+        this.homingTarget = null;
+        this.audioManager.playClick();
+        this.createFloatingText(x, y - 30, 'Target cleared', '#aaaaaa');
     }
 
     /**
@@ -4844,6 +4874,11 @@ export class Game extends EventEmitter {
         if (weapon && weapon.ammo !== Infinity && weapon.ammo <= 0) {
             console.warn(`Ammo drift: ${data.weaponId} shows 0 here but the opponent fired it — correcting to 1`);
             weapon.ammo = 1;
+        }
+
+        // A homing shot carries its target point in the fire message
+        if (data.targetX !== undefined && data.targetY !== undefined) {
+            this.homingTarget = { x: data.targetX, y: data.targetY };
         }
 
         this.fireWeapon(data.angle, data.power);

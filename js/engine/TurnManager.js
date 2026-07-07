@@ -88,6 +88,7 @@ export class TurnManager extends EventEmitter {
         this.turnTimer = this.turnTime;
         this.game.randomizeWind();
         this.game.shotgunShotsRemaining = 0; // Reset multi-shot counter
+        this.game.homingTarget = null;       // Clear last turn's homing target marker
 
         // Update timer display
         const timerEl = this.game.dom.elements.turnTimer;

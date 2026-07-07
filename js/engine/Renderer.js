@@ -679,6 +679,18 @@ export class Renderer {
             return;
         }
 
+        // Homing missile: show the placed target marker; until one is placed,
+        // the mouse is a placement cursor and there's nothing to aim yet
+        if (weapon && weapon.requiresTarget) {
+            if (!this.game.homingTarget) {
+                if (phase === 'aiming') {
+                    this.drawTargetCursor(ctx, koala.team.color, weapon.type);
+                }
+                return;
+            }
+            this.drawHomingTargetMarker(this.game.homingTarget.x, this.game.homingTarget.y);
+        }
+
         // Regular aiming indicator
         // aimAngle is now the world angle directly (full 360)
         const worldAngle = koala.aimAngle;
@@ -909,6 +921,42 @@ export class Renderer {
     }
 
     /**
+     * Draw the homing missile's placed target marker — a WA-style red/white
+     * bullseye that pulses gently so it stays visible over any terrain
+     */
+    drawHomingTargetMarker(x, y) {
+        const ctx = this.ctx;
+        const pulse = 1 + Math.sin(performance.now() / 200) * 0.1;
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(pulse, pulse);
+
+        // Concentric bullseye rings
+        ctx.fillStyle = '#d92b2b';
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(0, 0, 9.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#d92b2b';
+        ctx.beginPath();
+        ctx.arc(0, 0, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Thin outline so it reads against bright backgrounds too
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 14, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    /**
      * Draw target cursor for targetted weapons
      */
     drawTargetCursor(ctx, color, weaponType) {
@@ -1041,6 +1089,11 @@ export class Renderer {
         const ctx = this.ctx;
 
         for (const proj of this.game.projectiles) {
+            // In-flight homing missiles keep their target marker visible
+            if (proj.homingTarget) {
+                this.drawHomingTargetMarker(proj.homingTarget.x, proj.homingTarget.y);
+            }
+
             ctx.save();
             ctx.translate(proj.x, proj.y);
             ctx.rotate(proj.rotation || 0);

@@ -910,8 +910,8 @@ export class NetworkManager extends EventEmitter {
     /**
      * Send fire action
      */
-    sendFire(weaponId, angle, power, x, y, teamIndex, koalaIndex) {
-        this.send({
+    sendFire(weaponId, angle, power, x, y, teamIndex, koalaIndex, targetX, targetY) {
+        const msg = {
             type: 'fire',
             weaponId,
             angle,
@@ -921,7 +921,13 @@ export class NetworkManager extends EventEmitter {
             teamIndex,
             koalaIndex,
             timestamp: Date.now()
-        });
+        };
+        // Homing missile: the pre-placed target travels with the fire message
+        if (targetX !== undefined && targetY !== undefined) {
+            msg.targetX = targetX;
+            msg.targetY = targetY;
+        }
+        this.send(msg);
     }
 
     /**

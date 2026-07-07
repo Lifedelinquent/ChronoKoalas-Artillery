@@ -1,6 +1,38 @@
 /**
- * Audio Manager - Procedural sound effects using Web Audio API
+ * Audio Manager - Sample-based sound effects (ElevenLabs-generated assets in
+ * assets/audio/) with procedural Web Audio fallbacks for any missing file.
  */
+
+// Generated sample names (assets/audio/sfx/<name>.mp3)
+const SFX_SAMPLES = [
+    'fire_bazooka', 'fire_throw', 'fire_shotgun', 'fire_handgun', 'fire_uzi',
+    'fire_minigun', 'fire_longbow', 'fire_fuse', 'fire_holy', 'fire_airstrike',
+    'fire_melee', 'fire_teleport', 'fire_flame', 'fire_drill', 'rope_fire',
+    'parachute_open', 'explosion_small', 'explosion_medium', 'explosion_large',
+    'bounce', 'splash', 'damage_hit', 'mine_beep', 'sheep_baa', 'powerup',
+    'crate_drop', 'turn_start', 'timer_tick', 'click', 'aim_lock', 'missile_drop'
+];
+
+// Koala voice lines (assets/audio/voice/voice_<name>.mp3)
+const VOICE_SAMPLES = [
+    'gday', 'fire', 'incoming', 'ouch', 'crikey', 'angry', 'laugh',
+    'death', 'victory', 'defeat', 'taunt', 'beauty'
+];
+
+// Weapon id → firing sample
+const FIRE_SAMPLE_MAP = {
+    bazooka: 'fire_bazooka', homing: 'fire_bazooka', mortar: 'fire_bazooka',
+    grenade: 'fire_throw', cluster: 'fire_throw', banana: 'fire_throw', petrol: 'fire_throw',
+    sheep: 'sheep_baa', shotgun: 'fire_shotgun', handgun: 'fire_handgun', uzi: 'fire_uzi',
+    minigun: 'fire_minigun', longbow: 'fire_longbow', dynamite: 'fire_fuse',
+    holygrenade: 'fire_holy',
+    airstrike: 'fire_airstrike', napalmstrike: 'fire_airstrike',
+    minestrike: 'fire_airstrike', armageddon: 'fire_airstrike',
+    bat: 'fire_melee', firepunch: 'fire_melee', dragonball: 'fire_melee',
+    prod: 'fire_melee', kamikaze: 'fire_melee',
+    teleport: 'fire_teleport', blowtorch: 'fire_flame', drill: 'fire_drill',
+    rope: 'rope_fire', parachute: 'parachute_open', mine: 'mine_beep'
+};
 
 export class AudioManager {
     constructor() {
@@ -15,17 +47,28 @@ export class AudioManager {
         this.currentTheme = null;
         this.musicVolume = 0.05; // Lowered to 5% as 20% was reported too loud
 
-        // Define audio tracks
+        // Define audio tracks (ElevenLabs-generated loops; the original
+        // tracks remain on disk and playMusic falls back to them on error)
         this.themes = {
-            menu: 'menu_theme.mp3',
-            battle: '01. Worms - Armageddon - Original Mix.mp3', // Main in-game song
-            suddenDeath: 'sudden_death.mp3',
-            victory: 'victory_fanfare.mp3',
-            defeat: 'defeat_theme.mp3'
+            menu: 'assets/audio/music/music_menu.mp3',
+            battle: 'assets/audio/music/music_battle.mp3',
+            suddenDeath: 'assets/audio/music/music_suddendeath.mp3',
+            victory: 'assets/audio/music/music_victory.mp3',
+            defeat: 'assets/audio/music/music_defeat.mp3'
         };
 
         // Track Audio objects
         this.audioElements = {};
+
+        // Decoded generated samples (name → AudioBuffer). Missing entries
+        // fall back to the procedural generators below.
+        this.samples = {};
+        this.samplesLoading = false;
+        this._lastSampleTime = {};
+
+        // Looping map ambience (Audio element, theme-driven)
+        this.ambient = null;
+        this.ambientVolume = 0.15;
     }
 
     /**
@@ -44,6 +87,10 @@ export class AudioManager {
 
             // Initialize background music
             this.initMusic();
+
+            // Load generated SFX/voice samples (async; procedural fallbacks
+            // cover anything that hasn't decoded yet or doesn't exist)
+            this._loadSamples();
         } catch (e) {
             console.warn('Audio not supported:', e);
         }
@@ -77,11 +124,106 @@ export class AudioManager {
     }
 
     /**
+     * Fetch and decode all generated samples. Failures are silent — the
+     * procedural generators keep working for any sample that's missing.
+     */
+    _loadSamples() {
+        if (this.samplesLoading) return;
+        this.samplesLoading = true;
+
+        const load = (name, url) => {
+            fetch(url)
+                .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
+                .then(data => this.audioContext.decodeAudioData(data))
+                .then(buffer => { this.samples[name] = buffer; })
+                .catch(() => { /* missing asset → procedural fallback */ });
+        };
+
+        for (const name of SFX_SAMPLES) load(name, `assets/audio/sfx/${name}.mp3`);
+        for (const name of VOICE_SAMPLES) load(`voice_${name}`, `assets/audio/voice/voice_${name}.mp3`);
+    }
+
+    /**
+     * Play a decoded sample through the master gain.
+     * Returns the source node, or null if unavailable (caller then falls
+     * back to its procedural sound). `throttleMs` skips the play if the
+     * same sample was triggered too recently (rapid-fire tools).
+     */
+    playSample(name, { volume = 1, loop = false, rate = 1, throttleMs = 0 } = {}) {
+        if (!this.isInitialized || this.isMuted) return null;
+        const buffer = this.samples[name];
+        if (!buffer) return null;
+
+        if (throttleMs > 0) {
+            const last = this._lastSampleTime[name] || 0;
+            if (performance.now() - last < throttleMs) return true; // handled, but skip
+            this._lastSampleTime[name] = performance.now();
+        }
+
+        this.resume();
+        const ctx = this.audioContext;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.loop = loop;
+        src.playbackRate.value = rate;
+
+        const gain = ctx.createGain();
+        gain.gain.value = volume;
+        src.connect(gain);
+        gain.connect(this.masterGain);
+        src.start();
+        return src;
+    }
+
+    /**
+     * Play a koala voice line (e.g. 'gday', 'ouch', 'incoming').
+     * `chance` < 1 plays it probabilistically — cosmetic only, so plain
+     * Math.random() is safe for multiplayer sync.
+     */
+    playVoice(name, chance = 1) {
+        if (chance < 1 && Math.random() > chance) return;
+        // Slight pitch variance so repeated barks don't sound identical
+        const rate = 0.95 + Math.random() * 0.1;
+        this.playSample(`voice_${name}`, { volume: 0.9, rate, throttleMs: 400 });
+    }
+
+    /**
+     * Start the looping ambience for a map theme
+     * ('grassland' | 'desert' | 'tundra' | 'volcanic'). No-op if the theme
+     * is unknown (custom/editor maps) or the asset is missing.
+     */
+    playAmbient(themeId) {
+        this.stopAmbient();
+        if (!themeId) return;
+
+        const audio = new Audio(`assets/audio/ambient/ambient_${themeId}.mp3`);
+        audio.loop = true;
+        audio.volume = this.isMuted ? 0 : this.ambientVolume * (this.volume / 0.5);
+        audio.play().catch(() => { /* missing asset or autoplay block */ });
+        this.ambient = audio;
+    }
+
+    /**
+     * Stop map ambience
+     */
+    stopAmbient() {
+        if (this.ambient) {
+            this.ambient.pause();
+            this.ambient = null;
+        }
+    }
+
+    /**
      * Play a specific music theme
      */
     playTheme(themeName) {
         if (!this.isInitializedTheme) {
             this.initMusic();
+        }
+
+        // Map ambience belongs to battle — kill it when returning to menu
+        if (themeName === 'menu') {
+            this.stopAmbient();
         }
 
         if (this.currentTheme === themeName) {
@@ -176,6 +318,7 @@ export class AudioManager {
         if (this.music) {
             this.music.pause();
         }
+        this.stopAmbient();
     }
 
     /**
@@ -199,6 +342,9 @@ export class AudioManager {
         if (this.music) {
             this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
         }
+        if (this.ambient) {
+            this.ambient.volume = this.isMuted ? 0 : this.ambientVolume * (this.volume / 0.5);
+        }
     }
 
     /**
@@ -212,6 +358,9 @@ export class AudioManager {
         if (this.music) {
             this.music.volume = this.isMuted ? 0 : this.musicVolume * (this.volume / 0.5);
         }
+        if (this.ambient) {
+            this.ambient.volume = this.isMuted ? 0 : this.ambientVolume * (this.volume / 0.5);
+        }
         return this.isMuted;
     }
 
@@ -223,6 +372,20 @@ export class AudioManager {
     playFire(weaponType = 'bazooka') {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
+
+        // Koala voice barks on dramatic weapons (cosmetic, local-only RNG)
+        if (weaponType === 'airstrike' || weaponType === 'napalmstrike' ||
+            weaponType === 'minestrike' || weaponType === 'armageddon') {
+            this.playVoice('incoming');
+        } else if (['bazooka', 'homing', 'mortar', 'grenade', 'cluster',
+                    'banana', 'holygrenade', 'dynamite'].includes(weaponType)) {
+            this.playVoice('fire', 0.2);
+        }
+
+        // Generated sample first; procedural synth only as fallback.
+        // Blowtorch/drill retrigger rapidly while digging, hence the throttle.
+        const sample = FIRE_SAMPLE_MAP[weaponType];
+        if (sample && this.playSample(sample, { volume: 0.7, throttleMs: 300 })) return;
 
         const ctx = this.audioContext;
         const now = ctx.currentTime;
@@ -516,6 +679,9 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        const vol = size === 'large' ? 0.9 : size === 'small' ? 0.5 : 0.7;
+        if (this.playSample(`explosion_${size}`, { volume: vol, throttleMs: 60 })) return;
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -563,6 +729,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        if (this.playSample('bounce', { volume: 0.4, throttleMs: 80 })) return;
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -588,6 +756,12 @@ export class AudioManager {
     playDamage() {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
+
+        // Pained koala bark now and then
+        const grunts = ['ouch', 'crikey', 'angry'];
+        this.playVoice(grunts[Math.floor(Math.random() * grunts.length)], 0.35);
+
+        if (this.playSample('damage_hit', { volume: 0.6, throttleMs: 100 })) return;
 
         const ctx = this.audioContext;
         const now = ctx.currentTime;
@@ -639,6 +813,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        this.playVoice('death');
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -664,6 +840,12 @@ export class AudioManager {
     playTurnStart() {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
+
+        // Occasional greeting/taunt from the koala taking its turn
+        const barks = ['gday', 'taunt', 'laugh', 'beauty'];
+        this.playVoice(barks[Math.floor(Math.random() * barks.length)], 0.25);
+
+        if (this.playSample('turn_start', { volume: 0.5 })) return;
 
         const ctx = this.audioContext;
         const now = ctx.currentTime;
@@ -693,6 +875,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        if (this.playSample('timer_tick', { volume: 0.35, throttleMs: 150 })) return;
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -716,6 +900,8 @@ export class AudioManager {
     playVictory() {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
+
+        this.playVoice('victory');
 
         const ctx = this.audioContext;
         const now = ctx.currentTime;
@@ -748,6 +934,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        this.playVoice('defeat');
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -774,6 +962,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        if (this.playSample('click', { volume: 0.4, throttleMs: 50 })) return;
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -797,6 +987,8 @@ export class AudioManager {
     playSplash() {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
+
+        if (this.playSample('splash', { volume: 0.6, throttleMs: 100 })) return;
 
         const ctx = this.audioContext;
         const now = ctx.currentTime;
@@ -841,6 +1033,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        if (this.playSample('powerup', { volume: 0.5 })) return;
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -870,6 +1064,8 @@ export class AudioManager {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
 
+        if (this.playSample('aim_lock', { volume: 0.35, throttleMs: 100 })) return;
+
         const ctx = this.audioContext;
         const now = ctx.currentTime;
 
@@ -898,6 +1094,8 @@ export class AudioManager {
     playMissileDrop() {
         if (!this.isInitialized || this.isMuted) return;
         this.resume();
+
+        if (this.playSample('missile_drop', { volume: 0.5, throttleMs: 200 })) return;
 
         const ctx = this.audioContext;
         const now = ctx.currentTime;

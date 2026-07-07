@@ -184,6 +184,10 @@ export class Game extends EventEmitter {
             this.terrain.generate();
         }
 
+        // Looping map ambience matching the terrain theme (cosmetic,
+        // local-only; no-op for custom maps where theme is null)
+        this.audioManager.playAmbient(this.terrain.theme?.id);
+
         // Create teams
         this.createTeams();
 

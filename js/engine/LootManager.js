@@ -352,6 +352,7 @@ export class LootManager {
                         crate.y = crate.targetY;
                         crate.falling = false;
                         crate.parachuteOpen = false;
+                        this.game.audioManager.playSample?.('crate_drop', { volume: 0.5 });
                     } else {
                         // Ground destroyed! Recalculate next ground level
                         const groundY = this.game.terrain.getGroundBelow(crate.x, crate.y);

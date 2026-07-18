@@ -20,14 +20,14 @@
             <p class="tagline">Time Travel. Explosions. Gumleaves.</p>
 
             <div class="menu-buttons">
+                <button id="btn-single" class="menu-btn tertiary">
+                    <span class="icon">🐨</span> Single Player
+                </button>
                 <button id="btn-host" class="menu-btn primary">
                     <span class="icon">🎮</span> Host Game
                 </button>
                 <button id="btn-join" class="menu-btn secondary">
                     <span class="icon">🔗</span> Join Game
-                </button>
-                <button id="btn-practice" class="menu-btn tertiary">
-                    <span class="icon">🎯</span> Practice
                 </button>
                 <button id="btn-editor" class="menu-btn quaternary">
                     <span class="icon">🗺️</span> Map Editor
@@ -50,6 +50,17 @@
                 <button id="btn-connect" class="menu-btn primary small">Connect</button>
                 <p id="join-status" class="connection-status"></p>
                 <button id="btn-cancel-join" class="menu-btn danger small hidden">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Single Player Modal (WA-style: Training / Missions / Deathmatch / Quick Game) -->
+    <div id="sp-modal" class="modal hidden">
+        <div class="modal-content sp-modal-content">
+            <h2 class="modal-title" id="sp-modal-title">Single Player</h2>
+            <div id="sp-modal-body"></div>
+            <div class="modal-controls">
+                <button id="btn-sp-back" class="menu-btn secondary">Back</button>
             </div>
         </div>
     </div>
@@ -400,6 +411,7 @@
     <div id="gameover-screen" class="screen">
         <div class="gameover-container">
             <h1 id="winner-text">🏆 Red Team Wins!</h1>
+            <p id="sp-result-line" class="sp-result-line hidden"></p>
             <div class="stats">
                 <p>Total Damage Dealt: <span id="stat-damage">0</span></p>
                 <p>Koalas Eliminated: <span id="stat-kills">0</span></p>

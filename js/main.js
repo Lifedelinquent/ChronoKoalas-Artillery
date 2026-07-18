@@ -9,12 +9,17 @@ import { NetworkManager } from './network/NetworkManager.js';
 import { MapEditor } from './editor/MapEditor.js';
 import { MapManager } from './utils/MapManager.js';
 import { globalAudioManager } from './engine/AudioManager.js';
+import * as SP from './singleplayer/SinglePlayer.js';
 
 // Global game instance
 let game = null;
 let menuManager = null;
 let networkManager = null;
 let mapEditor = null;
+
+// Single-player context of the running match (null for multiplayer/hotseat).
+// Drives rank/mission/training progress handling on game over.
+let spContext = null;
 
 /**
  * Initialize the application
@@ -31,6 +36,9 @@ async function init() {
 
     // Set up menu event handlers
     setupMenuHandlers();
+
+    // Single Player menu (WA-style: Training / Missions / Deathmatch / Quick)
+    setupSinglePlayerMenu();
 
     // Set up global audio controls
     setupGlobalAudioControls();
@@ -136,7 +144,6 @@ function cleanImage(img) {
 function setupMenuHandlers() {
     const btnHost = document.getElementById('btn-host');
     const btnJoin = document.getElementById('btn-join');
-    const btnPractice = document.getElementById('btn-practice');
     const btnConnect = document.getElementById('btn-connect');
     const btnReady = document.getElementById('btn-ready');
     const btnLeave = document.getElementById('btn-leave');
@@ -440,19 +447,6 @@ function setupMenuHandlers() {
         startGame(false, data.gameState, data.gameState?.customMap);
     });
 
-    // Practice Mode - Start single player
-    btnPractice.addEventListener('click', async (e) => {
-        e.target.blur(); // Remove focus so spacebar doesn't re-trigger
-        const maps = await MapManager.getAllMaps();
-        menuManager.showMapSelection(maps, (mapId, scheme) => {
-            let customMap = null;
-            if (mapId !== 'default') {
-                customMap = maps[mapId];
-            }
-            startGame(true, null, customMap, scheme);
-        });
-    });
-
     // Ready toggle
     btnReady.addEventListener('click', () => {
         const isReady = networkManager.toggleReady();
@@ -711,10 +705,11 @@ function hideConnectionBanner() {
 
 /**
  * Start the game
- * @param {boolean} isPractice - Single player practice mode
+ * @param {boolean} isPractice - Local game (single player / hotseat)
  * @param {Object} networkState - Initial state from network (multiplayer)
+ * @param {Object} spOptions - Single-player bundle: { teamsConfig, seed, context }
  */
-function startGame(isPractice = false, networkState = null, customMap = null, scheme = null) {
+function startGame(isPractice = false, networkState = null, customMap = null, scheme = null, spOptions = null) {
     const canvas = document.getElementById('game-canvas');
 
     // Destroy any previous game so we don't leak loops and input listeners
@@ -727,13 +722,18 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
     // it from the host's game state, otherwise use the map-screen selection.
     const activeScheme = networkState?.scheme ?? scheme ?? window.selectedScheme;
 
-    // Create game instance
+    spContext = spOptions?.context || null;
+
+    // Create game instance. Single-player modes pass an explicit map (or
+    // none — fixed seed instead), so a leftover lobby map must not leak in.
     game = new Game(canvas, {
         isPractice,
         networkManager: isPractice ? null : networkManager,
         initialState: networkState,
-        customMap: customMap || window.selectedMap,
-        scheme: activeScheme
+        customMap: customMap ?? (spOptions ? null : window.selectedMap),
+        scheme: activeScheme,
+        teamsConfig: spOptions?.teamsConfig || null,
+        seed: spOptions?.seed
     });
 
     // Expose game instance globally for debugging/export
@@ -748,7 +748,229 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
     // Game over handler
     game.on('gameOver', (result) => {
         menuManager.showGameOver(result);
+        showSinglePlayerResult(result);
     });
+}
+
+/**
+ * Game-over extras for single player: update rank/mission/training progress
+ * and show the promotion / unlock line under the winner banner.
+ */
+function showSinglePlayerResult(result) {
+    const line = document.getElementById('sp-result-line');
+    if (!line) return;
+
+    const outcome = SP.handleGameOver(spContext, result);
+    if (!outcome) {
+        line.classList.add('hidden');
+        return;
+    }
+    line.textContent = outcome.text;
+    line.classList.remove('hidden');
+
+    // showGameOver picks victory music whenever there IS a winner — but a
+    // CPU winner means the human lost, so switch to the defeat theme.
+    if (!outcome.won) {
+        globalAudioManager.playTheme('defeat');
+    }
+}
+
+/**
+ * Single Player modal, modeled on Worms Armageddon's single-player menu:
+ * Training (weapon ranges), Missions (fixed-map campaign), Deathmatch
+ * (ranked ladder), Quick Game (instant CPU match) and classic Hotseat.
+ */
+function setupSinglePlayerMenu() {
+    const modal = document.getElementById('sp-modal');
+    const body = document.getElementById('sp-modal-body');
+    const title = document.getElementById('sp-modal-title');
+    const btnBack = document.getElementById('btn-sp-back');
+    const btnSingle = document.getElementById('btn-single');
+    if (!modal || !btnSingle) return;
+
+    let view = 'main';
+
+    const open = () => { modal.classList.remove('hidden'); renderMain(); };
+    const close = () => modal.classList.add('hidden');
+
+    btnSingle.addEventListener('click', (e) => {
+        e.target.blur(); // Spacebar must not re-trigger the focused button
+        open();
+    });
+    btnBack.addEventListener('click', () => {
+        if (view === 'main') close();
+        else renderMain();
+    });
+
+    /** Start a prepared single-player bundle (optionally with a chosen map/scheme). */
+    function startBundle(bundle, customMap = null, schemeOverride = null) {
+        close();
+        startGame(true, null, customMap, schemeOverride ?? bundle.scheme ?? null, {
+            teamsConfig: bundle.teamsConfig,
+            seed: bundle.seed,
+            context: bundle.context
+        });
+    }
+
+    function makeItem(icon, name, desc, onClick, opts = {}) {
+        const el = document.createElement('button');
+        el.className = 'sp-item' + (opts.locked ? ' locked' : '') + (opts.done ? ' done' : '');
+        el.disabled = !!opts.locked;
+        el.innerHTML = `
+            <span class="sp-item-icon">${icon}</span>
+            <span class="sp-item-text">
+                <strong>${name}</strong>
+                <small>${desc}</small>
+            </span>
+            <span class="sp-item-status">${opts.locked ? '🔒' : (opts.done ? '✅' : '')}</span>`;
+        if (!opts.locked) el.addEventListener('click', onClick);
+        body.appendChild(el);
+        return el;
+    }
+
+    // ---------------- Main list ----------------
+    function renderMain() {
+        view = 'main';
+        title.textContent = '🐨 Single Player';
+        body.innerHTML = '';
+        const progress = SP.loadProgress();
+
+        makeItem('🎯', 'Training',
+            `Weapon ranges — hit every target · ${progress.trainingCompleted.length}/${SP.TRAINING.length} passed`,
+            renderTraining);
+        makeItem('🎖️', 'Missions',
+            `Scripted campaign · ${progress.missionsCompleted.length}/${SP.MISSIONS.length} complete`,
+            renderMissions);
+        makeItem('💀', 'Deathmatch',
+            `Ranked ladder · Current rank: ${SP.RANKS[progress.dmLevel]}`,
+            renderDeathmatch);
+        makeItem('⚡', 'Quick Game', 'Instant battle against CPU squads', renderQuick);
+        makeItem('👥', 'Hotseat', 'Two players share one keyboard (classic practice)', startHotseat);
+    }
+
+    // ---------------- Training ----------------
+    function renderTraining() {
+        view = 'sub';
+        title.textContent = '🎯 Training';
+        body.innerHTML = '';
+        const progress = SP.loadProgress();
+
+        for (const range of SP.TRAINING) {
+            makeItem('🎯', range.name, range.desc,
+                () => startBundle(SP.buildTraining(range)),
+                { done: progress.trainingCompleted.includes(range.id) });
+        }
+    }
+
+    // ---------------- Missions ----------------
+    function renderMissions() {
+        view = 'sub';
+        title.textContent = '🎖️ Missions';
+        body.innerHTML = '';
+        const progress = SP.loadProgress();
+
+        SP.MISSIONS.forEach((mission, i) => {
+            const done = progress.missionsCompleted.includes(mission.id);
+            const unlocked = i === 0 ||
+                progress.missionsCompleted.includes(SP.MISSIONS[i - 1].id);
+            makeItem(`${i + 1}️⃣`, mission.name,
+                unlocked ? mission.briefing : 'Complete the previous mission to unlock.',
+                () => renderBriefing(mission),
+                { locked: !unlocked, done });
+        });
+    }
+
+    function renderBriefing(mission) {
+        view = 'sub';
+        title.textContent = `🎖️ ${mission.name}`;
+        body.innerHTML = `
+            <p class="sp-briefing">${mission.briefing}</p>
+            <p class="sp-briefing-sub">Objective: eliminate all enemy koalas.</p>`;
+        const btn = document.createElement('button');
+        btn.className = 'menu-btn primary';
+        btn.textContent = '▶ Start Mission';
+        btn.addEventListener('click', () => startBundle(SP.buildMission(mission)));
+        body.appendChild(btn);
+    }
+
+    // ---------------- Deathmatch ----------------
+    function renderDeathmatch() {
+        view = 'sub';
+        title.textContent = '💀 Deathmatch';
+        body.innerHTML = '';
+        const progress = SP.loadProgress();
+        const level = progress.dmLevel;
+        const bundle = SP.buildDeathmatch(level);
+        const enemies = bundle.teamsConfig.filter(t => t.isCPU);
+
+        const info = document.createElement('div');
+        info.className = 'sp-dm-info';
+        info.innerHTML = `
+            <p class="sp-dm-rank">Current rank: <strong>${SP.RANKS[level]}</strong>
+                <small>(${level + 1}/${SP.RANKS.length})</small></p>
+            <p class="sp-briefing">Win at your rank to be promoted. The higher you climb,
+                the smarter, tougher and more numerous the enemy squads become.</p>
+            <p class="sp-briefing-sub">Next fight: ${enemies.length} enemy squad${enemies.length > 1 ? 's' : ''} ·
+                ${enemies[0].koalaCount} koalas each · ${enemies[0].health} HP · CPU level ${enemies[0].difficulty}</p>`;
+        body.appendChild(info);
+
+        const btn = document.createElement('button');
+        btn.className = 'menu-btn primary';
+        btn.textContent = '⚔️ Fight!';
+        btn.addEventListener('click', () => startBundle(bundle));
+        body.appendChild(btn);
+    }
+
+    // ---------------- Quick Game ----------------
+    function renderQuick() {
+        view = 'sub';
+        title.textContent = '⚡ Quick Game';
+        body.innerHTML = `
+            <div class="sp-quick-row">
+                <label for="sp-quick-difficulty">CPU difficulty</label>
+                <select id="sp-quick-difficulty" class="scheme-select">
+                    <option value="1">CPU 1 — Pushover</option>
+                    <option value="2">CPU 2 — Rookie</option>
+                    <option value="3" selected>CPU 3 — Soldier</option>
+                    <option value="4">CPU 4 — Veteran</option>
+                    <option value="5">CPU 5 — Elite</option>
+                </select>
+            </div>
+            <div class="sp-quick-row">
+                <label for="sp-quick-enemies">Enemy squads</label>
+                <select id="sp-quick-enemies" class="scheme-select">
+                    <option value="1" selected>1 squad (duel)</option>
+                    <option value="2">2 squads (free-for-all)</option>
+                    <option value="3">3 squads (free-for-all)</option>
+                </select>
+            </div>`;
+        const btn = document.createElement('button');
+        btn.className = 'menu-btn primary';
+        btn.textContent = '🗺️ Choose Map & Fight';
+        btn.addEventListener('click', async () => {
+            const difficulty = parseInt(document.getElementById('sp-quick-difficulty').value, 10);
+            const enemyCount = parseInt(document.getElementById('sp-quick-enemies').value, 10);
+            const bundle = SP.buildQuickGame(difficulty, enemyCount);
+
+            close();
+            const maps = await MapManager.getAllMaps();
+            menuManager.showMapSelection(maps, (mapId, scheme) => {
+                const customMap = mapId !== 'default' ? maps[mapId] : null;
+                startBundle(bundle, customMap, scheme);
+            });
+        });
+        body.appendChild(btn);
+    }
+
+    // ---------------- Hotseat (the old Practice mode) ----------------
+    async function startHotseat() {
+        close();
+        const maps = await MapManager.getAllMaps();
+        menuManager.showMapSelection(maps, (mapId, scheme) => {
+            const customMap = mapId !== 'default' ? maps[mapId] : null;
+            startGame(true, null, customMap, scheme);
+        });
+    }
 }
 
 /**

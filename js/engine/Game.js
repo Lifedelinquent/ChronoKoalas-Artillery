@@ -17,6 +17,7 @@ import { SpatialGrid } from './SpatialGrid.js';
 import { DOMCache } from '../utils/DOMCache.js';
 import { TurnManager } from './TurnManager.js';
 import { WeatherSystem } from './WeatherSystem.js';
+import { AIController } from '../ai/AIController.js';
 import { sanitizeScheme } from '../utils/GameScheme.js';
 import { TEAM_COLORS, TEAM_COLOR_LABELS } from '../utils/TeamColors.js';
 
@@ -129,6 +130,10 @@ export class Game extends EventEmitter {
         // Loot crate system (replaces old powerups)
         this.lootManager = new LootManager(this);
 
+        // CPU brain for single player — created in createTeams when any
+        // team config is flagged isCPU (local games only, never networked)
+        this.aiController = null;
+
         // Atmospheric weather particles (cosmetic, theme-driven, local-only)
         this.weather = new WeatherSystem(this);
     }
@@ -168,7 +173,8 @@ export class Game extends EventEmitter {
         // Get game seed for multiplayer sync (or generate random for practice)
         // (?? not ||: a seed of 0 must not silently become a local random one)
         const initialState = this.options.initialState;
-        this.gameSeed = initialState?.seed ?? Math.floor(Math.random() * 1000000);
+        // options.seed: fixed seed for single-player missions (reproducible maps)
+        this.gameSeed = initialState?.seed ?? this.options.seed ?? Math.floor(Math.random() * 1000000);
         console.log('🎲 Game seed:', this.gameSeed);
 
         // Create seeded random function for consistent results
@@ -362,10 +368,22 @@ export class Game extends EventEmitter {
         // Multiplayer: one squad per player, in gameState.players order (so
         // teams[i] is driven by players[i] on every client). A player's
         // colour is their alliance — same colour means allied squads.
+        // Single player passes an explicit teamsConfig (human + CPU squads).
         // Practice keeps the classic red-vs-blue setup.
         const players = this.options.initialState?.players;
+        const spTeams = this.options.teamsConfig;
         let teamConfigs;
-        if (Array.isArray(players) && players.length >= 2) {
+        if (Array.isArray(spTeams) && spTeams.length >= 2) {
+            teamConfigs = spTeams.map(c => ({
+                name: c.name || `${TEAM_COLOR_LABELS[c.color] || c.color} Team`,
+                color: TEAM_COLORS[c.color] || c.color,
+                alliance: c.alliance || c.color,
+                koalaCount: c.koalaCount || koalaCount,
+                isCPU: !!c.isCPU,
+                difficulty: c.difficulty ?? 0,
+                health: c.health
+            }));
+        } else if (Array.isArray(players) && players.length >= 2) {
             teamConfigs = players.map(p => ({
                 name: p.name || `${TEAM_COLOR_LABELS[p.color] || p.color} Team`,
                 color: TEAM_COLORS[p.color] || p.color,
@@ -430,6 +448,10 @@ export class Game extends EventEmitter {
 
         teamConfigs.forEach((config, teamIndex) => {
             const team = new Team(config.name, config.color, config.alliance);
+            // CPU-controlled squad (single player): flag drives isMyTurn()
+            // input gating and the AIController's turn handling
+            team.isCPU = !!config.isCPU;
+            team.aiDifficulty = config.difficulty ?? 0;
             // Custom-map spawn markers only define two groups; teams beyond
             // the second fall back to random band spawning (empty marker list)
             const teamKey = teamIndex === 0 ? 'team1' : (teamIndex === 1 ? 'team2' : null);
@@ -487,9 +509,11 @@ export class Game extends EventEmitter {
                     const koala = new Koala(pos.x, pos.y, team);
                     koala.name = this.getKoalaName(teamIndex, i);
 
-                    // Scheme-defined starting health
-                    koala.maxHealth = this.scheme.startingHealth;
-                    koala.health = this.scheme.startingHealth;
+                    // Scheme-defined starting health (single-player team
+                    // configs may override it, e.g. 1 HP training targets)
+                    const startHp = config.health || this.scheme.startingHealth;
+                    koala.maxHealth = startHp;
+                    koala.health = startHp;
 
                     // Ensure physics state is grounded immediately
                     koala.onGround = true;
@@ -506,6 +530,10 @@ export class Game extends EventEmitter {
 
         // Register all koalas in spatial grid
         this.rebuildSpatialGrid();
+
+        // Spin up (or drop) the CPU brain depending on this match's teams —
+        // recreated fresh on every start/reset so no turn state leaks over
+        this.aiController = this.teams.some(t => t.isCPU) ? new AIController(this) : null;
 
         this.buildTeamHealthUI();
         this.updateTeamHealth();
@@ -1150,6 +1178,12 @@ export class Game extends EventEmitter {
 
         // Process delayed actions (replaces setTimeout - no more timer fired lag!)
         this.updateDelayedActions(dt);
+
+        // CPU turns: the AI drives the current koala through the same APIs
+        // the player would (runs across phases so it can walk during retreat)
+        if (this.aiController) {
+            this.aiController.update(dt);
+        }
 
         // Update UI states based on input
         this.inputManager.update(dt);
@@ -4389,7 +4423,8 @@ export class Game extends EventEmitter {
                 }
                 indicator.innerHTML = `<span id="current-team" style="color: ${team.color}; ${isMyTurn ? 'font-weight: bold; text-shadow: 0 0 10px ' + team.color : ''}">${team.name}</span> - ${turnText}`;
             } else {
-                indicator.innerHTML = `<span id="current-team" style="color: ${team.color}">${team.name}</span>'s Turn`;
+                const cpuTag = team.isCPU ? ' 🤖' : '';
+                indicator.innerHTML = `<span id="current-team" style="color: ${team.color}">${team.name}${cpuTag}</span>'s Turn`;
             }
         }
     }
@@ -4503,9 +4538,10 @@ export class Game extends EventEmitter {
             winnerDisplay = allies.length > 1
                 ? {
                     name: `${TEAM_COLOR_LABELS[winningTeam.alliance] || winningTeam.alliance} Team (${allies.map(t => t.name).join(' & ')})`,
-                    color: winningTeam.color
+                    color: winningTeam.color,
+                    alliance: winningTeam.alliance
                 }
-                : { name: winningTeam.name, color: winningTeam.color };
+                : { name: winningTeam.name, color: winningTeam.color, alliance: winningTeam.alliance };
         }
 
         this.emit('gameOver', {
@@ -4800,7 +4836,10 @@ export class Game extends EventEmitter {
      */
     isMyTurn() {
         if (this.isPractice || !this.networkManager) {
-            return true; // Always our turn in practice mode
+            // Local game: CPU squads play themselves — blocking isMyTurn here
+            // is what locks the human player's input out during a CPU turn.
+            // Pure hotseat practice (no CPU teams) is always "my turn".
+            return !this.getCurrentTeam()?.isCPU;
         }
         return this.networkManager.isMyTurn(this.currentTeamIndex);
     }

@@ -313,33 +313,30 @@ export class TurnManager extends EventEmitter {
             this.applySuddenDeathEscalation();
         }
 
-        let anyDied = false;
-        for (const team of this.game.teams) {
-            for (const koala of team.koalas) {
-                if (koala.health <= 0 && koala.isAlive) {
-                    koala.die();
-                    this.game.audioManager.playDeath();
-                    this.game.createDeathEffect(koala);
-                    anyDied = true;
-                }
-            }
-        }
+        // Koalas at 0 HP die via the WA-style self-destruct sequence
+        // (Game.updateDeathSequences); here we only need to know whether any
+        // are on their way out so the settle wait allows for the fireworks.
+        const anyDying = this.game.teams.some(team =>
+            team.koalas.some(k => k.isAlive && (k.isDying || k.health <= 0))
+        );
 
         this.game.updateTeamHealth();
 
         // Game over when every surviving team is on the same side (allied
-        // teams share an alliance colour, so a 2v2 ends when one colour falls)
+        // teams share an alliance colour, so a 2v2 ends when one colour
+        // falls) — but let pending death explosions play out first (they
+        // can change the tally)
         const aliveTeams = this.game.teams.filter(t => t.isAlive());
-        if (this.game.countAliveAlliances(aliveTeams) <= 1) {
+        if (!anyDying && this.game.countAliveAlliances(aliveTeams) <= 1) {
             this.game.endGame(aliveTeams[0] || null);
             return;
         }
 
-        // Wait for knocked-back koalas to actually land before handing over
-        // the turn (with a hard timeout), instead of switching mid-flight
+        // Wait for knocked-back koalas to land and dying ones to detonate
+        // before handing over the turn, instead of switching mid-flight
         this.settleWaitElapsed = 0;
         this.settleForTurn = this.turnCounter;
-        this.game.scheduleDelayedAction(anyDied ? 1000 : 300, () => this.waitForSettle());
+        this.game.scheduleDelayedAction(anyDying ? 1200 : 300, () => this.waitForSettle());
     }
 
     /**
@@ -353,24 +350,22 @@ export class TurnManager extends EventEmitter {
 
         const waterLevel = this.game.waterLevel;
         const allSettled = this.game.teams.every(team =>
-            team.koalas.every(k => !k.isAlive || k.onGround || k.y > waterLevel)
+            team.koalas.every(k =>
+                !k.isAlive ||
+                (!k.isDying && k.health > 0 && (k.onGround || k.y > waterLevel))
+            )
         );
 
         this.settleWaitElapsed = (this.settleWaitElapsed || 0) + 0.25;
 
-        if (allSettled || this.settleWaitElapsed > 3) {
+        // Generous timeout: death explosions can chain (koala → mine → drum
+        // → another koala), and deaths now play one at a time under the
+        // death-cam, so each adds its own fuse + linger
+        if (allSettled || this.settleWaitElapsed > 12) {
             this.applyFallDamage();
 
-            // Late fall damage / drowning during settling may have killed someone
-            for (const team of this.game.teams) {
-                for (const koala of team.koalas) {
-                    if (koala.health <= 0 && koala.isAlive) {
-                        koala.die();
-                        this.game.audioManager.playDeath();
-                        this.game.createDeathEffect(koala);
-                    }
-                }
-            }
+            // Late fall damage / drowning kills go through the death
+            // sequence (Game.updateDeathSequences) — no direct die() here
             this.game.updateTeamHealth();
 
             const aliveTeams = this.game.teams.filter(t => t.isAlive());
@@ -403,6 +398,9 @@ export class TurnManager extends EventEmitter {
 
     updateTurnTimer(dt) {
         if (this.game.isGameOver) return;
+        // Clock stops while a death plays out — the player shouldn't lose
+        // time (or move unseen) while the camera is away on the death-cam
+        if (this.game.deathHoldActive()) return;
 
         // Count down turn timer
         this.turnTimer -= dt;
@@ -450,6 +448,9 @@ export class TurnManager extends EventEmitter {
      */
     updatePassiveWatchdog(dt) {
         if (!this.isPassiveClient() || this.localFallback) return;
+        // Deaths playing out ARE progress — don't count them against the
+        // watchdog or it could force an advance mid-sequence
+        if (this.game.deathHoldActive()) return;
         this.passiveWait += dt;
         if (this.passiveWait > 12) {
             console.warn('⚠️ No turnStart from turn owner — advancing locally (fallback)');
@@ -475,6 +476,8 @@ export class TurnManager extends EventEmitter {
 
     updateRetreat(dt) {
         if (this.game.isGameOver) return;
+        // Retreat clock also holds while the death-cam is showing a kill
+        if (this.game.deathHoldActive()) return;
 
         this.retreatTimer -= dt;
 

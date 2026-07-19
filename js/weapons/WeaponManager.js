@@ -655,6 +655,26 @@ export class WeaponManager {
                 directDamage: 0,
                 explosionRadius: 70,
                 knockback: 350
+            },
+            // WA-style dying self-destruct: every koala goes out with a bang
+            deathBlast: {
+                id: 'deathBlast',
+                name: 'Last Words',
+                type: 'deathBlast',
+                damage: 30,
+                directDamage: 0,
+                explosionRadius: 50,
+                knockback: 250
+            },
+            // WA-style shootable crates: a destroyed crate explodes
+            crateBlast: {
+                id: 'crateBlast',
+                name: 'Crate',
+                type: 'crateBlast',
+                damage: 40,
+                directDamage: 0,
+                explosionRadius: 60,
+                knockback: 300
             }
         };
     }

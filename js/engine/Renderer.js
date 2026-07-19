@@ -236,6 +236,9 @@ export class Renderer {
         // Draw oil drums (map hazards)
         this.drawOilDrums();
 
+        // Draw gravestones (behind the living)
+        this.drawGraves();
+
         // Draw the ninja rope (behind its koala)
         this.drawRope();
 
@@ -345,8 +348,9 @@ export class Renderer {
 
         for (const team of this.game.teams) {
             for (const koala of team.koalas) {
-                // Draw dead koalas first (so alive ones render on top)
-                if (!koala.isAlive) {
+                // Draw dead koalas first (so alive ones render on top).
+                // Exploded koalas leave only a gravestone (drawn separately)
+                if (!koala.isAlive && !koala.vanished) {
                     this.drawDeadKoala(koala);
                 }
             }
@@ -360,6 +364,38 @@ export class Renderer {
                     this.drawKoala(koala, isCurrent);
                 }
             }
+        }
+    }
+
+    /**
+     * Draw the gravestones left by self-destructed koalas (y = base of stone)
+     */
+    drawGraves() {
+        const ctx = this.ctx;
+        for (const grave of this.game.graves) {
+            const x = grave.x;
+            const y = grave.y;
+
+            // Cross-shaped headstone sitting on the ground
+            ctx.fillStyle = '#6b7079';
+            ctx.beginPath();
+            ctx.roundRect(x - 4, y - 30, 8, 30, 2);   // vertical post
+            ctx.roundRect(x - 11, y - 24, 22, 7, 2);  // cross-arm
+            ctx.fill();
+
+            // Subtle rim so it reads against dark terrain
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.47)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(x - 4, y - 30, 8, 30, 2);
+            ctx.roundRect(x - 11, y - 24, 22, 7, 2);
+            ctx.stroke();
+
+            // Small dark detail on the post
+            ctx.fillStyle = 'rgba(20, 20, 24, 0.59)';
+            ctx.beginPath();
+            ctx.arc(x, y - 21, 1.4, 0, Math.PI * 2);
+            ctx.fill();
         }
     }
 
@@ -429,8 +465,21 @@ export class Renderer {
             ctx.drawImage(sprite, -size / 2, -size / 2 - 2, size, size);
         } else {
             // Fallback: draw minimal placeholder
-            ctx.fillStyle = koala.team.color;
+            ctx.fillStyle = koala.isDying ? '#ff2828' : koala.team.color;
             ctx.fillRect(-10, -15, 20, 30);
+        }
+
+        // Dying panic: pulsing red flash in the final moment before detonating
+        if (koala.isDying) {
+            const flash = Math.sin(performance.now() / 45) * 0.5 + 0.5;
+            ctx.save();
+            ctx.globalAlpha = flash * 0.75;
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = 'rgb(255, 40, 40)';
+            ctx.beginPath();
+            ctx.arc(0, -2, 20, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
         }
 
         // Draw Weapon (if current koala)

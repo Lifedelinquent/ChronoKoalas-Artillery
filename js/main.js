@@ -668,6 +668,12 @@ function setupMenuHandlers() {
         }
     });
 
+    networkManager.on('remoteCrateDestroyed', (data) => {
+        if (game) {
+            game.lootManager.handleRemoteCrateDestroyed(data);
+        }
+    });
+
     networkManager.on('remoteTurnStart', (data) => {
         if (game) {
             game.handleRemoteTurnStart(data);

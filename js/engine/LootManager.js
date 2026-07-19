@@ -213,6 +213,79 @@ export class LootManager {
     }
 
     /**
+     * WA-style shootable crates: any damage destroys the crate, which blows
+     * up with a real blast. Detection runs symmetrically on every client
+     * (crate positions are synced at spawn and projectile flight is
+     * deterministic); the host also broadcasts 'crateDestroyed' as the
+     * authority so a drifted client can't keep a ghost crate. The `collected`
+     * flag makes the destroy idempotent, so the duplicate is harmless.
+     */
+    destroyCrate(crate) {
+        if (crate.collected) return;
+        crate.collected = true; // update() splices collected crates
+
+        // Wood splinters tinted like the box
+        const boxColors = { health: '#d32f2f', utility: '#1e5f8e', weapon: '#8B4513' };
+        for (let i = 0; i < 10; i++) {
+            this.game.addParticle({
+                type: 'debris',
+                x: crate.x,
+                y: crate.y,
+                vx: (this.random() - 0.5) * 260,
+                vy: -this.random() * 220 - 40,
+                color: this.random() > 0.4 ? (boxColors[crate.category] || boxColors.weapon) : '#5a3a1a',
+                size: 2 + this.random() * 3,
+                lifetime: 0.7 + this.random() * 0.5,
+                time: 0
+            });
+        }
+        this.game.createFloatingText?.(crate.x, crate.y - 30, `💥 ${crate.item.name}`, this.rarityColors[crate.rarity]);
+
+        // Host is the destruction authority — tell the guest which crate blew
+        if (this.game.networkManager && !this.game.isPractice && this.game.networkManager.isHost) {
+            this.game.networkManager.send({
+                type: 'crateDestroyed',
+                crateId: crate.id
+            });
+        }
+
+        // The crate's blast goes through the standard impact pipeline
+        // (craters, chain damage, mine flinging, network sync). A short fuse
+        // keeps chain reactions popping in sequence instead of one mega-frame,
+        // and stops the blast from recursing inside the impact that killed it.
+        const cx = crate.x, cy = crate.y;
+        this.game.scheduleDelayedAction(120 + this.random() * 100, () => {
+            const blastWeapon = this.game.weaponManager.getSubMunition('crateBlast');
+            if (blastWeapon) {
+                this.game.handleProjectileImpact({ x: cx, y: cy, weapon: blastWeapon, shooter: null });
+            }
+        });
+    }
+
+    /**
+     * Blast damage to crates near an explosion. Runs UNGATED on every client
+     * (like pushProjectilesFromBlast): both sides replay the same impact
+     * against the same crate positions, so they destroy the same boxes.
+     */
+    damageCrates(x, y, radius) {
+        for (const crate of this.crates) {
+            if (crate.collected) continue;
+            if (Math.hypot(crate.x - x, crate.y - y) < radius + 12) {
+                this.destroyCrate(crate);
+            }
+        }
+    }
+
+    /**
+     * Handle host's authoritative crate destruction (idempotent if our own
+     * simulation already blew it up)
+     */
+    handleRemoteCrateDestroyed(data) {
+        const crate = this.crates.find(c => c.id === data.crateId && !c.collected);
+        if (crate) this.destroyCrate(crate);
+    }
+
+    /**
      * Serialize crates for reconnect state sync
      */
     serializeCrates() {

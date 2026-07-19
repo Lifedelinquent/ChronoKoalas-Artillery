@@ -1217,44 +1217,98 @@ export class Terrain {
 
 
     /**
-     * Create explosion crater in terrain
+     * Deterministic per-crater PRNG (mulberry32, same as Game's) seeded from
+     * the crater's own numbers. Both clients receive identical (cx, cy,
+     * radius) via explosionSync, so they carve identical lumps without ever
+     * touching the shared seeded RNG stream.
+     */
+    createCraterRandom(cx, cy, radius) {
+        const f = new Float32Array(1);
+        const bits = new Int32Array(f.buffer);
+        f[0] = cx; const ix = bits[0];
+        f[0] = cy; const iy = bits[0];
+        f[0] = radius; const ir = bits[0];
+        let s = ((Math.imul(ix, 31) + Math.imul(iy, 131) + Math.imul(ir, 17)) || 1) >>> 0;
+        return () => {
+            s = (s + 0x6D2B79F5) >>> 0;
+            let t = s;
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+    }
+
+    /**
+     * Create explosion crater in terrain — WA-style: a chunky composite hole
+     * with lumpy edges and a charred rim.
      */
     createCrater(cx, cy, radius, updateMask = true) {
-        // Use destination-out to remove terrain
-        this.ctx.save();
-        this.ctx.globalCompositeOperation = 'destination-out';
+        // Holes read bigger than the damage blast (the blast radius still
+        // governs damage; this is pure terrain destruction)
+        const r = radius * 1.15;
 
-        // Create soft-edged crater
-        const gradient = this.ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-        gradient.addColorStop(0, 'rgba(255,255,255,1)');
-        gradient.addColorStop(0.7, 'rgba(255,255,255,1)');
-        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+        // Lumpy satellite bites around the rim for real explosions; small
+        // tool carves (blowtorch/drill/fire) stay clean circles
+        const lobes = [];
+        if (radius >= 24) {
+            const rng = this.createCraterRandom(cx, cy, radius);
+            const count = 3 + Math.floor(rng() * 3); // 3-5 lumps
+            for (let i = 0; i < count; i++) {
+                const a = rng() * Math.PI * 2;
+                const dist = r * (0.55 + rng() * 0.4);
+                const lr = r * (0.22 + rng() * 0.22);
+                lobes.push({ x: cx + Math.cos(a) * dist, y: cy + Math.sin(a) * dist, r: lr });
+            }
+        }
 
-        this.ctx.fillStyle = gradient;
-        this.ctx.beginPath();
-        this.ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        this.ctx.restore();
-
-        // Add crater edge/burn marks
+        // 1. Char the terrain around the future hole. source-atop only tints
+        //    pixels that exist, and the punch below removes the middle —
+        //    what survives is a burnt rim hugging the lumpy edge.
         this.ctx.save();
         this.ctx.globalCompositeOperation = 'source-atop';
-        this.ctx.strokeStyle = '#2d1810';
-        this.ctx.lineWidth = 3;
+        this.ctx.fillStyle = 'rgba(28, 17, 10, 0.85)';
         this.ctx.beginPath();
-        this.ctx.arc(cx, cy, radius * 0.9, 0, Math.PI * 2);
-        this.ctx.stroke();
+        this.ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+        this.ctx.fill();
+        for (const l of lobes) {
+            this.ctx.beginPath();
+            this.ctx.arc(l.x, l.y, l.r + 4, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
+        this.ctx.restore();
+
+        // 2. Punch the hole: soft-edged main blast + hard-edged lumps
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'destination-out';
+        const gradient = this.ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(1, r));
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.75, 'rgba(255,255,255,1)');
+        gradient.addColorStop(1, 'rgba(255,255,255,0)');
+        this.ctx.fillStyle = gradient;
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        this.ctx.fill();
+
+        this.ctx.fillStyle = 'rgba(255,255,255,1)';
+        for (const l of lobes) {
+            this.ctx.beginPath();
+            this.ctx.arc(l.x, l.y, l.r, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
         this.ctx.restore();
 
         if (updateMask) {
-            // OPTIMIZED: Only update the crater region
-            const padding = 5; // Extra padding to catch edge effects
+            // Cover the main hole plus the farthest lump
+            let extent = r;
+            for (const l of lobes) {
+                extent = Math.max(extent, Math.hypot(l.x - cx, l.y - cy) + l.r);
+            }
+            extent += 8;
             this.updateCollisionMask({
-                x: cx - radius - padding,
-                y: cy - radius - padding,
-                width: (radius + padding) * 2,
-                height: (radius + padding) * 2
+                x: cx - extent,
+                y: cy - extent,
+                width: extent * 2,
+                height: extent * 2
             });
         }
     }

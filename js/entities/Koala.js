@@ -24,6 +24,13 @@ export class Koala {
         this.maxHealth = 100;
         this.isAlive = true;
 
+        // WA-style death: at 0 HP the koala panics briefly (isDying) and then
+        // self-destructs (Game.updateDeathSequences). Exploded bodies vanish
+        // and leave a gravestone; drowned/ring-out koalas die without exploding.
+        this.isDying = false;
+        this.dyingTimer = 0;
+        this.vanished = false;
+
         // State
         this.onGround = false;
         this.facingLeft = false;
@@ -118,6 +125,7 @@ export class Koala {
      */
     die() {
         this.isAlive = false;
+        this.isDying = false;
         // Play death animation/sound
     }
 

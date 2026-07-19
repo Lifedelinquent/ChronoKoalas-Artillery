@@ -40,6 +40,8 @@ export class Physics {
         // Update koalas (both alive AND dead - dead can still be flung by explosions)
         for (const team of this.game.teams) {
             for (const koala of team.koalas) {
+                // Exploded koalas are gone (only a gravestone remains)
+                if (koala.vanished) continue;
                 this.updateEntity(koala, dt);
             }
         }

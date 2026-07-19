@@ -569,6 +569,10 @@ export class NetworkManager extends EventEmitter {
                 this.emit('remoteCrateCollected', data);
                 break;
 
+            case 'crateDestroyed':
+                this.emit('remoteCrateDestroyed', data);
+                break;
+
             case 'explosionSync':
                 this.emit('remoteExplosionSync', data);
                 break;

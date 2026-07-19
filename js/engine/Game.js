@@ -26,6 +26,14 @@ export class Game extends EventEmitter {
     // koala dies during one of these (e.g. drowns), the turn is handed over.
     static LIVE_TURN_PHASES = ['aiming', 'armed', 'firing', 'blowtorch', 'drill', 'rope'];
 
+    // WA-style blast reach: koalas are hurt and flung beyond the visible
+    // hole (damage zone = explosionRadius * this)
+    static DAMAGE_RADIUS_SCALE = 1.4;
+
+    // Full damage anywhere inside this fraction of the damage radius,
+    // then linear falloff to zero at the edge — close hits hit HARD
+    static DAMAGE_CORE_FRACTION = 0.25;
+
     constructor(canvas, options = {}) {
         super();
 
@@ -103,6 +111,17 @@ export class Game extends EventEmitter {
         // Explosive oil drums scattered on the map (WA-style hazards).
         // Landmines are stationary Projectiles and live in this.projectiles.
         this.oilDrums = [];
+
+        // Gravestones left where koalas self-destructed (y = base of stone)
+        this.graves = [];
+
+        // Death-cam: while a koala works through its self-destruct the camera
+        // cuts to it, then lingers briefly on the blast. Turn/retreat timers
+        // hold for the duration so the death is actually seen instead of
+        // playing off-screen behind the shooter.
+        this.deathCamX = 0;
+        this.deathCamY = 0;
+        this.deathCamTimer = 0;
 
         // Kamikaze dash state (null when inactive)
         this.kamikazeState = null;
@@ -589,7 +608,10 @@ export class Game extends EventEmitter {
         // Add all koalas
         for (const team of this.teams) {
             for (const koala of team.koalas) {
-                // Include ALL koalas (alive and dead) so dead bodies can be flung by explosions
+                // Include ALL koalas (alive and dead) so dead bodies can be
+                // flung by explosions — but exploded koalas are gone (only
+                // their gravestone remains)
+                if (koala.vanished) continue;
                 entities.push(koala);
             }
         }
@@ -1138,6 +1160,12 @@ export class Game extends EventEmitter {
         // Oil drums: burn-down fuses and falling when ground is destroyed
         this.updateOilDrums(dt);
 
+        // WA-style deaths: koalas at 0 HP panic briefly, then self-destruct
+        this.updateDeathSequences(dt);
+
+        // Gravestones fall when the ground under them is blown away
+        this.updateGraves(dt);
+
         // Always update projectiles/traps (mines need to work even during aiming)
         if (profile) t0 = performance.now();
         this.updateProjectiles(dt);
@@ -1179,9 +1207,13 @@ export class Game extends EventEmitter {
         // Process delayed actions (replaces setTimeout - no more timer fired lag!)
         this.updateDelayedActions(dt);
 
+        // Death-cam linger countdown
+        if (this.deathCamTimer > 0) this.deathCamTimer -= dt;
+
         // CPU turns: the AI drives the current koala through the same APIs
-        // the player would (runs across phases so it can walk during retreat)
-        if (this.aiController) {
+        // the player would (runs across phases so it can walk during retreat).
+        // AI pauses along with player input while a death plays out.
+        if (this.aiController && !this.deathHoldActive()) {
             this.aiController.update(dt);
         }
 
@@ -1889,7 +1921,22 @@ export class Game extends EventEmitter {
                     break;
                 }
 
-                // 2. Check terrain next at this step
+                // 2. Crates block shots too — hitting one blows it up (WA-style)
+                let hitCrate = null;
+                for (const crate of this.lootManager.crates) {
+                    if (crate.collected) continue;
+                    if (Math.hypot(checkX - crate.x, checkY - crate.y) < 16) {
+                        hitCrate = crate;
+                        break;
+                    }
+                }
+
+                if (hitCrate) {
+                    hitResult = { type: 'crate', x: checkX, y: checkY, crate: hitCrate };
+                    break;
+                }
+
+                // 3. Check terrain next at this step
                 if (this.terrain.checkCollision(checkX, checkY)) {
                     hitResult = { type: 'terrain', x: checkX, y: checkY };
                     break;
@@ -1910,6 +1957,16 @@ export class Game extends EventEmitter {
                     } else {
                         // Normal explosion on contact
                         this.handleProjectileImpact(proj, hitResult.koala);
+                        this.removeProjectile(i);
+                    }
+                    continue;
+                }
+                else if (hitResult.type === 'crate') {
+                    // Shot crate blows up (its own fused blast); the shell
+                    // explodes on the box unless it's a pass-through weapon
+                    this.lootManager.destroyCrate(hitResult.crate);
+                    if (!proj.weapon.noContactExplosion) {
+                        this.handleProjectileImpact(proj);
                         this.removeProjectile(i);
                     }
                     continue;
@@ -2039,6 +2096,36 @@ export class Game extends EventEmitter {
         }
     }
 
+    /** Full damage inside the core, linear falloff to the blast edge. */
+    blastFalloff(distance, damageRadius) {
+        const core = damageRadius * Game.DAMAGE_CORE_FRACTION;
+        return Math.max(0, Math.min(1, (damageRadius - distance) / (damageRadius - core)));
+    }
+
+    /**
+     * WA-style: blasts kick resting mines (and dud mines) flying instead of
+     * leaving them glued to the ground. Runs UNGATED on every client — mine
+     * physics is deterministic, and both clients replay the same impact, so
+     * the mines land in the same place everywhere.
+     */
+    pushProjectilesFromBlast(cx, cy, radius, exclude = null) {
+        const pushRadius = radius * Game.DAMAGE_RADIUS_SCALE;
+        for (const p of this.projectiles) {
+            if (p === exclude || !p.stationary) continue;
+            const dist = Math.hypot(p.x - cx, p.y - cy);
+            if (dist > pushRadius) continue;
+
+            const falloff = this.blastFalloff(dist, pushRadius);
+            const push = 200 + 500 * falloff;
+
+            // Same biased origin as koala knockback: mines fly up and out
+            const angle = Math.atan2(p.y - (cy + 10), p.x - cx);
+            p.stationary = false;
+            p.vx += Math.cos(angle) * push;
+            p.vy += Math.sin(angle) * push * 1.1 - 80 * falloff;
+        }
+    }
+
     /**
      * Handle projectile impact
      */
@@ -2064,6 +2151,12 @@ export class Game extends EventEmitter {
 
             this.createExplosion(projectile.x, projectile.y, weapon.explosionRadius);
 
+            // Kick nearby resting mines flying (symmetric on all clients)
+            this.pushProjectilesFromBlast(projectile.x, projectile.y, weapon.explosionRadius, projectile);
+
+            // Crates caught in the blast blow up too (symmetric on all clients)
+            this.lootManager.damageCrates(projectile.x, projectile.y, weapon.explosionRadius);
+
             // Screen shake scaled to explosion size (skip tiny pellet hits)
             if (weapon.explosionRadius >= 30) {
                 this.addScreenShake(weapon.explosionRadius / 8, 0.35);
@@ -2078,8 +2171,10 @@ export class Game extends EventEmitter {
             // Damage koalas in radius - ONLY on authoritative client
             // Use spatial grid for efficient radius query
             if (isAuthoritativeClient) {
+                // Blast reach extends beyond the hole, WA-style
+                const damageRadius = weapon.explosionRadius * Game.DAMAGE_RADIUS_SCALE;
                 const nearbyEntities = this.spatialGrid.queryRadius(
-                    projectile.x, projectile.y, weapon.explosionRadius
+                    projectile.x, projectile.y, damageRadius
                 );
 
                 for (const { entity, distance } of nearbyEntities) {
@@ -2094,7 +2189,7 @@ export class Game extends EventEmitter {
                     // weapons fling koalas across the map, grazes just nudge.
                     // Dead bodies use the same would-be damage so ragdolls
                     // still fly.
-                    const falloff = 1 - distance / weapon.explosionRadius;
+                    const falloff = this.blastFalloff(distance, damageRadius);
                     const launchDamage = weapon.damage * damageMultiplier * falloff;
                     const knockback = Math.min(launchDamage * 9, 900);
 
@@ -2138,7 +2233,7 @@ export class Game extends EventEmitter {
 
                 // Blast damage to oil drums (detonations get synced by id)
                 this.damageOilDrums(projectile.x, projectile.y,
-                    weapon.explosionRadius, weapon.damage * damageMultiplier);
+                    damageRadius, weapon.damage * damageMultiplier);
             }
         }
 
@@ -2264,6 +2359,112 @@ export class Game extends EventEmitter {
                 lifetime: 1 + Math.random() * 0.5,
                 time: 0
             });
+        }
+    }
+
+    // ==================== WA-STYLE DEATHS & GRAVES ====================
+
+    /** True while a self-destruct is playing out (or its blast lingers). */
+    deathHoldActive() {
+        return this.deathCamTimer > 0 ||
+            this.teams.some(t => t.koalas.some(k => k.isAlive && k.isDying));
+    }
+
+    /**
+     * A koala at 0 HP panics for a beat, then self-destructs with a real
+     * blast that can chain into neighbours, mines and drums (WA-style).
+     * Detection runs on EVERY client from its own synced health values;
+     * the blast damage itself stays host-authoritative inside
+     * handleProjectileImpact. Drowned/ring-out koalas die elsewhere
+     * (Physics) without ever entering this sequence.
+     */
+    updateDeathSequences(dt) {
+        // One self-destruct at a time so the death-cam can show each in
+        // sequence (team/koala order is deterministic, so both network
+        // clients stagger multi-kills identically).
+        let anyoneDying = this.teams.some(t => t.koalas.some(k => k.isAlive && k.isDying));
+        for (const team of this.teams) {
+            for (const koala of team.koalas) {
+                if (!koala.isAlive) continue;
+
+                if (koala.isDying) {
+                    koala.dyingTimer -= dt;
+                    if (koala.dyingTimer <= 0) this.explodeKoala(koala);
+                } else if (!anyoneDying && koala.health <= 0) {
+                    koala.isDying = true;
+                    koala.dyingTimer = 0.9;
+                    anyoneDying = true;
+                    this.audioManager.playTimerTick();
+                    this.audioManager.playVoice('ouch', 0.8);
+                }
+            }
+        }
+    }
+
+    explodeKoala(koala) {
+        koala.die();
+        koala.vanished = true;
+        // Hold the camera on the blast for a beat before cutting back
+        this.deathCamX = koala.x;
+        this.deathCamY = koala.y;
+        this.deathCamTimer = 0.8;
+        this.audioManager.playDeath();
+        this.createDeathEffect(koala);
+        this.graves.push({ x: koala.x, y: koala.y + koala.height / 2, vy: 0, falling: true });
+        this.updateTeamHealth();
+
+        // The farewell blast goes through the standard impact pipeline, so
+        // craters, chain damage, mine flinging and network sync all apply
+        const blastWeapon = this.weaponManager.getSubMunition('deathBlast');
+        if (blastWeapon) {
+            this.handleProjectileImpact({
+                x: koala.x,
+                y: koala.y,
+                weapon: blastWeapon,
+                shooter: koala
+            });
+        }
+    }
+
+    /**
+     * Gravestones fall when the ground under them is blown away and sink
+     * with a splash if they end up in the water. Cosmetic only.
+     */
+    updateGraves(dt) {
+        if (this.graves.length === 0) return;
+        for (let i = this.graves.length - 1; i >= 0; i--) {
+            const g = this.graves[i];
+
+            if (!g.falling &&
+                !this.terrain.checkCollision(g.x, g.y + 2) &&
+                !this.terrain.checkCollision(g.x, g.y + 6)) {
+                g.falling = true;
+                g.vy = 0;
+            }
+
+            if (g.falling) {
+                g.vy += 800 * dt;
+                const targetY = g.y + g.vy * dt;
+                let y = g.y;
+                let landed = false;
+                while (y < targetY) {
+                    y = Math.min(y + 2, targetY);
+                    if (this.terrain.checkCollision(g.x, y + 2)) {
+                        landed = true;
+                        break;
+                    }
+                }
+                g.y = y;
+                if (landed) {
+                    g.falling = false;
+                    g.vy = 0;
+                }
+
+                if (g.y > this.waterLevel + 10) {
+                    this.createSplash(g.x, this.waterLevel);
+                    this.graves.splice(i, 1);
+                }
+            }
         }
     }
 
@@ -3770,8 +3971,14 @@ export class Game extends EventEmitter {
         if (state.traveled >= (weapon.dashDistance || 380) || out) {
             this.kamikazeState = null;
 
-            // The pilot doesn't come back
+            // The pilot doesn't come back — vaporised in their own blast
+            // (no separate death explosion), leaving only a gravestone
             koala.health = 0;
+            koala.die();
+            koala.vanished = true;
+            this.graves.push({ x: koala.x, y: koala.y + koala.height / 2, vy: 0, falling: true });
+            this.createDeathEffect(koala);
+            this.updateTeamHealth();
 
             // Final blast reuses the standard impact pipeline via a stub projectile
             const blast = this.weaponManager.getSubMunition('kamikazeBlast');
@@ -4227,6 +4434,12 @@ export class Game extends EventEmitter {
         this.addScreenShake(radius / 8, 0.35);
         this.audioManager.playExplosion('large');
 
+        // Kick nearby resting mines flying (symmetric on all clients)
+        this.pushProjectilesFromBlast(cx, cy, radius);
+
+        // Crates caught in the drum blast blow up too
+        this.lootManager.damageCrates(cx, cy, radius);
+
         // Burning oil sprays out — rolled from the drum's spawn seed so both
         // clients scatter identical flames
         this.spawnFirePatches(cx, cy, 6, this.createSeededRandom(drum.effectSeed));
@@ -4238,11 +4451,13 @@ export class Game extends EventEmitter {
         this.terrain.createCrater(cx, cy, radius);
 
         const explosionResults = [];
-        const nearbyEntities = this.spatialGrid.queryRadius(cx, cy, radius);
+        // Blast reach extends beyond the hole, WA-style
+        const damageRadius = radius * Game.DAMAGE_RADIUS_SCALE;
+        const nearbyEntities = this.spatialGrid.queryRadius(cx, cy, damageRadius);
         for (const { entity: koala, distance } of nearbyEntities) {
             if (koala.isAlive === undefined) continue;
 
-            const falloff = 1 - distance / radius;
+            const falloff = this.blastFalloff(distance, damageRadius);
             const launchDamage = damage * falloff;
             const knockback = Math.min(launchDamage * 9, 900);
             const angle = Math.atan2(koala.y - (cy + 10), koala.x - cx);
@@ -4269,7 +4484,7 @@ export class Game extends EventEmitter {
         this.updateTeamHealth();
 
         // Chain reaction into neighboring drums
-        this.damageOilDrums(cx, cy, radius, damage);
+        this.damageOilDrums(cx, cy, damageRadius, damage);
 
         if (this.networkManager && !this.isPractice && this.networkManager.isHost) {
             this.networkManager.send({
@@ -4319,8 +4534,20 @@ export class Game extends EventEmitter {
             this.camera.shake.time -= dt;
         }
 
-        // Follow projectile if tracking one (O(1) check using destroyed flag)
-        if (this.followingProjectile && !this.followingProjectile.destroyed) {
+        // Death-cam: cut to the koala working through its self-destruct,
+        // then linger briefly on the blast site
+        let dyingKoala = null;
+        for (const team of this.teams) {
+            dyingKoala = team.koalas.find(k => k.isAlive && k.isDying) || null;
+            if (dyingKoala) break;
+        }
+
+        if (dyingKoala) {
+            this.centerCameraOn(dyingKoala.x, dyingKoala.y);
+        } else if (this.deathCamTimer > 0) {
+            this.centerCameraOn(this.deathCamX, this.deathCamY);
+        } else if (this.followingProjectile && !this.followingProjectile.destroyed) {
+            // Follow projectile if tracking one (O(1) check using destroyed flag)
             this.centerCameraOn(this.followingProjectile.x, this.followingProjectile.y);
         } else if (this.followingProjectile) {
             // Projectile is destroyed, stop tracking
@@ -4784,6 +5011,8 @@ export class Game extends EventEmitter {
         this.shotgunShotsRemaining = 0;
         this.firePatches = [];
         this.oilDrums = [];
+        this.graves = [];
+        this.deathCamTimer = 0;
         this.kamikazeState = null;
         this.ropeState = null;
         this.ropeAmmoTurn = undefined;
@@ -5078,11 +5307,19 @@ export class Game extends EventEmitter {
             koala.health = kd.health;
             koala.onGround = kd.onGround;
             if (koala.isAlive && !kd.isAlive) {
+                // The authority saw this koala die. Above the waterline = it
+                // exploded there: vanished body + gravestone; in the water =
+                // it drowned (body just sinks).
                 koala.die();
+                if (koala.y < this.waterLevel) {
+                    koala.vanished = true;
+                    this.graves.push({ x: koala.x, y: koala.y + koala.height / 2, vy: 0, falling: true });
+                }
                 this.createDeathEffect(koala);
             } else if (!koala.isAlive && kd.isAlive) {
                 // Local drift killed it but the authority says it lives
                 koala.isAlive = true;
+                koala.vanished = false;
             }
         }
         this.updateTeamHealth();
@@ -5330,11 +5567,9 @@ export class Game extends EventEmitter {
                     this.createFloatingText(koala.x, koala.y - 40, `-${result.damage}`, '#ff5544');
                 }
 
-                // Check for death
-                if (koala.health <= 0 && koala.isAlive) {
-                    koala.die();
-                    this.createDeathEffect(koala);
-                }
+                // Koalas dropped to 0 HP enter the local death sequence
+                // (updateDeathSequences) — no direct die() here, so the
+                // guest gets the same panic-and-explode show as the host
 
                 console.log(`   ${koala.name}: HP=${koala.health}, pos=(${koala.x.toFixed(0)}, ${koala.y.toFixed(0)})`);
             }

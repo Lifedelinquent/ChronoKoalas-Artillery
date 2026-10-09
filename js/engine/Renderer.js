@@ -2,6 +2,8 @@
  * Renderer - Draws the game world
  */
 
+import { drawHat, drawGrave, applyDancePose } from './Cosmetics.js';
+
 export class Renderer {
     constructor(game) {
         this.game = game;
@@ -371,31 +373,8 @@ export class Renderer {
      * Draw the gravestones left by self-destructed koalas (y = base of stone)
      */
     drawGraves() {
-        const ctx = this.ctx;
         for (const grave of this.game.graves) {
-            const x = grave.x;
-            const y = grave.y;
-
-            // Cross-shaped headstone sitting on the ground
-            ctx.fillStyle = '#6b7079';
-            ctx.beginPath();
-            ctx.roundRect(x - 4, y - 30, 8, 30, 2);   // vertical post
-            ctx.roundRect(x - 11, y - 24, 22, 7, 2);  // cross-arm
-            ctx.fill();
-
-            // Subtle rim so it reads against dark terrain
-            ctx.strokeStyle = 'rgba(0, 0, 0, 0.47)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.roundRect(x - 4, y - 30, 8, 30, 2);
-            ctx.roundRect(x - 11, y - 24, 22, 7, 2);
-            ctx.stroke();
-
-            // Small dark detail on the post
-            ctx.fillStyle = 'rgba(20, 20, 24, 0.59)';
-            ctx.beginPath();
-            ctx.arc(x, y - 21, 1.4, 0, Math.PI * 2);
-            ctx.fill();
+            drawGrave(this.ctx, grave.x, grave.y, grave.style);
         }
     }
 
@@ -409,6 +388,12 @@ export class Renderer {
 
         ctx.save();
         ctx.translate(x, y);
+
+        // Victory dance: the winning side celebrates before the results screen
+        const dance = this.game.victoryDance;
+        if (dance && koala.team.alliance === dance.alliance) {
+            applyDancePose(ctx, koala.team.style?.dance || 'hop', dance.time, koala.x * 0.01);
+        }
 
         // Parachute canopy while drifting down
         if (koala.parachuteDeployed) {
@@ -468,6 +453,9 @@ export class Renderer {
             ctx.fillStyle = koala.isDying ? '#ff2828' : koala.team.color;
             ctx.fillRect(-10, -15, 20, 30);
         }
+
+        // Team hat (team editor)
+        drawHat(ctx, koala.team.style?.hat, koala.team.color);
 
         // Dying panic: pulsing red flash in the final moment before detonating
         if (koala.isDying) {

@@ -13,6 +13,13 @@
  * fires the best solution it finds, with an accuracy jitter that shrinks as
  * the difficulty rises. Difficulty 0 is a special "passive" brain used as
  * living targets in Training mode — it just skips every turn.
+ *
+ * From CPU 3 up the brain also uses utilities when no shot is on: it
+ * blowtorches toward close enemies hidden behind terrain, drills down onto
+ * enemies directly below, bridges gaps with girders while walking, and
+ * (CPU 4-5) ropes out of pits and teleports out of hopeless positions.
+ * Tools that need held input (rope, blowtorch) are driven through the
+ * virtual control pad (this.control) that Game.getControl() hands to them.
  */
 
 const GRAVITY = 400;      // matches Physics.gravity
@@ -29,32 +36,32 @@ const PROFILES = {
     1: {
         thinkTime: 2.2, angleSteps: 12, powerSteps: 4,
         angleJitter: 0.08, powerJitter: 0.10, acceptErr: 120,
-        canWalk: false, useAirstrike: false,
+        canWalk: false, useAirstrike: false, useTools: false, useRope: false, useTeleport: false,
         weapons: ['bazooka', 'grenade', 'shotgun']
     },
     2: {
         thinkTime: 1.8, angleSteps: 16, powerSteps: 5,
         angleJitter: 0.05, powerJitter: 0.06, acceptErr: 90,
-        canWalk: false, useAirstrike: false,
+        canWalk: false, useAirstrike: false, useTools: false, useRope: false, useTeleport: false,
         weapons: ['bazooka', 'grenade', 'shotgun', 'handgun', 'mortar']
     },
     3: {
         thinkTime: 1.4, angleSteps: 20, powerSteps: 6,
         angleJitter: 0.025, powerJitter: 0.035, acceptErr: 70,
-        canWalk: true, useAirstrike: false,
+        canWalk: true, useAirstrike: false, useTools: true, useRope: false, useTeleport: false,
         weapons: ['bazooka', 'grenade', 'shotgun', 'handgun', 'uzi', 'mortar', 'cluster', 'dynamite']
     },
     4: {
         thinkTime: 1.1, angleSteps: 26, powerSteps: 7,
         angleJitter: 0.012, powerJitter: 0.02, acceptErr: 50,
-        canWalk: true, useAirstrike: true,
+        canWalk: true, useAirstrike: true, useTools: true, useRope: true, useTeleport: true,
         weapons: ['bazooka', 'grenade', 'shotgun', 'handgun', 'uzi', 'mortar', 'cluster',
             'dynamite', 'petrol', 'holygrenade', 'banana', 'minigun']
     },
     5: {
         thinkTime: 0.8, angleSteps: 32, powerSteps: 8,
         angleJitter: 0.005, powerJitter: 0.008, acceptErr: 35,
-        canWalk: true, useAirstrike: true,
+        canWalk: true, useAirstrike: true, useTools: true, useRope: true, useTeleport: true,
         weapons: ['bazooka', 'grenade', 'shotgun', 'handgun', 'uzi', 'mortar', 'cluster',
             'dynamite', 'petrol', 'holygrenade', 'banana', 'minigun', 'sheep']
     }
@@ -75,6 +82,29 @@ export class AIController {
         this.walkStuckTime = 0;
         this.aimStartAngle = 0;
         this.aimProgress = 0;
+
+        // Virtual control pad: the CPU's equivalent of the human's held keys
+        // and pointer, read by input-driven tools (rope swing, blowtorch) via
+        // Game.getControl().
+        this.control = {
+            held: {},
+            simPointer: { x: 0, y: 0, down: false },
+            isHeld(action) { return !!this.held[action]; }
+        };
+    }
+
+    /**
+     * CPU dice. Seeded from the match seed (game.aiRandom), so a local
+     * match plays out identically when replayed or re-run with the same seed.
+     */
+    rand() {
+        return this.game.aiRandom ? this.game.aiRandom() : Math.random();
+    }
+
+    /** Let go of every virtual key/button. */
+    releaseControls() {
+        this.control.held = {};
+        this.control.simPointer.down = false;
     }
 
     /**
@@ -99,7 +129,18 @@ export class AIController {
 
         // Retreat: scoot away from where our shot is landing
         if (g.phase === 'retreat' && this.plan && this.plan.retreatDir) {
+            this.releaseControls();
             this.walkKoala(g.getCurrentKoala(), this.plan.retreatDir, dt);
+            return;
+        }
+
+        // Input-driven tools run in their own phases
+        if (this.state === 'torching') {
+            this.updateTorching(dt);
+            return;
+        }
+        if (this.state === 'roping' || this.state === 'landing') {
+            this.updateRoping(dt);
             return;
         }
 
@@ -150,11 +191,16 @@ export class AIController {
         this.plan = null;
         this.walkDir = 0;
         this.replansLeft = profile.canWalk ? 1 : 0;
+        this.releaseControls();
+        this.girdersPlaced = 0;
+        this.ropeTried = false;
+        this.teleportTried = false;
+        this.toolTried = false;
         this.state = 'thinking';
         // Humanized thinking pause (passive dummies react almost instantly)
         this.stateTimer = team.aiDifficulty === 0
             ? 0.4
-            : profile.thinkTime * (0.6 + Math.random() * 0.8);
+            : profile.thinkTime * (0.6 + this.rand() * 0.8);
     }
 
     profileFor(team) {
@@ -194,14 +240,11 @@ export class AIController {
             if (best && best.err <= profile.acceptErr) break;
         }
 
-        // Nothing decent found: walk closer once (if allowed), else fire the
-        // least-bad ballistic solution anyway — a wild bazooka beats sulking.
+        // Nothing decent found: dig toward them, walk closer, rope out of a
+        // pit or teleport away — else fire the least-bad ballistic solution
+        // anyway (a wild bazooka beats sulking).
         if (!best || best.err > profile.acceptErr * 2.5) {
-            if (profile.canWalk && this.replansLeft > 0 && !g.scheme?.artilleryMode) {
-                this.replansLeft--;
-                this.startWalking(koala, targets[0]);
-                return;
-            }
+            if (this.tryUtility(team, koala, targets[0], profile, best)) return;
         }
 
         if (!best) {
@@ -210,6 +253,215 @@ export class AIController {
         }
 
         this.executePlan(koala, best);
+    }
+
+    // ------------------------------------------------------------------
+    // Utilities (CPU 3+)
+    // ------------------------------------------------------------------
+
+    /**
+     * Try a non-shooting move when no decent shot exists. Returns true if
+     * the CPU committed to something (and the turn continues from there).
+     */
+    tryUtility(team, koala, target, profile, best) {
+        const g = this.game;
+        const noMovement = !!g.scheme?.artilleryMode;
+        const dx = target.x - koala.x;
+        const dy = target.y - koala.y;
+
+        if (profile.useTools && !this.toolTried && !noMovement) {
+            // Target directly below, terrain in between: drill down on them
+            if (Math.abs(dx) < 40 && dy > 60 && this.canUse(team, 'drill') &&
+                !this.lineOfSightClear(team, koala, target)) {
+                this.toolTried = true;
+                this.useInstantTool(koala, 'drill');
+                return true;
+            }
+            // Close but walled off: torch a tunnel toward them
+            if (Math.abs(dx) < 260 && Math.abs(dy) < 90 && this.canUse(team, 'blowtorch') &&
+                !this.lineOfSightClear(team, koala, target)) {
+                this.toolTried = true;
+                this.startTorching(koala, target);
+                return true;
+            }
+        }
+
+        if (profile.canWalk && this.replansLeft > 0 && !noMovement && !this.isTrapped(koala)) {
+            this.replansLeft--;
+            this.startWalking(koala, target);
+            return true;
+        }
+
+        if (profile.useRope && !this.ropeTried && !noMovement && this.isTrapped(koala) &&
+            this.canUse(team, 'rope')) {
+            this.ropeTried = true;
+            if (this.startRoping(koala, target)) return true;
+        }
+
+        if (profile.useTeleport && !this.teleportTried && this.canUse(team, 'teleport') &&
+            (!best || best.err > profile.acceptErr * 4)) {
+            this.teleportTried = true;
+            const spot = this.pickTeleportSpot(team, koala);
+            if (spot) {
+                this.executePlan(koala, {
+                    weaponId: 'teleport', targetted: true,
+                    targetX: spot.x, targetY: spot.y, angle: koala.aimAngle, power: 1, err: 0
+                });
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Neither direction walkable: boxed into a pit or a tunnel. */
+    isTrapped(koala) {
+        const physics = this.game.physics;
+        return !physics.canWalkUp(koala, 3).canMove && !physics.canWalkUp(koala, -3).canMove;
+    }
+
+    /** Fire a tool that needs no further input (drill). */
+    useInstantTool(koala, weaponId) {
+        const g = this.game;
+        g.weaponManager.selectWeapon(weaponId);
+        g.updateWeaponUI();
+        this.plan = { weaponId, retreatDir: 0 };
+        this.state = 'awaitPhase';
+        g.fireWeapon(koala.aimAngle, 1);
+    }
+
+    startTorching(koala, target) {
+        const g = this.game;
+        g.weaponManager.selectWeapon('blowtorch');
+        g.updateWeaponUI();
+        this.plan = { weaponId: 'blowtorch', target, retreatDir: target.x > koala.x ? -1 : 1 };
+        this.torchTarget = target;
+        this.state = 'torching';
+        g.fireWeapon(koala.aimAngle, 1);
+    }
+
+    /** Hold the torch on the target until we're through (or out of fuel). */
+    updateTorching() {
+        const g = this.game;
+        const koala = g.getCurrentKoala();
+        const pointer = this.control.simPointer;
+        if (g.phase !== 'blowtorch' || !koala) {
+            this.releaseControls();
+            this.state = 'awaitPhase';
+            return;
+        }
+        const t = this.torchTarget;
+        pointer.x = t.x;
+        pointer.y = t.y - 6;
+        pointer.down = true;
+        koala.facingLeft = t.x < koala.x;
+
+        // Close enough to have broken through: stop and save the fuel
+        if (Math.hypot(t.x - koala.x, t.y - koala.y) < 48 || g.turnTimer < 1) {
+            this.releaseControls();
+            this.state = 'awaitPhase';
+            g.endBlowtorch();
+        }
+    }
+
+    /**
+     * Fire the rope at the highest anchor reachable on the target's side.
+     * Returns false if there's nothing to hook.
+     */
+    startRoping(koala, target) {
+        const g = this.game;
+        const dir = target.x >= koala.x ? 1 : -1;
+        const handY = koala.y - 8;
+        const maxLen = g.weaponManager.weapons.rope?.maxLength || 420;
+
+        let angle = null;
+        for (let k = 0; k <= 8 && angle === null; k++) {
+            const a = -Math.PI / 2 + dir * k * 0.14;
+            for (let d = 20; d < maxLen; d += 6) {
+                if (g.terrain.checkCollision(koala.x + Math.cos(a) * d, handY + Math.sin(a) * d)) {
+                    if (d > 70) angle = a;
+                    break;
+                }
+            }
+        }
+        if (angle === null) return false;
+
+        koala.aimAngle = angle;
+        g.weaponManager.selectWeapon('rope');
+        g.updateWeaponUI();
+        this.ropeDir = dir;
+        this.ropeTime = 0;
+        this.state = 'roping';
+        g.fireWeapon(angle, 1);
+        return true;
+    }
+
+    /** Climb, pump toward the target, let go on the upswing, then land. */
+    updateRoping(dt) {
+        const g = this.game;
+        const koala = g.getCurrentKoala();
+        const held = this.control.held;
+        this.ropeTime += dt;
+
+        if (this.state === 'landing') {
+            if (!koala || koala.onGround || this.ropeTime > 3 || !koala.isAlive) {
+                this.releaseControls();
+                this.state = 'thinking';
+                this.stateTimer = 0.3;
+                this.plan = null;
+            }
+            return;
+        }
+
+        // Hook missed (rope gone, back to aiming): think again
+        if (!g.ropeState) {
+            this.releaseControls();
+            this.state = g.phase === 'aiming' ? 'thinking' : 'awaitPhase';
+            this.stateTimer = 0.3;
+            return;
+        }
+        if (g.ropeState.mode !== 'attached') return; // hook still flying
+
+        held.aimUp = this.ropeTime < 0.7;
+        held.left = this.ropeTime >= 0.5 && this.ropeDir < 0;
+        held.right = this.ropeTime >= 0.5 && this.ropeDir > 0;
+
+        const swingingOut = koala.vx * this.ropeDir > 140 && koala.vy < 0;
+        if ((this.ropeTime > 1.3 && swingingOut) || this.ropeTime > 2.6 || g.turnTimer < 3) {
+            this.releaseControls();
+            g.releaseRope();
+            this.state = 'landing';
+            this.ropeTime = 0;
+        }
+    }
+
+    /**
+     * A standing spot a sensible distance from the enemy, preferably high
+     * ground, away from the water and out of point-blank range.
+     */
+    pickTeleportSpot(team, koala) {
+        const g = this.game;
+        const spots = g.validSpawnPoints || [];
+        if (spots.length === 0) return null;
+
+        const enemies = [];
+        for (const t of g.teams) {
+            if (t.alliance === team.alliance) continue;
+            for (const k of t.koalas) if (k.isAlive) enemies.push(k);
+        }
+        if (enemies.length === 0) return null;
+
+        let best = null;
+        for (let i = 0; i < 80; i++) {
+            const p = spots[Math.floor(this.rand() * spots.length)];
+            if (p.y > g.waterLevel - 90) continue;
+            if (!g.terrain.isValidTeleportTarget(p.x).valid) continue;
+            let nearest = Infinity;
+            for (const e of enemies) nearest = Math.min(nearest, Math.hypot(e.x - p.x, e.y - p.y));
+            if (nearest < 220 || nearest > 750) continue;
+            const score = -p.y * 0.5 - Math.abs(nearest - 450) * 0.3 + this.rand() * 40;
+            if (!best || score > best.score) best = { x: p.x, y: p.y, score };
+        }
+        return best;
     }
 
     /**
@@ -223,7 +475,7 @@ export class AIController {
             for (const k of t.koalas) {
                 if (!k.isAlive) continue;
                 const dist = Math.hypot(k.x - koala.x, k.y - koala.y);
-                const score = dist * 0.5 + k.health * 2 + Math.random() * 60;
+                const score = dist * 0.5 + k.health * 2 + this.rand() * 60;
                 out.push({ koala: k, dist, score });
             }
         }
@@ -256,7 +508,7 @@ export class AIController {
         }
 
         // ---- Airstrike: open sky above the target ----
-        if (profile.useAirstrike && Math.random() < 0.35 &&
+        if (profile.useAirstrike && this.rand() < 0.35 &&
             this.canUse(team, 'airstrike') && this.skyIsClear(target.x, target.y) &&
             Math.abs(dx) > 150) {
             return {
@@ -310,7 +562,7 @@ export class AIController {
 
         // Big-bomb bias: prefer heavy ordnance on clustered/wounded targets
         // occasionally, otherwise lead with the first (bazooka).
-        if (candidates.length > 1 && Math.random() < 0.35) {
+        if (candidates.length > 1 && this.rand() < 0.35) {
             candidates.push(candidates.shift());
         }
 
@@ -582,7 +834,7 @@ export class AIController {
 
     startWalking(koala, target) {
         this.walkDir = target.x > koala.x ? 1 : -1;
-        this.walkTimer = 1.2 + Math.random() * 1.3;
+        this.walkTimer = 1.2 + this.rand() * 1.3;
         this.walkStuckTime = 0;
         this.state = 'walking';
         koala.facingLeft = this.walkDir < 0;
@@ -605,10 +857,35 @@ export class AIController {
         const dropAhead = groundAhead - koala.y;
         const cliff = dropAhead > 110 || groundAhead >= g.waterLevel;
 
+        // CPU 3+: bridge the gap with a girder and keep walking
+        if (cliff && koala.onGround && this.bridgeGap(koala)) {
+            this.walkTimer = Math.max(this.walkTimer, 0.9);
+            return;
+        }
+
         if (this.walkTimer <= 0 || this.walkStuckTime > 0.4 || cliff) {
             this.state = 'thinking';
             this.stateTimer = 0.35;
         }
+    }
+
+    /**
+     * Lay a girder level with our feet across the drop ahead (placing one
+     * doesn't end the turn). Returns true if a girder went down.
+     */
+    bridgeGap(koala) {
+        const g = this.game;
+        const team = g.getCurrentTeam();
+        const profile = this.profileFor(team);
+        if (!profile.useTools || this.girdersPlaced >= 2 || !this.canUse(team, 'girder')) return false;
+
+        const weapon = team.weapons.girder;
+        const x = koala.x + this.walkDir * 62;
+        const y = koala.y + koala.height / 2 + 6; // top flange flush with our feet
+        g.weaponManager.selectWeapon('girder');
+        if (!g.fireTargettedWeapon(weapon, x, y)) return false; // refused (koala in the way)
+        this.girdersPlaced++;
+        return true;
     }
 
     /**
@@ -634,6 +911,6 @@ export class AIController {
 
     /** Cheap normal-ish random in roughly [-1.5, 1.5] */
     gauss() {
-        return (Math.random() + Math.random() + Math.random()) - 1.5;
+        return (this.rand() + this.rand() + this.rand()) - 1.5;
     }
 }

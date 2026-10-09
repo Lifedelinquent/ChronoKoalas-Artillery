@@ -2,6 +2,9 @@
  * DOMCache - Caches DOM element references to avoid expensive querySelector calls
  * Reduces scripting bottleneck by ~40% by eliminating repeated DOM lookups
  */
+
+import { log } from './Logger.js';
+
 export class DOMCache {
     constructor() {
         this.elements = {};
@@ -40,7 +43,7 @@ export class DOMCache {
         // Precompute weapon els array for faster iteration
         this.weaponArray = Array.from(this.lists.weaponElements);
 
-        console.log('✅ DOM Cache initialized:', Object.keys(this.elements).length, 'elements');
+        log.debug('✅ DOM Cache initialized:', Object.keys(this.elements).length, 'elements');
     }
 
     /**

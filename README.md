@@ -1,119 +1,132 @@
-# 🐨 Koala Artillery
+# 🐨 ChronoKoala's Artillery
 
-A fast-paced, Worms-style artillery game featuring destructible terrain, various weapons, and strategic turn-based combat. Play as a team of battle-hardened koalas and blast your opponents off the map!
+A Worms Armageddon-style artillery game in the browser: destructible terrain, 39 weapons, a ninja rope, CPU opponents, a single-player campaign and online play for up to four players — all in vanilla JavaScript and HTML5 canvas.
 
-## 🚀 Key Features
+## 🎮 Ways to play
 
-- **Destructible Terrain:** Pixel-perfect terrain destruction using a custom canvas-based engine.
-- **Strategic Combat:** Wind-affected projectiles, varying weapon types, and environmental hazards.
-- **Match Countdown:** 3-2-1-GO! countdown at match start with animated visuals.
-- **Improved Wind Meter:** Redesigned wind indicator with clear directional color coding (Left=Green, Right=Red) and numeric display.
-- **Koala Arsenal:** A wide range of weapons including Bazookas, Grenades, Shotgun (scatter pellets!), Dynamite, Holy Hand Grenade, and more.
-- **Shotgun Overhaul:** Fires 6 pellets in a spread pattern with 2 shots per turn - perfect for close-range combat.
-- **Particle System:** Optimized particle engine with object pooling and smart limits for intense visual effects without lag.
-- **Performance Optimized:** Spatial grid optimization, custom regional collision updates, and efficient rendering for smooth 60+ FPS gameplay.
-- **Map Editor:** Create and save your own custom battlefield layouts.
-- **Multiplayer Ready:** Robust turn-based multiplayer with synced state and projectile physics.
-- **Styled UI:** Numeric health display with color-coded borders, team-colored name tags, and polished visual feedback.
+| Mode | What it is |
+|------|------------|
+| **Tutorial** | An interactive first lesson: walk, jump, aim, fire, grenades, the rope and teleport, one step at a time. |
+| **Training** | Six weapon ranges against 1 HP target dummies. Earn 🥇🥈🥉 medals by clearing a range in as few shots as possible. |
+| **Missions** | A 12-mission campaign on fixed maps, laid out as a campaign map. Each mission awards up to ★★★ (win · lose no koalas · flawless within par turns). |
+| **Deathmatch** | A ranked ladder from *Absolute Beginner* to *Elite* against tougher and more numerous CPU squads. |
+| **Quick Game** | You against 1–3 CPU squads (CPU 1–5) on any map and scheme. |
+| **Hotseat** | Two players on one keyboard, each with their own saved team. |
+| **Multiplayer** | Up to 4 players over WebRTC (PeerJS), plus spectators. Same colour = allies. Lobby and in-game chat, rematch votes, back-to-lobby. |
+| **Map Editor** | Draw or import maps, place spawns, test-play them. |
 
-### 🆕 Recent Updates
+## ✨ Highlights
 
-- **Trajectory Preview:** While charging a shot, a fading dotted arc shows the predicted flight path (gravity and wind included).
-- **Screen Shake:** Explosions kick the camera proportionally to blast size for extra impact.
-- **Floating Damage Numbers:** Every hit shows exactly how much damage was dealt, on both clients in multiplayer.
-- **Water Splashes:** Koalas and projectiles that hit the water now splash with sound.
-- **Smoke Trails:** Bazooka rockets and airstrike missiles leave dissipating smoke trails.
-- **Smarter Turn Handover:** The next turn waits until knocked-back koalas actually land instead of switching mid-flight.
-- **Zoom to Cursor:** Mouse-wheel zoom now anchors on the point under the cursor.
-- **Falling Explosives:** Mines and dynamite resting on terrain fall when the ground beneath them is destroyed.
-- **Dead Koala Ghosts:** When a koala dies, they appear as a faded ghost sprite with a floating golden halo. Dead bodies remain on the battlefield and can be flung around by explosions!
-- **Worms-Style Knockback:** Explosion launch speed scales with the damage dealt — heavy weapons fling koalas across the map while grazes just nudge. Characters fly "up and out" from a force origin shifted down for dramatic launches.
-- **Stick or Slide Landings:** Land on walkable ground (up to ~60° slopes) and you plant where you touch down; land on anything steeper and you skid downhill until it flattens out (or you hit water). Only koalas launched by a hit bounce and skip across terrain — jumps always plant.
-- **Instant Water Death:** Koalas die immediately when touching water - no waiting for turn end.
-- **Improved Terrain Walking:** Characters can step up over bumps up to 8 pixels high and stick to terrain when walking down slopes (up to 16 pixels). Larger walls block movement.
-- **Fall Damage System:** Falls over 260 pixels cause damage. Taking fall damage during your turn ends it immediately!
-- **Worms-Style Jumps:** Four committed ballistic jumps with no mid-air steering — Enter for a forward hop, Enter twice for a backward hop, Backspace for a high jump, Backspace twice for a backflip. Only the parachute lets you steer in the air.
+- **Destructible terrain** with WA-style lumpy craters, falling mines, drums and graves.
+- **39 weapons** in WA-style categories, a scheme editor for ammo, delays, health, timers, hazards, sudden death and more.
+- **Smarter CPU** (CPU 1–5): simulates real trajectories, and from CPU 3 up uses utilities — blowtorches toward walled-off enemies, drills down onto enemies below, bridges gaps with girders, ropes out of pits and teleports out of hopeless spots.
+- **Replays**: every single-player and hotseat match is saved automatically (🎬 Replays). Watch at 1–8× speed, skip turns, pin favourites, download/import `.koalareplay` files.
+- **Instant replay**: a turn that kills a koala is replayed WA-style, with slow motion around the blasts (local games; toggle in Settings).
+- **Team editor** (🎩 Teams): team and koala names, hats, gravestones, voice packs and victory dances — used in single player, hotseat and multiplayer.
+- **End-of-match stats**: damage, kills, losses, shots, accuracy, friendly fire, crates, plus awards (Sharpshooter, Turn of the Match, Swimming Lessons Needed…).
+- **Auto camera** frames long shots and multi-blast weapons (cluster bombs, air strikes), then eases back to your zoom.
+- **Touch controls** on phones and tablets: on-screen pads, tap to aim/target, drag to pan, pinch to zoom.
+- **Rebindable controls** (⚙️ Settings) and an in-game controls card (**H** / **F1** / the **?** button).
+- **Installable / offline**: a PWA — install it from the browser and single player, hotseat, replays and the editor work offline.
 
-## 🎮 Controls
+## 🕹️ Controls (defaults — rebind in Settings)
 
-### Movement & Actions
-| Key | Action |
-|-----|--------|
-| **Arrow Keys / WASD** | Move Koala |
-| **Enter** | Forward Jump (tap twice for a backward hop) |
-| **Backspace** | High Jump (tap twice for a backflip) |
-| **Space / Left Click** | (Hold) Charge Weapon Power |
-| **Right Click** | Cancel Charge (before releasing) |
-| **Digits 1-5** | Set Weapon Timer (for Grenades) |
+| Action | Keys / mouse |
+|--------|--------------|
+| Walk | ← → or A D |
+| Aim | Mouse, or ↑ ↓ / W S |
+| Fire | Hold **Space** or left mouse to charge, release to lock the power, press again to shoot |
+| Cancel a shot | Right mouse while charging/locked |
+| Jump | **Enter** (twice quickly = back hop) |
+| High jump | **Backspace** (twice quickly = backflip) |
+| Weapon menu | **Tab** / **`** / right-click |
+| Grenade fuse | **1–5** |
+| Ninja rope | ←/→ swing · ↑/↓ climb · Enter let go · Space re-fire |
+| Targeted weapons | Click the map (air strikes, teleport, girder, homing marker) |
+| Camera | Right-drag to pan · wheel to zoom |
+| Controls card | **H** / **F1** |
+| Chat (multiplayer) | **T** |
 
-### Camera & UI
-| Input | Action |
-|-------|--------|
-| **Mouse Wheel** | Zoom In/Out |
-| **Right Mouse (Drag)** | Pan Camera |
-| **Number Keys / UI** | Select Weapon |
-| **F3** | Toggle Performance Debug Monitor |
+## 🔫 Arsenal
 
-## 🔫 Weapons
+| Category | Weapons |
+|----------|---------|
+| Launchers | Bazooka, Homing Missile, Mortar |
+| Bombs | Grenade, Cluster Bomb, Banana Bomb, Petrol Bomb, Holy Hand Grenade |
+| Guns | Shotgun, Handgun, Uzi, Minigun, Longbow |
+| Melee | Fire Punch, Dragon Ball, Baseball Bat, Prod, Kamikaze |
+| Explosives | Dynamite, Mine, Sheep |
+| Strikes | Air Strike, Napalm Strike, Mine Strike, Armageddon |
+| Tools | Blowtorch, Pneumatic Drill, Girder, Ninja Rope, Parachute, Teleport |
+| Other | Skip Go, Surrender |
 
-| Weapon | Description |
-|--------|-------------|
-| **Bazooka** | Classic rocket launcher, affected by wind |
-| **Grenade** | Bouncing explosive with adjustable fuse (1-5 sec) |
-| **Shotgun** | 6 scatter pellets, 2 shots per turn, short range |
-| **Dynamite** | High damage, fixed 5-second fuse |
-| **Mine** | Proximity-triggered, fixed 3-second delay |
-| **Holy Hand Grenade** | Massive explosion when it settles |
-| **Airstrike** | Call in bombs from above |
-| **Teleport** | Instantly relocate your koala |
-| **Baseball Bat** | Melee knockback weapon |
-| **Blowtorch** | Tunnel through terrain |
+Weapon behaviour lives in `js/weapons/WeaponBehaviors.js` (one entry per weapon type); the numbers live in `js/weapons/WeaponManager.js`.
 
-## ⚡ Physics
+## 📦 Running it
 
-| Mechanic | Value |
-|----------|-------|
-| **Gravity** | 400 px/s² |
-| **Terminal Velocity** | 800 px/s |
-| **Safe Fall Distance** | 260 pixels |
-| **Fall Damage Formula** | `(distance - 260) / 5` |
-| **Step-Up Height** | 8 pixels max |
-| **Step-Down Height** | 16 pixels max |
-| **Water Level** | 60 pixels from bottom |
+The game uses ES modules, so it needs a local web server:
 
-## 🛠️ Technical Details
+```bash
+npm start
+```
 
-- **Core Engine:** Built with Vanilla JavaScript using the HTML5 Canvas API.
-- **Physics:** Custom physics system featuring gravity, friction, bounciness, and ray-casting collision detection to prevent tunneling.
-- **Terrain System:** Uses a dual-canvas approach (Visual + Collision Mask) with regional updates for high-performance destruction.
-- **Spatial Grid:** O(1) entity lookup for efficient collision detection and proximity checks.
-- **Audio:** Web Audio API integration for immersive sound effects and music.
+Then open the address it prints (default `http://localhost:8080`).
 
-## 📦 Installation & Running
+| Script | What it does |
+|--------|--------------|
+| `npm start` | Serve the game locally |
+| `npm test` | Open the simulation test page (`/tests/`) |
+| `npm run check` | Syntax-check every script with Node |
+| `npm run sw` | Regenerate the service worker's offline file list — run before deploying changed files |
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd koala-artillery
-   ```
+## 🧪 Tests
 
-2. **Run a local server:**
-   Since the game uses JavaScript Modules and assets, it must be run via a local server. You can use the built-in script:
-   ```bash
-   npm start
-   ```
-   Or use any static server like `npx serve` or Live Server.
+`tests/index.html` runs headless matches in the browser:
 
-3. **Open in Browser:**
-   Navigate to `http://localhost:8080` (or the port provided by your server).
+1. **Same seed → identical match** — a 3-minute CPU vs CPU vs CPU match with crates, mines, drums and wind, run twice and fingerprinted every 300 frames.
+2. **Different seed → different match**.
+3. **Replay round-trip** — a scripted player fights the CPU through the real input path; replaying the recording must reproduce every checkpoint.
 
-## 📊 Debugging & Performance
+These guard the determinism that multiplayer, replays and the instant replay depend on: all simulation randomness comes from seeded streams (`seededRandom` shared, `hostRandom` for authority-only rolls such as crates, `aiRandom` for the CPU), the world steps at a fixed 1/60 s, and all human input enters through `InputManager.dispatch()`.
 
-The game includes built-in performance monitoring tools. Press **F3** to enable the debug overlay in the console.
+## 🛠️ Project layout
 
-- **Basic Mode:** Reports FPS and average frame times.
-- **Detailed Mode:** (Enabled via `window.debugPerformanceDetail = true` in console) Breaks down timing for Projectiles, Physics, Particles, and Rendering.
+```
+js/
+  main.js                 app shell: menus, game start/end, replays, settings wiring
+  engine/
+    Game.js               core loop, turn proxies, game over; installs the subsystems below
+    game/                 Game subsystems (methods mixed into Game.prototype):
+      SpawnSystem.js        team creation and spawn placement
+      ProjectileSystem.js   projectile flight, collisions, explosions/damage pipeline
+      ToolWeapons.js        melee, blowtorch, drill, kamikaze, teleport, girder, strikes, bursts
+      Firing.js             fireWeapon / fireTargettedWeapon (shared checks → WeaponBehaviors)
+      RopeSystem.js         ninja rope
+      HazardSystem.js       fire, landmines, oil drums
+      DeathSystem.js        WA-style deaths and graves
+      CameraSystem.js       follow / auto-framing camera
+      Effects.js, HUD.js    particles and DOM HUD
+      NetSync.js            multiplayer turn adoption and state sync
+    InputManager.js       keyboard/mouse → actions → commands (dispatch)
+    TurnManager.js, Physics.js, Terrain.js, Renderer.js, MatchStats.js, Cosmetics.js, ...
+  weapons/                WeaponManager (definitions), WeaponBehaviors (per-type hooks), Projectile
+  ai/AIController.js      CPU brain
+  replay/                 Replay (recorder/player/storage), InstantReplay
+  singleplayer/           SinglePlayer (modes, missions, medals), Tutorial
+  network/NetworkManager.js
+  ui/                     MenuManager, SettingsUI, TeamEditor, ReplayUI, ChatUI, TouchControls, SchemeEditor
+  utils/                  Settings, TeamStyles, GameScheme, Logger, ...
+tests/                    simulation tests
+tools/                    audio generation, service-worker list, syntax check, map export
+```
+
+## 📊 Debugging
+
+- Add **`?debug`** to the URL (or run `localStorage.setItem('koala_debug', '1')`) to see the detailed console log; it's silent by default.
+- **F3** toggles the performance monitor; set `window.debugPerformanceDetail = true` for a per-system breakdown.
+- `window.game` is the running match.
+- The service worker is skipped on `localhost` so you always get fresh files; add **`?sw`** to test offline mode locally.
 
 ## 📜 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License — see the LICENSE file for details.

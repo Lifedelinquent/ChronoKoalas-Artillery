@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <!-- The game loads sprites/audio with root-relative paths -->
+    <base href="../">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Koala Artillery Tests</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #14161c; color: #e8e8e8; margin: 0; padding: 24px; }
+        h1 { font-size: 1.4rem; margin: 0 0 4px; }
+        p.sub { color: #9aa; margin: 0 0 20px; }
+        .test { padding: 10px 14px; border-radius: 6px; background: #1f232c; margin-bottom: 8px; }
+        .test .name { font-weight: 600; }
+        .test .detail { color: #aab; font-size: 0.9rem; margin-top: 4px; font-family: ui-monospace, monospace; }
+        .pass { border-left: 4px solid #2ecc71; }
+        .fail { border-left: 4px solid #e74c3c; }
+        .run { border-left: 4px solid #f1c40f; }
+        #summary { margin-top: 16px; font-weight: 700; }
+    </style>
+</head>
+
+<body>
+    <h1>Koala Artillery — simulation tests</h1>
+    <p class="sub">Runs headless matches in this tab. Takes a few seconds.</p>
+    <div id="results"></div>
+    <div id="summary"></div>
+
+    <script type="module">
+        import { TESTS } from './tests/determinism.test.js';
+
+        const results = document.getElementById('results');
+        const summary = document.getElementById('summary');
+
+        async function runAllTests() {
+            results.innerHTML = '';
+            const out = [];
+            for (const [name, fn] of TESTS) {
+                const el = document.createElement('div');
+                el.className = 'test run';
+                el.innerHTML = `<div class="name"></div><div class="detail">running…</div>`;
+                el.querySelector('.name').textContent = name;
+                results.appendChild(el);
+                // Let the browser paint the "running" state
+                await new Promise(r => setTimeout(r, 30));
+
+                const t0 = performance.now();
+                let res;
+                try {
+                    res = await fn();
+                } catch (e) {
+                    res = { pass: false, detail: 'threw: ' + (e.stack || e) };
+                }
+                const ms = Math.round(performance.now() - t0);
+                el.className = 'test ' + (res.pass ? 'pass' : 'fail');
+                el.querySelector('.detail').textContent = `${res.pass ? 'PASS' : 'FAIL'} · ${res.detail} · ${ms} ms`;
+                out.push({ name, ...res, ms });
+            }
+            const failed = out.filter(r => !r.pass).length;
+            summary.textContent = failed ? `${failed} of ${out.length} failed` : `All ${out.length} tests passed`;
+            summary.style.color = failed ? '#e74c3c' : '#2ecc71';
+            window.testResults = out;
+            return out;
+        }
+
+        window.runAllTests = runAllTests;
+        runAllTests();
+    </script>
+</body>
+
+</html>

@@ -2,6 +2,8 @@
  * LootManager - Handles weighted random loot crate spawning
  */
 
+import { log } from '../utils/Logger.js';
+
 export class LootManager {
     constructor(game) {
         this.game = game;
@@ -77,17 +79,19 @@ export class LootManager {
     }
 
     /**
-     * Loot RNG. IMPORTANT: this deliberately uses Math.random() and NOT the
-     * game's shared seededRandom stream. Crate spawns are decided on the host
-     * only (onTurnStart runs solely on the host) and the chosen item/position
-     * are broadcast to the guest via the 'crateSpawn' message, so loot never
-     * needs cross-client determinism. Drawing from the shared seededRandom here
-     * would advance it a different number of times on the host than on the
-     * guest, desyncing everything else that relies on it — per-turn wind and
-     * all weapon spread (cluster, airstrike, burst, mine duds).
+     * Loot RNG. IMPORTANT: this deliberately uses the game's hostRandom side
+     * stream and NOT the shared seededRandom stream. Crate spawns are decided
+     * on the host only (onTurnStart runs solely on the host) and the chosen
+     * item/position are broadcast to the guest via the 'crateSpawn' message,
+     * so loot never needs cross-client determinism. Drawing from the shared
+     * seededRandom here would advance it a different number of times on the
+     * host than on the guest, desyncing everything else that relies on it —
+     * per-turn wind and all weapon spread (cluster, airstrike, burst, mine
+     * duds). hostRandom is seeded too, so local games (and their replays)
+     * still roll the same crates every time.
      */
     random() {
-        return Math.random();
+        return this.game.hostRandom ? this.game.hostRandom() : Math.random();
     }
 
     /**
@@ -160,7 +164,7 @@ export class LootManager {
         // Create the crate
         const crate = this.createCrate(category, item, position.x, position.y);
 
-        console.log(`📦 Crate spawned: ${item.name} (${item.rarity}) at (${position.x}, ${position.y})`);
+        log.debug(`📦 Crate spawned: ${item.name} (${item.rarity}) at (${position.x}, ${position.y})`);
 
         // NETWORK SYNC: Send crate spawn to opponent
         if (this.game.networkManager && !this.game.isPractice) {
@@ -181,7 +185,7 @@ export class LootManager {
      * Handle remote crate spawn from network
      */
     handleRemoteCrateSpawn(data) {
-        console.log('📦 Remote crate spawn:', data);
+        log.debug('📦 Remote crate spawn:', data);
 
         // Find the item from loot tables
         const item = this.getLootTable(data.category).find(i => i.id === data.itemId);
@@ -484,6 +488,7 @@ export class LootManager {
      */
     collectCrate(crate, koala, team) {
         crate.collected = true;
+        this.game.stats?.onCrate(team);
 
         // NETWORK SYNC: the host is the collection authority — tell the guest
         // exactly which crate was picked up and by whom (guests reach here
@@ -508,7 +513,7 @@ export class LootManager {
             koala.health = koala.health + healAmount;
             const actualHeal = koala.health - oldHealth;
 
-            console.log(`❤️ ${koala.name} collected ${crate.item.name}: +${actualHeal} HP`);
+            log.debug(`❤️ ${koala.name} collected ${crate.item.name}: +${actualHeal} HP`);
 
             // Create floating text
             this.game.createFloatingText?.(crate.x, crate.y - 30, `+${actualHeal}`, '#4ade80');
@@ -518,7 +523,7 @@ export class LootManager {
             team.buffs = team.buffs || {};
             team.buffs[crate.item.buff] = true;
 
-            console.log(`✨ ${team.name} collected ${crate.item.name} buff`);
+            log.debug(`✨ ${team.name} collected ${crate.item.name} buff`);
             this.game.createFloatingText?.(crate.x, crate.y - 30, crate.item.name + '!', this.rarityColors[crate.rarity]);
 
         } else {
@@ -528,7 +533,7 @@ export class LootManager {
             const weapon = team.weapons?.[crate.item.id];
             if (weapon) {
                 weapon.ammo = (weapon.ammo === Infinity ? Infinity : (weapon.ammo || 0) + crate.item.ammo);
-                console.log(`💣 ${team.name} collected ${crate.item.name}: +${crate.item.ammo} ${weapon.name}`);
+                log.debug(`💣 ${team.name} collected ${crate.item.name}: +${crate.item.ammo} ${weapon.name}`);
 
                 // Refresh the weapon bar if the collector's inventory is the active one
                 if (this.game.weaponManager.weapons === team.weapons) {

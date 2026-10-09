@@ -10,6 +10,16 @@ import { MapEditor } from './editor/MapEditor.js';
 import { MapManager } from './utils/MapManager.js';
 import { globalAudioManager } from './engine/AudioManager.js';
 import * as SP from './singleplayer/SinglePlayer.js';
+import { log } from './utils/Logger.js';
+import { ReplayUI } from './ui/ReplayUI.js';
+import { ReplayStore } from './replay/Replay.js';
+import { SettingsUI, ControlsOverlay } from './ui/SettingsUI.js';
+import { TeamEditor } from './ui/TeamEditor.js';
+import { TouchControls, wantsTouchControls } from './ui/TouchControls.js';
+import { ChatUI } from './ui/ChatUI.js';
+import { buildTutorial, TutorialDirector } from './singleplayer/Tutorial.js';
+import { getActiveStyle, loadTeams } from './utils/TeamStyles.js';
+import { getSettings, saveSettings } from './utils/Settings.js';
 
 // Global game instance
 let game = null;
@@ -21,11 +31,23 @@ let mapEditor = null;
 // Drives rank/mission/training progress handling on game over.
 let spContext = null;
 
+// UI modules (created in init)
+let replayUI = null;
+let settingsUI = null;
+let controlsOverlay = null;
+let teamEditor = null;
+let touchControls = null;
+let chatUI = null;
+let tutorialDirector = null;
+
+// The replay of the match that just ended (or is being watched)
+let lastReplay = null;
+
 /**
  * Initialize the application
  */
 async function init() {
-    console.log('🐨 Koala Artillery initializing...');
+    log.debug('🐨 Koala Artillery initializing...');
 
     // Migrate any maps saved in the old localStorage format → IndexedDB
     await MapManager.migrateFromLocalStorage();
@@ -43,10 +65,64 @@ async function init() {
     // Set up global audio controls
     setupGlobalAudioControls();
 
+    // Teams, replays, settings, controls, touch, chat
+    setupExtraUI();
+
     // Process logo to remove checkerboard background
     processLogo();
 
-    console.log('✓ Initialization complete');
+    // Installable / offline single player (PWA)
+    registerServiceWorker();
+
+    log.debug('✓ Initialization complete');
+}
+
+/**
+ * Menu-level UI added in the overhaul: team editor, replay browser,
+ * settings, controls overlay, touch controls and multiplayer chat.
+ */
+function setupExtraUI() {
+    replayUI = new ReplayUI({ onWatch: startReplay });
+    settingsUI = new SettingsUI();
+    controlsOverlay = new ControlsOverlay();
+    teamEditor = new TeamEditor();
+    touchControls = new TouchControls({ onHelp: () => controlsOverlay.toggle() });
+    chatUI = new ChatUI(networkManager);
+
+    networkManager.localStyle = getActiveStyle();
+
+    document.getElementById('btn-teams')?.addEventListener('click', () => teamEditor.open());
+    document.getElementById('btn-team-close')?.addEventListener('click', () => {
+        // The lobby (and the next match) use whatever team is now active
+        networkManager.setLocalStyle(getActiveStyle());
+    });
+    document.getElementById('btn-replays')?.addEventListener('click', () => replayUI.open());
+    document.getElementById('btn-settings')?.addEventListener('click', () => settingsUI.open());
+    document.getElementById('btn-howto')?.addEventListener('click', () => controlsOverlay.show());
+    document.getElementById('btn-help')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        controlsOverlay.toggle();
+    });
+
+    // First visit: point new players at the tutorial
+    const progress = SP.loadProgress();
+    if (!progress.tutorialDone && progress.missionsCompleted.length === 0) {
+        document.getElementById('tutorial-nudge')?.classList.remove('hidden');
+    }
+}
+
+function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    // Local development serves straight from disk (a cache-first worker
+    // would hand you yesterday's code); add ?sw to test offline mode locally
+    const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+    if (isLocal && !new URLSearchParams(location.search).has('sw')) {
+        navigator.serviceWorker.getRegistrations()
+            .then(regs => regs.forEach(r => r.unregister()))
+            .catch(() => {});
+        return;
+    }
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('Service worker registration failed:', e));
 }
 
 /**
@@ -161,6 +237,7 @@ function setupMenuHandlers() {
     // Host Game - create the room, then sit in the lobby while up to 3
     // guests join (the room code is shown in the lobby header)
     btnHost.addEventListener('click', async () => {
+        networkManager.localStyle = getActiveStyle();
         // Hide menu buttons, show host panel while the room is created
         menuButtons.classList.add('hidden');
         hostPanel.classList.remove('hidden');
@@ -253,7 +330,9 @@ function setupMenuHandlers() {
         btnCancelJoinEl.classList.remove('hidden');
 
         try {
-            await networkManager.joinGame(roomCode);
+            networkManager.localStyle = getActiveStyle();
+            const spectator = !!document.getElementById('join-spectate')?.checked;
+            await networkManager.joinGame(roomCode, { spectator });
             // Connection handling is done via events
         } catch (error) {
             joinStatus.textContent = 'Failed to connect. Check the code!';
@@ -275,6 +354,8 @@ function setupMenuHandlers() {
             btnReady.textContent = me.ready ? 'Not Ready' : 'Ready!';
             btnReady.classList.toggle('success', me.ready);
         }
+        // Spectators don't ready up
+        btnReady.classList.toggle('hidden', !!me?.spectator);
     }
 
     // Clicking your colour chip cycles your team colour (= alliance)
@@ -282,13 +363,13 @@ function setupMenuHandlers() {
 
     // Network event handlers
     networkManager.on('connected', (data) => {
-        console.log('🎮 Connected to host!', data);
+        log.debug('🎮 Connected to host!', data);
 
         // Mid-game reconnect: resume the paused game instead of showing the
         // lobby. The guest automatically requests a full state sync (terrain,
         // health, ammo, crates) — see NetworkManager's open handler.
         if (game && !game.isGameOver && data.wasReconnect) {
-            console.log('🔗 Reconnected mid-game — resuming');
+            log.debug('🔗 Reconnected mid-game — resuming');
             hideConnectionBanner();
             game.isPaused = false;
             game.lastTime = performance.now();
@@ -339,7 +420,7 @@ function setupMenuHandlers() {
 
     // Guest lost ITS connection to the host
     networkManager.on('disconnected', (data) => {
-        console.log('🔌 Disconnected:', data?.reason);
+        log.debug('🔌 Disconnected:', data?.reason);
 
         // Mid-game drop: don't kill the game — NetworkManager is already
         // retrying with backoff. Pause and wait; 'connected' resumes us and
@@ -406,7 +487,7 @@ function setupMenuHandlers() {
     }
 
     networkManager.on('playerDropped', (data) => {
-        console.log('🔌 Player dropped:', data);
+        log.debug('🔌 Player dropped:', data);
 
         if (game && !game.isGameOver) {
             game.isPaused = true;
@@ -420,7 +501,7 @@ function setupMenuHandlers() {
     });
 
     networkManager.on('playerReturned', (data) => {
-        console.log('🔗 Player returned:', data);
+        log.debug('🔗 Player returned:', data);
         if (networkManager.isHost && forfeitTimers.has(data.slot)) {
             clearTimeout(forfeitTimers.get(data.slot));
             forfeitTimers.delete(data.slot);
@@ -433,7 +514,7 @@ function setupMenuHandlers() {
     });
 
     networkManager.on('remoteTeamForfeit', (data) => {
-        console.log('🏳️ Team forfeited:', data);
+        log.debug('🏳️ Team forfeited:', data);
         if (game && !game.isGameOver) {
             game.forfeitTeam(data.teamIndex);
             hideConnectionBanner();
@@ -443,8 +524,35 @@ function setupMenuHandlers() {
     });
 
     networkManager.on('gameStart', (data) => {
-        console.log('🎮 Game starting!', data);
-        startGame(false, data.gameState, data.gameState?.customMap);
+        log.debug('🎮 Game starting!', data);
+        const started = startGame(false, data.gameState, data.gameState?.customMap);
+        // A spectator joining mid-game builds the world from the seed, then
+        // asks the host for the current state (terrain, health, hazards...)
+        if (data.spectate) {
+            started.then(() => networkManager.send({ type: 'requestStateSync' }));
+        }
+    });
+
+    // Host sent everyone back to the lobby after a match
+    networkManager.on('returnToLobby', () => {
+        if (game) {
+            game.destroy();
+            game = null;
+        }
+        afterGameTeardown();
+        menuManager.showLobby(networkManager.roomCode, networkManager.isHost);
+        renderLobby();
+        chatUI.system('Back in the lobby — the host can change the map, scheme or start again.');
+    });
+
+    // A guest asked the host for another round
+    networkManager.on('rematchRequest', ({ name }) => {
+        const note = document.getElementById('rematch-note');
+        if (note) {
+            note.textContent = `🔁 ${name} wants a rematch!`;
+            note.classList.remove('hidden');
+        }
+        chatUI.system(`${name} wants a rematch.`);
     });
 
     // Ready toggle
@@ -498,17 +606,34 @@ function setupMenuHandlers() {
     btnRematch.addEventListener('click', () => {
         if (!game) return;
 
-        if (game.isPractice || !networkManager.isConnected) {
-            // Local rematch - reset in place
+        if (game.isReplay) {
+            // "Watch again"
+            if (lastReplay) startReplay(lastReplay);
+        } else if (game.isPractice || !networkManager.isConnected) {
+            // Local rematch - reset in place (records a fresh replay)
             game.reset();
             menuManager.showScreen('game-screen');
         } else if (networkManager.isHost) {
-            // Multiplayer rematch must go through the host so both clients
-            // restart with the same fresh seed (local reset would desync)
+            // Multiplayer rematch must go through the host so every client
+            // restarts with the same fresh seed (local reset would desync)
             networkManager.startGame({ customMap: window.selectedMap, scheme: window.selectedScheme });
         } else {
-            alert('Only the host can start a rematch.');
+            // Guests vote; the host gets a notice and decides
+            networkManager.requestRematch();
+            btnRematch.disabled = true;
+            btnRematch.textContent = 'Rematch requested';
         }
+    });
+
+    // Replays from the results screen
+    document.getElementById('btn-watch-replay')?.addEventListener('click', () => {
+        if (lastReplay) startReplay(lastReplay);
+    });
+    document.getElementById('btn-save-replay')?.addEventListener('click', () => {
+        if (lastReplay) ReplayStore.download(lastReplay);
+    });
+    document.getElementById('btn-back-lobby')?.addEventListener('click', () => {
+        if (networkManager.isHost) networkManager.returnToLobby();
     });
 
 
@@ -519,7 +644,9 @@ function setupMenuHandlers() {
             game.destroy();
             game = null;
         }
+        afterGameTeardown();
         networkManager.disconnect();
+        chatUI.clear();
         menuManager.showMenu();
     });
 
@@ -650,9 +777,10 @@ function setupMenuHandlers() {
 
     networkManager.on('remoteRequestStateSync', (data) => {
         if (game && game.sendFullStateSync) {
-            // A peer only asks for this after a reconnect — include the
-            // terrain snapshot so they get every crater they missed
-            game.sendFullStateSync({ includeTerrain: true });
+            // A peer only asks for this after a reconnect or when spectating
+            // mid-game — include the terrain snapshot so they get every
+            // crater they missed, and send it to them alone
+            game.sendFullStateSync({ includeTerrain: true, toPeer: data.fromPeer });
         }
     });
 
@@ -723,6 +851,7 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
         game.destroy();
         game = null;
     }
+    afterGameTeardown();
 
     // Game scheme (all match rules incl. sudden death): network clients take
     // it from the host's game state, otherwise use the map-screen selection.
@@ -739,7 +868,10 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
         customMap: customMap ?? (spOptions ? null : window.selectedMap),
         scheme: activeScheme,
         teamsConfig: spOptions?.teamsConfig || null,
-        seed: spOptions?.seed
+        teamStyles: spOptions?.teamStyles || null,
+        seed: spOptions?.seed,
+        replay: spOptions?.replay || null,
+        replayMeta: spOptions?.replayMeta || null
     });
 
     // Expose game instance globally for debugging/export
@@ -748,14 +880,108 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
     // Show game screen
     menuManager.showScreen('game-screen');
 
+    // Per-game UI hooks
+    const currentGame = game;
+    game.inputManager.onHelp = () => controlsOverlay.toggle();
+    const multiplayer = !isPractice;
+    game.inputManager.onChat = multiplayer ? () => chatUI.openGameInput() : null;
+    document.getElementById('game-chat')?.classList.toggle('hidden', !multiplayer);
+    touchControls.attach(game);
+    if (spOptions?.replay) {
+        replayUI.attach(game, { onExit: exitReplay, onRestart: () => startReplay(spOptions.replay) });
+    }
+    if (spContext?.mode === 'tutorial') {
+        tutorialDirector = new TutorialDirector(game, { touch: wantsTouchControls() });
+    }
+
+    // First game ever: show the controls once
+    if (!spOptions?.replay && !getSettings().seenControls) {
+        saveSettings({ seenControls: true });
+        controlsOverlay.show();
+    }
+
     // Start the game
-    game.start();
+    const started = game.start();
 
     // Game over handler
     game.on('gameOver', (result) => {
+        if (game !== currentGame) return;
+        tutorialDirector?.destroy();
+        tutorialDirector = null;
         menuManager.showGameOver(result);
         showSinglePlayerResult(result);
+        handleReplayOnGameOver(currentGame, result);
+        updateGameOverButtons(currentGame);
     });
+
+    return started;
+}
+
+/** Tear down per-game UI (tutorial coach, replay bar, touch controls). */
+function afterGameTeardown() {
+    tutorialDirector?.destroy();
+    tutorialDirector = null;
+    replayUI?.detach();
+    touchControls?.detach();
+    controlsOverlay?.hide();
+}
+
+/**
+ * Local matches record themselves (Game.replayRecorder): save the finished
+ * replay to the browser and offer watch / download on the results screen.
+ */
+function handleReplayOnGameOver(finishedGame, result) {
+    if (finishedGame.isReplay) {
+        lastReplay = finishedGame.options.replay;
+        return;
+    }
+    lastReplay = null;
+    if (!finishedGame.replayRecorder) return;
+    lastReplay = finishedGame.replayRecorder.build(result);
+    ReplayStore.save(lastReplay);
+}
+
+function updateGameOverButtons(finishedGame) {
+    const isMultiplayer = !finishedGame.isPractice;
+    const rematch = document.getElementById('btn-rematch');
+    const watch = document.getElementById('btn-watch-replay');
+    const save = document.getElementById('btn-save-replay');
+    const lobby = document.getElementById('btn-back-lobby');
+    const note = document.getElementById('rematch-note');
+
+    note?.classList.add('hidden');
+    if (rematch) {
+        rematch.disabled = false;
+        rematch.textContent = finishedGame.isReplay ? '🎬 Watch Again'
+            : (isMultiplayer && !networkManager.isHost ? '🔁 Vote Rematch' : 'Rematch');
+        rematch.classList.toggle('hidden', isMultiplayer && networkManager.isSpectator);
+    }
+    watch?.classList.toggle('hidden', !lastReplay || finishedGame.isReplay);
+    save?.classList.toggle('hidden', !lastReplay);
+    lobby?.classList.toggle('hidden', !(isMultiplayer && networkManager.isHost));
+}
+
+/** Watch a saved replay. */
+function startReplay(replay) {
+    spContext = null;
+    lastReplay = replay;
+    startGame(true, null, replay.customMap, replay.scheme, {
+        teamsConfig: replay.teamsConfig,
+        teamStyles: replay.teamStyles,
+        seed: replay.seed,
+        replay,
+        context: null
+    });
+}
+
+function exitReplay() {
+    if (game) {
+        game.destroy();
+        game = null;
+    }
+    afterGameTeardown();
+    menuManager.showMenu();
+    replayUI.open();
 }
 
 /**
@@ -809,12 +1035,13 @@ function setupSinglePlayerMenu() {
     });
 
     /** Start a prepared single-player bundle (optionally with a chosen map/scheme). */
-    function startBundle(bundle, customMap = null, schemeOverride = null) {
+    function startBundle(bundle, customMap = null, schemeOverride = null, title = null) {
         close();
         startGame(true, null, customMap, schemeOverride ?? bundle.scheme ?? null, {
             teamsConfig: bundle.teamsConfig,
             seed: bundle.seed,
-            context: bundle.context
+            context: bundle.context,
+            replayMeta: { title: title || 'Single Player', mode: bundle.context?.mode || 'sp' }
         });
     }
 
@@ -841,11 +1068,17 @@ function setupSinglePlayerMenu() {
         body.innerHTML = '';
         const progress = SP.loadProgress();
 
+        makeItem('🎓', progress.tutorialDone ? 'Tutorial' : 'Tutorial — start here!',
+            'Learn to walk, jump, aim, fire, rope and teleport, one step at a time',
+            () => startBundle(buildTutorial(), null, null, 'Tutorial'),
+            { done: progress.tutorialDone });
+        const medals = Object.values(progress.trainingMedals).filter(m => m.medal === 'gold').length;
         makeItem('🎯', 'Training',
-            `Weapon ranges — hit every target · ${progress.trainingCompleted.length}/${SP.TRAINING.length} passed`,
+            `Weapon ranges — hit every target · ${progress.trainingCompleted.length}/${SP.TRAINING.length} passed · 🥇 ${medals}`,
             renderTraining);
+        const stars = Object.values(progress.missionStars).reduce((s, n) => s + n, 0);
         makeItem('🎖️', 'Missions',
-            `Scripted campaign · ${progress.missionsCompleted.length}/${SP.MISSIONS.length} complete`,
+            `Campaign · ${progress.missionsCompleted.length}/${SP.MISSIONS.length} complete · ★ ${stars}/${SP.MISSIONS.length * 3}`,
             renderMissions);
         makeItem('💀', 'Deathmatch',
             `Ranked ladder · Current rank: ${SP.RANKS[progress.dmLevel]}`,
@@ -862,40 +1095,73 @@ function setupSinglePlayerMenu() {
         const progress = SP.loadProgress();
 
         for (const range of SP.TRAINING) {
-            makeItem('🎯', range.name, range.desc,
-                () => startBundle(SP.buildTraining(range)),
+            const best = progress.trainingMedals[range.id];
+            const [gold, silver] = SP.TRAINING_MEDALS[range.id] || [5, 8];
+            const medalLine = best
+                ? `${SP.MEDAL_ICON[best.medal]} best: ${best.shots} shots`
+                : `🥇 ≤${gold} shots · 🥈 ≤${silver}`;
+            makeItem(best ? SP.MEDAL_ICON[best.medal] : '🎯', range.name, `${range.desc} · ${medalLine}`,
+                () => startBundle(SP.buildTraining(range, getActiveStyle()), null, null, `Training: ${range.name}`),
                 { done: progress.trainingCompleted.includes(range.id) });
         }
     }
 
     // ---------------- Missions ----------------
+    /**
+     * Campaign map: missions as nodes along a winding trail, with the
+     * stars earned on each. Locked nodes unlock in order.
+     */
     function renderMissions() {
         view = 'sub';
-        title.textContent = '🎖️ Missions';
+        title.textContent = '🎖️ Campaign';
         body.innerHTML = '';
         const progress = SP.loadProgress();
 
+        const map = document.createElement('div');
+        map.className = 'campaign-map';
         SP.MISSIONS.forEach((mission, i) => {
             const done = progress.missionsCompleted.includes(mission.id);
-            const unlocked = i === 0 ||
-                progress.missionsCompleted.includes(SP.MISSIONS[i - 1].id);
-            makeItem(`${i + 1}️⃣`, mission.name,
-                unlocked ? mission.briefing : 'Complete the previous mission to unlock.',
-                () => renderBriefing(mission),
-                { locked: !unlocked, done });
+            const unlocked = i === 0 || progress.missionsCompleted.includes(SP.MISSIONS[i - 1].id);
+            const stars = progress.missionStars[mission.id] || 0;
+            const node = document.createElement('button');
+            node.className = 'campaign-node' + (done ? ' done' : '') + (unlocked ? '' : ' locked') +
+                (unlocked && !done ? ' current' : '');
+            node.disabled = !unlocked;
+            // Snake layout: rows of four, alternating direction
+            const row = Math.floor(i / 4);
+            const col = row % 2 === 0 ? i % 4 : 3 - (i % 4);
+            node.style.gridRow = String(row + 1);
+            node.style.gridColumn = String(col + 1);
+            node.innerHTML = `<span class="campaign-num">${unlocked ? i + 1 : '🔒'}</span>
+                <span class="campaign-name"></span>
+                <span class="campaign-stars">${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</span>`;
+            node.querySelector('.campaign-name').textContent = mission.name;
+            if (unlocked) node.addEventListener('click', () => renderBriefing(mission));
+            map.appendChild(node);
         });
+        body.appendChild(map);
+
+        const legend = document.createElement('p');
+        legend.className = 'sp-briefing-sub';
+        legend.textContent = '★ win · ★★ lose no koalas · ★★★ flawless within par turns';
+        body.appendChild(legend);
     }
 
     function renderBriefing(mission) {
         view = 'sub';
         title.textContent = `🎖️ ${mission.name}`;
+        const progress = SP.loadProgress();
+        const stars = progress.missionStars[mission.id] || 0;
+        const par = SP.MISSION_PAR[mission.id];
         body.innerHTML = `
-            <p class="sp-briefing">${mission.briefing}</p>
-            <p class="sp-briefing-sub">Objective: eliminate all enemy koalas.</p>`;
+            <p class="sp-briefing"></p>
+            <p class="sp-briefing-sub">Objective: eliminate all enemy koalas.
+                Par: ${par} turns · Best: ${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</p>`;
+        body.querySelector('.sp-briefing').textContent = mission.briefing;
         const btn = document.createElement('button');
         btn.className = 'menu-btn primary';
         btn.textContent = '▶ Start Mission';
-        btn.addEventListener('click', () => startBundle(SP.buildMission(mission)));
+        btn.addEventListener('click', () => startBundle(SP.buildMission(mission, getActiveStyle()), null, null, `Mission: ${mission.name}`));
         body.appendChild(btn);
     }
 
@@ -906,7 +1172,7 @@ function setupSinglePlayerMenu() {
         body.innerHTML = '';
         const progress = SP.loadProgress();
         const level = progress.dmLevel;
-        const bundle = SP.buildDeathmatch(level);
+        const bundle = SP.buildDeathmatch(level, getActiveStyle());
         const enemies = bundle.teamsConfig.filter(t => t.isCPU);
 
         const info = document.createElement('div');
@@ -923,7 +1189,7 @@ function setupSinglePlayerMenu() {
         const btn = document.createElement('button');
         btn.className = 'menu-btn primary';
         btn.textContent = '⚔️ Fight!';
-        btn.addEventListener('click', () => startBundle(bundle));
+        btn.addEventListener('click', () => startBundle(bundle, null, null, `Deathmatch: ${SP.RANKS[level]}`));
         body.appendChild(btn);
     }
 
@@ -956,26 +1222,53 @@ function setupSinglePlayerMenu() {
         btn.addEventListener('click', async () => {
             const difficulty = parseInt(document.getElementById('sp-quick-difficulty').value, 10);
             const enemyCount = parseInt(document.getElementById('sp-quick-enemies').value, 10);
-            const bundle = SP.buildQuickGame(difficulty, enemyCount);
+            const bundle = SP.buildQuickGame(difficulty, enemyCount, getActiveStyle());
 
             close();
             const maps = await MapManager.getAllMaps();
             menuManager.showMapSelection(maps, (mapId, scheme) => {
                 const customMap = mapId !== 'default' ? maps[mapId] : null;
-                startBundle(bundle, customMap, scheme);
+                startBundle(bundle, customMap, scheme, `Quick Game vs CPU ${difficulty}`);
             });
         });
         body.appendChild(btn);
     }
 
     // ---------------- Hotseat (the old Practice mode) ----------------
-    async function startHotseat() {
-        close();
-        const maps = await MapManager.getAllMaps();
-        menuManager.showMapSelection(maps, (mapId, scheme) => {
-            const customMap = mapId !== 'default' ? maps[mapId] : null;
-            startGame(true, null, customMap, scheme);
+    // Each side picks one of the saved teams (or the classic default)
+    function startHotseat() {
+        view = 'sub';
+        title.textContent = '👥 Hotseat';
+        const { teams, active } = loadTeams();
+        const options = (selected) => ['<option value="">Classic colours</option>',
+            ...teams.map(t => `<option value="${t.id}"${t.id === selected ? ' selected' : ''}></option>`)].join('');
+        body.innerHTML = `
+            <div class="sp-quick-row"><label for="hs-p1">🔴 Player 1 team</label>
+                <select id="hs-p1" class="scheme-select">${options(active)}</select></div>
+            <div class="sp-quick-row"><label for="hs-p2">🔵 Player 2 team</label>
+                <select id="hs-p2" class="scheme-select">${options(teams.find(t => t.id !== active)?.id)}</select></div>`;
+        // Team names are user text: set via textContent, not markup
+        for (const sel of body.querySelectorAll('select')) {
+            [...sel.options].slice(1).forEach((o, i) => { o.textContent = teams[i].name; });
+        }
+        const btn = document.createElement('button');
+        btn.className = 'menu-btn primary';
+        btn.textContent = '🗺️ Choose Map & Fight';
+        btn.addEventListener('click', async () => {
+            const pick = (id) => teams.find(t => t.id === document.getElementById(id).value) || null;
+            const teamStyles = [pick('hs-p1'), pick('hs-p2')];
+            close();
+            const maps = await MapManager.getAllMaps();
+            menuManager.showMapSelection(maps, (mapId, scheme) => {
+                const customMap = mapId !== 'default' ? maps[mapId] : null;
+                spContext = null;
+                startGame(true, null, customMap, scheme, {
+                    teamStyles,
+                    replayMeta: { title: 'Hotseat', mode: 'hotseat' }
+                });
+            });
         });
+        body.appendChild(btn);
     }
 }
 
@@ -1109,7 +1402,7 @@ function openMapEditor() {
     // Initialize editor
     mapEditor.init();
 
-    console.log('🗺️ Map Editor opened');
+    log.debug('🗺️ Map Editor opened');
 }
 
 /**
@@ -1122,7 +1415,7 @@ function closeMapEditor() {
     }
 
     menuManager.showMenu();
-    console.log('🗺️ Map Editor closed');
+    log.debug('🗺️ Map Editor closed');
 }
 
 /**
@@ -1155,7 +1448,7 @@ function testPlayMap() {
     // Start a game with the custom map
     startGameWithCustomMap(mapData);
 
-    console.log('🎮 Testing map...');
+    log.debug('🎮 Testing map...');
 }
 
 /**
@@ -1196,7 +1489,7 @@ function saveMap() {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        console.log('💾 Map saved:', mapName);
+        log.debug('💾 Map saved:', mapName);
     });
 }
 
@@ -1219,7 +1512,7 @@ function loadMap() {
             const text = await file.text();
             const mapData = JSON.parse(text);
             await mapEditor.importMap(mapData);
-            console.log('📂 Map loaded:', mapData.name);
+            log.debug('📂 Map loaded:', mapData.name);
         } catch (err) {
             console.error('Failed to load map:', err);
             alert('Failed to load map file. Make sure it\'s a valid .koalamap file.');
@@ -1254,7 +1547,7 @@ function importImageToMap() {
             // Import to map editor
             await mapEditor.importImage(img);
 
-            console.log('🖼️ Image imported as terrain:', file.name);
+            log.debug('🖼️ Image imported as terrain:', file.name);
         } catch (err) {
             console.error('Failed to import image:', err);
             alert('Failed to import image. Make sure it\'s a valid image file (PNG, JPG, etc).');
@@ -1329,7 +1622,7 @@ function exportCurrentGameMap(mapName = 'Current Map') {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    console.log('✅ Map exported as', mapName + '.koalamap');
+    log.debug('✅ Map exported as', mapName + '.koalamap');
     return mapData;
 }
 

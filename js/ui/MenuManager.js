@@ -7,6 +7,7 @@ import { globalAudioManager } from '../engine/AudioManager.js';
 import { SchemeEditor } from './SchemeEditor.js';
 import { getPresetSchemes, loadCustomSchemes, sanitizeScheme } from '../utils/GameScheme.js';
 import { TEAM_COLORS, TEAM_COLOR_LABELS, nextTeamColor } from '../utils/TeamColors.js';
+import { log } from '../utils/Logger.js';
 
 export class MenuManager {
     constructor() {
@@ -67,7 +68,7 @@ export class MenuManager {
         if (this.screens[id]) {
             this.screens[id].classList.add('active');
 
-            console.log(`[FSM] State changed: ${this.currentScreen} -> ${id}`);
+            log.debug(`[FSM] State changed: ${this.currentScreen} -> ${id}`);
             this.currentScreen = id;
 
             // Execute Entry Action
@@ -166,7 +167,10 @@ export class MenuManager {
         this.players = roster;
         list.innerHTML = '';
 
-        for (const p of roster) {
+        const players = roster.filter(p => !p.spectator);
+        const spectators = roster.filter(p => p.spectator);
+
+        for (const p of players) {
             const row = document.createElement('div');
             row.className = 'lobby-player' +
                 (p.ready ? ' ready' : '') +
@@ -192,6 +196,12 @@ export class MenuManager {
             name.textContent = `🐨 ${p.name}` +
                 (p.slot === 0 ? ' 👑' : '') +
                 (p.slot === mySlot ? ' (You)' : '');
+            if (p.style?.name) {
+                const team = document.createElement('small');
+                team.className = 'player-team';
+                team.textContent = p.style.name;
+                name.appendChild(team);
+            }
 
             const status = document.createElement('span');
             status.className = 'player-status';
@@ -204,10 +214,18 @@ export class MenuManager {
         }
 
         // Empty seats
-        for (let i = roster.length; i < 4; i++) {
+        for (let i = players.length; i < 4; i++) {
             const row = document.createElement('div');
             row.className = 'lobby-player empty';
             row.textContent = 'Waiting for player…';
+            list.appendChild(row);
+        }
+
+        if (spectators.length > 0) {
+            const row = document.createElement('div');
+            row.className = 'lobby-spectators';
+            row.textContent = '👀 Watching: ' + spectators
+                .map(s => s.name + (s.slot === mySlot ? ' (You)' : '')).join(', ');
             list.appendChild(row);
         }
 
@@ -222,12 +240,12 @@ export class MenuManager {
         const btn = document.getElementById('btn-start-game');
         if (!btn) return;
 
-        const connected = roster.filter(p => p.connected !== false);
+        const connected = roster.filter(p => p.connected !== false && !p.spectator);
         const readyCount = connected.filter(p => p.ready).length;
         const colorCount = new Set(connected.map(p => p.color)).size;
         const canStart = connected.length >= 2 && readyCount === connected.length && colorCount >= 2;
 
-        console.log(`🎮 Start button check: ${readyCount}/${connected.length} ready, ${colorCount} colours, canStart: ${canStart}`);
+        log.debug(`🎮 Start button check: ${readyCount}/${connected.length} ready, ${colorCount} colours, canStart: ${canStart}`);
 
         btn.disabled = !canStart;
 
@@ -261,12 +279,70 @@ export class MenuManager {
             }
         }
 
-        // Update stats
-        const damageEl = document.getElementById('stat-damage');
-        const killsEl = document.getElementById('stat-kills');
+        this.renderMatchStats(result.stats);
+    }
 
-        if (damageEl) damageEl.textContent = result.stats?.totalDamage || 0;
-        if (killsEl) killsEl.textContent = result.stats?.totalKills || 0;
+    /**
+     * End-of-match table (one row per team) and the awards ribbon.
+     */
+    renderMatchStats(stats) {
+        const awardsEl = document.getElementById('match-awards');
+        const tableEl = document.getElementById('match-stats-table');
+        if (!awardsEl || !tableEl) return;
+        awardsEl.innerHTML = '';
+        tableEl.innerHTML = '';
+        if (!stats?.teams) return;
+
+        for (const a of stats.awards || []) {
+            const card = document.createElement('div');
+            card.className = 'award';
+            const icon = document.createElement('span');
+            icon.className = 'award-icon';
+            icon.textContent = a.icon;
+            const text = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = a.title;
+            const who = document.createElement('span');
+            who.className = 'award-team';
+            who.textContent = a.team;
+            if (a.color) who.style.color = a.color;
+            const detail = document.createElement('small');
+            detail.textContent = a.text;
+            text.append(title, who, detail);
+            card.append(icon, text);
+            awardsEl.appendChild(card);
+        }
+
+        const cols = [
+            ['Team', null], ['Damage', 'damageDealt'], ['Kills', 'kills'], ['Lost', 'deaths'],
+            ['Shots', 'shots'], ['Accuracy', 'accuracy'], ['Friendly fire', 'friendlyDamage'], ['Crates', 'crates']
+        ];
+        const thead = document.createElement('tr');
+        for (const [label] of cols) {
+            const th = document.createElement('th');
+            th.textContent = label;
+            thead.appendChild(th);
+        }
+        tableEl.appendChild(thead);
+        const rows = [...stats.teams].sort((a, b) => (b.alive - a.alive) || (b.damageDealt - a.damageDealt));
+        for (const t of rows) {
+            const tr = document.createElement('tr');
+            if (!t.alive) tr.className = 'eliminated';
+            for (const [, key] of cols) {
+                const td = document.createElement('td');
+                if (!key) {
+                    td.textContent = t.name;
+                    td.style.color = t.color;
+                    td.className = 'team-cell';
+                } else if (key === 'accuracy') {
+                    td.textContent = t.shots ? `${t.accuracy}%` : '—';
+                } else {
+                    td.textContent = Math.round(t[key] || 0);
+                }
+                tr.appendChild(td);
+            }
+            tableEl.appendChild(tr);
+        }
     }
 
     /**

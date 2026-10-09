@@ -3,9 +3,15 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#1a1a2e">
+    <meta name="description" content="Worms-style artillery with koalas: destructible terrain, 39 weapons, CPU opponents and online play.">
     <title>ChronoKoala's Artillery</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" sizes="192x192" href="assets/icons/icon-192.png">
+    <link rel="apple-touch-icon" href="assets/icons/icon-192.png">
     <link rel="stylesheet" href="styles/main.css">
+    <link rel="stylesheet" href="styles/overhaul.css">
     <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Outfit:wght@400;600;700&display=swap"
         rel="stylesheet">
     <!-- PeerJS for P2P multiplayer -->
@@ -32,6 +38,13 @@
                 <button id="btn-editor" class="menu-btn quaternary">
                     <span class="icon">🗺️</span> Map Editor
                 </button>
+                <div class="menu-subrow">
+                    <button id="btn-teams" class="menu-btn tertiary small" title="Team editor: names, hats, graves, voices, dances">🎩 Teams</button>
+                    <button id="btn-replays" class="menu-btn tertiary small" title="Watch saved replays">🎬 Replays</button>
+                    <button id="btn-settings" class="menu-btn tertiary small" title="Controls and options">⚙️ Settings</button>
+                    <button id="btn-howto" class="menu-btn tertiary small" title="Show the controls">❓ Controls</button>
+                </div>
+                <p id="tutorial-nudge" class="tutorial-nudge hidden">New here? Try <b>Single Player → Tutorial</b>.</p>
             </div>
 
             <div id="host-panel" class="hidden">
@@ -47,6 +60,7 @@
             <div id="join-panel" class="hidden">
                 <p class="panel-label">Enter your friend's room code:</p>
                 <input type="text" id="room-code-input" placeholder="XXXXXX" maxlength="6">
+                <label class="spectate-toggle"><input type="checkbox" id="join-spectate"> Join as a spectator (watch only)</label>
                 <button id="btn-connect" class="menu-btn primary small">Connect</button>
                 <p id="join-status" class="connection-status"></p>
                 <button id="btn-cancel-join" class="menu-btn danger small hidden">Cancel</button>
@@ -205,7 +219,12 @@
             </div>
 
             <div id="lobby-player-list" class="lobby-player-list"></div>
-            <p class="lobby-hint">Up to 4 players. Click your colour chip to switch teams — players sharing a colour fight as allies.</p>
+            <p class="lobby-hint">Up to 4 players (plus spectators). Click your colour chip to switch teams — players sharing a colour fight as allies.</p>
+
+            <div class="lobby-chat">
+                <div id="lobby-chat-log" class="chat-log" aria-live="polite"></div>
+                <input id="lobby-chat-input" class="chat-input" maxlength="200" placeholder="Say something… (Enter to send)">
+            </div>
 
             <div class="lobby-controls">
                 <button id="btn-ready" class="menu-btn primary">Ready!</button>
@@ -252,8 +271,27 @@
                 <div id="zoom-indicator">
                     <span id="zoom-level">100%</span>
                 </div>
+                <button id="btn-help" class="hud-btn" title="Controls (H)">?</button>
             </div>
         </div>
+
+        <!-- Interactive tutorial coach -->
+        <div id="tutorial-panel" class="hidden"></div>
+
+        <!-- Replay playback bar -->
+        <div id="replay-controls" class="hidden"></div>
+
+        <!-- In-game chat (multiplayer) -->
+        <div id="game-chat">
+            <div id="game-chat-log" class="chat-log"></div>
+            <input id="game-chat-input" class="chat-input hidden" maxlength="200" placeholder="Chat — Enter to send, Esc to close">
+        </div>
+
+        <!-- On-screen touch controls -->
+        <div id="touch-controls" class="hidden"></div>
+
+        <!-- Controls cheat sheet -->
+        <div id="controls-overlay" class="hidden"></div>
 
         <!-- Weapon Selector (categorized arsenal) -->
         <div id="weapon-bar" class="minimized">
@@ -412,12 +450,53 @@
         <div class="gameover-container">
             <h1 id="winner-text">🏆 Red Team Wins!</h1>
             <p id="sp-result-line" class="sp-result-line hidden"></p>
-            <div class="stats">
-                <p>Total Damage Dealt: <span id="stat-damage">0</span></p>
-                <p>Koalas Eliminated: <span id="stat-kills">0</span></p>
+            <div id="match-awards" class="match-awards"></div>
+            <div class="match-stats-wrap">
+                <table id="match-stats-table" class="match-stats-table"></table>
             </div>
-            <button id="btn-rematch" class="menu-btn primary">Rematch</button>
-            <button id="btn-main-menu" class="menu-btn secondary">Main Menu</button>
+            <p id="rematch-note" class="rematch-note hidden"></p>
+            <div class="gameover-buttons">
+                <button id="btn-rematch" class="menu-btn primary small">Rematch</button>
+                <button id="btn-watch-replay" class="menu-btn secondary small hidden">🎬 Watch Replay</button>
+                <button id="btn-save-replay" class="menu-btn secondary small hidden">💾 Save Replay</button>
+                <button id="btn-back-lobby" class="menu-btn secondary small hidden">↩ Back to Lobby</button>
+                <button id="btn-main-menu" class="menu-btn tertiary small">Main Menu</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal hidden">
+        <div class="modal-content settings-content">
+            <h2 class="modal-title">⚙️ Settings</h2>
+            <div id="settings-body"></div>
+            <div class="modal-controls">
+                <button id="btn-settings-reset" class="menu-btn danger small">Reset keys</button>
+                <button id="btn-settings-close" class="menu-btn primary small">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Team Editor Modal -->
+    <div id="team-modal" class="modal hidden">
+        <div class="modal-content team-content">
+            <h2 class="modal-title">🎩 Teams</h2>
+            <div id="team-body"></div>
+            <div class="modal-controls">
+                <button id="btn-team-close" class="menu-btn primary small">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Replay Browser Modal -->
+    <div id="replay-modal" class="modal hidden">
+        <div class="modal-content replay-content">
+            <h2 class="modal-title">🎬 Replays</h2>
+            <div id="replay-list" class="replay-list"></div>
+            <div class="modal-controls">
+                <button id="btn-replay-import" class="menu-btn secondary small">📂 Import file</button>
+                <button id="btn-replay-close" class="menu-btn primary small">Close</button>
+            </div>
         </div>
     </div>
 

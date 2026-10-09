@@ -104,11 +104,12 @@ export class Koala {
     takeDamage(amount) {
         if (!this.isAlive) return;
 
+        const before = this.health;
         this.health = Math.max(0, this.health - amount);
 
-        if (this.health <= 0) {
-            // Will be processed in damage phase
-        }
+        // Observers (match statistics). Death itself is processed in the
+        // damage phase (Game.updateDeathSequences).
+        this.onDamaged?.(this, before - this.health);
     }
 
     /**
@@ -124,9 +125,10 @@ export class Koala {
      * Die
      */
     die() {
+        if (!this.isAlive) return;
         this.isAlive = false;
         this.isDying = false;
-        // Play death animation/sound
+        this.onDied?.(this);
     }
 
     /**

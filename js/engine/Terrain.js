@@ -4,6 +4,7 @@
  */
 
 import { imageHasAir, deriveTerrainFromOpaqueImage } from '../utils/TerrainMask.js';
+import { log } from '../utils/Logger.js';
 
 export class Terrain {
     constructor(width, height) {
@@ -66,7 +67,7 @@ export class Terrain {
     generate() {
         this.theme = this.pickTheme();
         const layout = this.pickLayout();
-        console.log(`🗺️ Generating map: theme=${this.theme.id}, layout=${layout}`);
+        log.debug(`🗺️ Generating map: theme=${this.theme.id}, layout=${layout}`);
 
         this.ctx.clearRect(0, 0, this.width, this.height);
 
@@ -1243,6 +1244,9 @@ export class Terrain {
      * with lumpy edges and a charred rim.
      */
     createCrater(cx, cy, radius, updateMask = true) {
+        // Observers (instant replay) mirror every terrain edit
+        this.onModify?.({ type: 'crater', x: cx, y: cy, r: radius });
+
         // Holes read bigger than the damage blast (the blast radius still
         // governs damage; this is pure terrain destruction)
         const r = radius * 1.15;
@@ -1319,6 +1323,8 @@ export class Terrain {
      * collision mask for that region.
      */
     addGirder(cx, cy, width = 90, height = 12) {
+        this.onModify?.({ type: 'girder', x: cx, y: cy, w: width, h: height });
+
         const x = cx - width / 2;
         const y = cy - height / 2;
 
@@ -1449,7 +1455,7 @@ export class Terrain {
             }
         }
 
-        console.log(`🗺️ Found ${points.length} potential spawn points across the map.`);
+        log.debug(`🗺️ Found ${points.length} potential spawn points across the map.`);
         return points;
     }
 }

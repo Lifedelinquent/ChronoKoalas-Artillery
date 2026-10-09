@@ -1,5 +1,6 @@
 import { EventEmitter } from '../utils/EventEmitter.js';
 import { globalAudioManager } from './AudioManager.js';
+import { log } from '../utils/Logger.js';
 
 export class TurnManager extends EventEmitter {
     constructor(game) {
@@ -77,6 +78,7 @@ export class TurnManager extends EventEmitter {
     startTurn() {
         this.phase = 'aiming';
         this.turnCounter++;
+        this.game.stats?.onTurnStart();
         this.passiveWait = 0;
         this.localFallback = false;
 
@@ -104,6 +106,8 @@ export class TurnManager extends EventEmitter {
         if (globalAudioManager.currentTheme !== desiredTheme) {
             globalAudioManager.playTheme(desiredTheme);
         }
+        // Barks this turn use the active team's voice pack
+        this.game.audioManager.voicePack = this.game.teams[this.currentTeamIndex]?.style?.voice;
         this.game.audioManager.playTurnStart();
 
         // Stow any parachutes left deployed from the previous turn
@@ -185,7 +189,7 @@ export class TurnManager extends EventEmitter {
      */
     activateSuddenDeath() {
         this.suddenDeathActive = true;
-        console.log(`💀 SUDDEN DEATH! (round ${this.roundNumber}, ${Math.floor(this.elapsedGameTime)}s elapsed)`);
+        log.debug(`💀 SUDDEN DEATH! (round ${this.roundNumber}, ${Math.floor(this.elapsedGameTime)}s elapsed)`);
 
         // Turns get shorter from here on — no more stalling.
         this.turnTime = Math.min(this.turnTime, 20);
@@ -245,7 +249,7 @@ export class TurnManager extends EventEmitter {
                 this.currentKoalaIndex = idx;
                 team.currentKoalaIndex = idx;
                 found = true;
-                console.log(`🐨 Selected ${team.name} koala ${idx}: ${team.koalas[idx].name}`);
+                log.debug(`🐨 Selected ${team.name} koala ${idx}: ${team.koalas[idx].name}`);
                 break;
             }
         }
@@ -275,7 +279,7 @@ export class TurnManager extends EventEmitter {
 
         this.currentKoalaIndex = this.game.teams[this.currentTeamIndex].currentKoalaIndex;
 
-        console.log(`🔄 Turn: ${this.game.teams[prevTeam].name} → ${this.game.teams[this.currentTeamIndex].name}`);
+        log.debug(`🔄 Turn: ${this.game.teams[prevTeam].name} → ${this.game.teams[this.currentTeamIndex].name}`);
     }
 
     endTurn() {
@@ -328,7 +332,7 @@ export class TurnManager extends EventEmitter {
         // can change the tally)
         const aliveTeams = this.game.teams.filter(t => t.isAlive());
         if (!anyDying && this.game.countAliveAlliances(aliveTeams) <= 1) {
-            this.game.endGame(aliveTeams[0] || null);
+            this.game.runAfterInstantReplay(() => this.game.endGame(aliveTeams[0] || null));
             return;
         }
 
@@ -368,13 +372,14 @@ export class TurnManager extends EventEmitter {
             // sequence (Game.updateDeathSequences) — no direct die() here
             this.game.updateTeamHealth();
 
+            // A killing turn gets its instant replay before play moves on
             const aliveTeams = this.game.teams.filter(t => t.isAlive());
             if (this.game.countAliveAlliances(aliveTeams) <= 1) {
-                this.game.endGame(aliveTeams[0] || null);
+                this.game.runAfterInstantReplay(() => this.game.endGame(aliveTeams[0] || null));
                 return;
             }
 
-            this.nextTurn();
+            this.game.runAfterInstantReplay(() => this.nextTurn());
         } else {
             this.game.scheduleDelayedAction(250, () => this.waitForSettle());
         }
@@ -435,7 +440,7 @@ export class TurnManager extends EventEmitter {
                 }
                 return;
             }
-            console.log('⏰ Time is up!');
+            log.debug('⏰ Time is up!');
             this.endTurn();
         }
     }
@@ -471,7 +476,7 @@ export class TurnManager extends EventEmitter {
             timerEl.textContent = Math.ceil(this.retreatTimer);
         }
 
-        console.log('🏃 Retreat phase started!');
+        log.debug('🏃 Retreat phase started!');
     }
 
     updateRetreat(dt) {

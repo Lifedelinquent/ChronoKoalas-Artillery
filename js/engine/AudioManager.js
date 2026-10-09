@@ -3,6 +3,9 @@
  * assets/audio/) with procedural Web Audio fallbacks for any missing file.
  */
 
+import { log } from '../utils/Logger.js';
+import { voiceById } from '../utils/TeamStyles.js';
+
 // Generated sample names (assets/audio/sfx/<name>.mp3)
 const SFX_SAMPLES = [
     'fire_bazooka', 'fire_throw', 'fire_shotgun', 'fire_handgun', 'fire_uzi',
@@ -77,8 +80,7 @@ export class AudioManager {
         this.music = null;
         this.currentTheme = null;
 
-        // Define audio tracks (ElevenLabs-generated loops; the original
-        // tracks remain on disk and playMusic falls back to them on error)
+        // Define audio tracks (ElevenLabs-generated loops)
         this.themes = {
             menu: 'assets/audio/music/music_menu.mp3',
             battle: 'assets/audio/music/music_battle.mp3',
@@ -150,7 +152,7 @@ export class AudioManager {
             this._applyBusVolumes();
 
             this.isInitialized = true;
-            console.log('🔊 Audio system initialized');
+            log.debug('🔊 Audio system initialized');
 
             // Initialize background music
             this.initMusic();
@@ -182,11 +184,6 @@ export class AudioManager {
             this.audioElements[key] = audio;
         }
 
-        // Fallback original track for battle if custom track fails
-        this.audioElements.fallback = new Audio('01. Worms - Armageddon - Original Mix.mp3');
-        this.audioElements.fallback.loop = true;
-        this.audioElements.fallback.volume = this._musicVolume();
-
         this.isInitializedTheme = true;
     }
 
@@ -216,7 +213,7 @@ export class AudioManager {
      * back to its procedural sound). `throttleMs` skips the play if the
      * same sample was triggered too recently (rapid-fire tools).
      */
-    playSample(name, { volume = 1, loop = false, rate = 1, throttleMs = 0, bus = 'sfx' } = {}) {
+    playSample(name, { volume = 1, loop = false, rate = 1, throttleMs = 0, bus = 'sfx', robot = false } = {}) {
         if (!this.isInitialized || this.isMuted) return null;
         const buffer = this.samples[name];
         if (!buffer) return null;
@@ -237,7 +234,21 @@ export class AudioManager {
         const gain = ctx.createGain();
         gain.gain.value = volume;
         src.connect(gain);
-        gain.connect(bus === 'voice' ? this.voiceBus : this.sfxBus);
+
+        // Robo-Koala voice pack: ring-modulate the line with a low sine
+        let out = gain;
+        if (robot) {
+            const ring = ctx.createGain();
+            ring.gain.value = 0;
+            const lfo = ctx.createOscillator();
+            lfo.frequency.value = 55;
+            lfo.connect(ring.gain);
+            gain.connect(ring);
+            lfo.start();
+            lfo.stop(ctx.currentTime + buffer.duration / rate + 0.1);
+            out = ring;
+        }
+        out.connect(bus === 'voice' ? this.voiceBus : this.sfxBus);
         src.start();
         return src;
     }
@@ -247,11 +258,14 @@ export class AudioManager {
      * `chance` < 1 plays it probabilistically — cosmetic only, so plain
      * Math.random() is safe for multiplayer sync.
      */
-    playVoice(name, chance = 1) {
+    playVoice(name, chance = 1, packId = this.voicePack) {
         if (chance < 1 && Math.random() > chance) return;
+        // Team voice pack (team editor): pitch + effect over the same lines
+        const pack = voiceById(packId);
+        if (pack.silent) return;
         // Slight pitch variance so repeated barks don't sound identical
-        const rate = 0.95 + Math.random() * 0.1;
-        this.playSample(`voice_${name}`, { volume: 0.9, rate, throttleMs: 400, bus: 'voice' });
+        const rate = (0.95 + Math.random() * 0.1) * pack.rate;
+        this.playSample(`voice_${name}`, { volume: 0.9, rate, throttleMs: 400, bus: 'voice', robot: !!pack.robot });
     }
 
     /**
@@ -411,7 +425,7 @@ export class AudioManager {
         }
 
         // Set new music
-        this.music = this.audioElements[themeName] || this.audioElements.fallback;
+        this.music = this.audioElements[themeName] || null;
         this.currentTheme = themeName;
 
         if (this.music) {
@@ -433,7 +447,7 @@ export class AudioManager {
      * Reset a theme's playback time to 0
      */
     resetTheme(themeName) {
-        const audio = this.audioElements[themeName] || this.audioElements.fallback;
+        const audio = this.audioElements[themeName];
         if (audio) {
             audio.currentTime = 0;
         }
@@ -447,18 +461,12 @@ export class AudioManager {
             this.music.play().catch(e => {
                 // If it's a browser layout policy blocking it, wait for interaction
                 if (e.name === 'NotAllowedError') {
-                    console.log('Audio autoplay prevented. Waiting for user interaction.');
+                    log.debug('Audio autoplay prevented. Waiting for user interaction.');
                     return;
                 }
 
-                // If the custom theme fails (e.g., file doesn't exist yet),
-                // fallback to the original track if it's supposed to be battle/menu music.
+                // Missing/undecodable track: play on without music
                 console.warn(`Could not play theme ${this.currentTheme}:`, e);
-                if (this.currentTheme === 'battle' || this.currentTheme === 'menu' || this.currentTheme === 'suddenDeath') {
-                    console.log('Falling back to original soundtrack for', this.currentTheme);
-                    this.music = this.audioElements.fallback;
-                    this.music.play().catch(fallbackErr => console.warn('Fallback failed:', fallbackErr));
-                }
             });
         }
     }

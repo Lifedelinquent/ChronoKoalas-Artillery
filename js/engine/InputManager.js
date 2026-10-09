@@ -1,25 +1,62 @@
 /**
- * Input Manager - Handles keyboard, mouse, and touch input
+ * Input Manager - keyboard, mouse and touch input.
+ *
+ * Input runs in two layers:
+ *
+ *  1. The PHYSICAL layer turns raw events into ACTIONS (via the player's key
+ *     bindings, see utils/Settings.js) and world-space pointer positions.
+ *     Anything that only changes the UI — the weapon menu, camera panning,
+ *     zoom, the controls overlay — is handled right here and never reaches
+ *     the simulation.
+ *
+ *  2. Everything that can change the simulation goes through dispatch() as a
+ *     small command ({t:'press', a:'fire'}, {t:'pmove', x, y}, ...). This is
+ *     the one door into the game for human input, which is what lets replays
+ *     record a match as a list of commands and play it back exactly, and
+ *     lets the touch controls drive the game with the same code paths.
  */
+
+import { log } from '../utils/Logger.js';
+import { actionsForCode } from '../utils/Settings.js';
 
 export class InputManager {
     // Weapon types that activate instantly (no power charging)
     static INSTANT_FIRE_TYPES = ['melee', 'blowtorch', 'drill', 'kamikaze', 'parachute', 'rope', 'skip', 'surrender', 'armageddon'];
 
+    // Phases where the pointer steers the crosshair (or the blowtorch)
+    static POINTER_PHASES = ['aiming', 'firing', 'armed', 'rope', 'blowtorch'];
+
+    // Window (seconds of game time) after takeoff in which a second tap of
+    // the jump key converts the jump, exactly like Worms Armageddon's
+    // double-tap jumps: Enter,Enter = backward hop, Backspace,Backspace =
+    // backflip. Game time, not wall time, so replays reproduce it exactly.
+    static JUMP_CONVERT_WINDOW = 0.28;
+
     constructor(game) {
         this.game = game;
 
-        // Input state
-        this.keys = {};
+        // Held simulation actions (left/right/aimUp/... → bool). Only ever
+        // changed by commands, so a replay rebuilds identical state.
+        this.held = {};
+
+        // Simulation pointer: the last world position the player aimed with,
+        // plus the primary button. Drives aim and the blowtorch.
+        this.simPointer = { x: 0, y: 0, down: false };
+
+        // UI pointer (cursor drawing, camera drag, weapon-bar auto-hide)
         this.mouse = { x: 0, y: 0, down: false, rightDown: false, lastMoveTime: 0 };
+
         this.isCharging = false;
         this.lockedPower = null; // Power captured when aim is locked (armed phase)
-        this.lastActivityTime = 0;
         this.isWeaponMenuOpen = false;
 
         // Movement settings
-        this.moveSpeed = 45; // px/s - was 12, which felt unresponsively slow
+        this.moveSpeed = 45; // px/s
         this.aimSpeed = 2;
+
+        // UI hooks set by the app shell (controls overlay, chat box)
+        this.onHelp = null;
+        this.onChat = null;
 
         // Bind event handlers
         this.handleKeyDown = this.handleKeyDown.bind(this);
@@ -29,7 +66,11 @@ export class InputManager {
         this.handleMouseUp = this.handleMouseUp.bind(this);
         this.handleWheel = this.handleWheel.bind(this);
 
-        // Add listeners
+        this.windowFocused = true;
+
+        // Headless games (determinism tests) have no DOM to listen to
+        if (game.options?.headless) return;
+
         window.addEventListener('keydown', this.handleKeyDown);
         window.addEventListener('keyup', this.handleKeyUp);
         this.game.canvas.addEventListener('mousemove', this.handleMouseMove);
@@ -38,10 +79,12 @@ export class InputManager {
         this.game.canvas.addEventListener('wheel', this.handleWheel);
 
         // Track window focus to prevent accidental firing
-        this.windowFocused = true;
         this.focusTimeout = null;
         this.handleBlur = () => {
             this.windowFocused = false;
+            // Keys released while the window is unfocused never send keyup:
+            // let go of everything so the koala doesn't walk off forever
+            this.releaseAllHeld();
         };
         this.handleFocus = () => {
             // Brief delay before accepting clicks after refocus
@@ -57,6 +100,257 @@ export class InputManager {
         this.setupWeaponSelection();
     }
 
+    // ==================== COMMAND LAYER ====================
+
+    /**
+     * The single entry point for simulation input. Records the command for
+     * replays, then applies it. Replay playback calls applyCommand directly.
+     */
+    dispatch(cmd) {
+        // Watching a replay: the viewer's own input never reaches the sim
+        if (this.game.isReplay) return;
+        // During an instant replay only let-go events get through, so a key
+        // released while it plays doesn't stay "held" into the next turn
+        if (this.game.instantReplay?.isPlaying() && cmd.t !== 'release' && cmd.t !== 'pup') return;
+        this.game.replayRecorder?.record(cmd);
+        this.applyCommand(cmd);
+    }
+
+    applyCommand(cmd) {
+        switch (cmd.t) {
+            case 'press': this.onActionPress(cmd.a); break;
+            case 'release': this.onActionRelease(cmd.a); break;
+            case 'pmove': this.onPointerMove(cmd.x, cmd.y); break;
+            case 'pdown': this.onPointerDown(cmd.x, cmd.y); break;
+            case 'pup': this.onPointerUp(); break;
+            case 'rdown': this.onSecondaryDown(); break;
+            case 'sel': this.onSelectWeapon(cmd.id); break;
+        }
+    }
+
+    /** Release every held action (window blur, leaving the game screen). */
+    releaseAllHeld() {
+        for (const a in this.held) {
+            if (this.held[a]) this.dispatch({ t: 'release', a });
+        }
+        if (this.simPointer.down) this.dispatch({ t: 'pup' });
+    }
+
+    isHeld(action) {
+        return !!this.held[action];
+    }
+
+    canAct() {
+        return this.game.isMyTurn() && this.game.phase !== 'countdown';
+    }
+
+    onActionPress(action) {
+        this.held[action] = true;
+
+        // Block game actions if it's not our turn or during countdown
+        if (!this.canAct()) return;
+
+        const game = this.game;
+
+        // Escape: clear a placed homing target so it can be re-placed
+        if (action === 'cancel') {
+            const weapon = game.weaponManager.currentWeapon;
+            if (game.phase === 'aiming' && weapon && weapon.requiresTarget && game.homingTarget) {
+                game.clearHomingTarget();
+            }
+            return;
+        }
+
+        // Block input if current koala is dead
+        const currentKoala = game.getCurrentKoala();
+        if (!currentKoala || !currentKoala.isAlive) return;
+
+        // Blowtorch: holding fire digs toward the pointer (touch screens and
+        // keyboard players have no held mouse button)
+        if (game.phase === 'blowtorch' && action === 'fire') {
+            this.simPointer.down = true;
+            return;
+        }
+
+        // On the ninja rope: fire re-fires toward the crosshair, jump lets
+        // go (swing velocity carries). Left/right/up/down are read as held
+        // actions by Game.updateRopeSwing.
+        if (game.phase === 'rope') {
+            if (action === 'fire') game.ropeRefire();
+            else if (action === 'jump') game.releaseRope();
+            return;
+        }
+
+        // Fuse timer
+        if (action.startsWith('timer')) {
+            game.weaponManager.setTimer(parseInt(action.slice(5), 10));
+            return;
+        }
+
+        if (action === 'fire') {
+            // If aim is locked (armed), fire confirms the shot
+            if (game.phase === 'armed') {
+                this.confirmFire();
+                return;
+            }
+            if (game.phase === 'aiming') {
+                const weapon = game.weaponManager.currentWeapon;
+                if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
+                    // Instant activation for melee, tools and utilities
+                    game.fireWeapon(currentKoala.aimAngle, 1.0);
+                } else if (weapon && weapon.requiresTarget && !game.homingTarget) {
+                    // Homing missile can't charge until a target is placed
+                    game.createFloatingText(currentKoala.x, currentKoala.y - 40, 'Click to mark a target first!', '#ff6b6b');
+                    game.audioManager.playClick();
+                } else if (weapon && !weapon.targetted) {
+                    // Targetted weapons fire on a pointer press instead
+                    this.startCharging();
+                }
+            }
+            return;
+        }
+
+        // Jumps work during aiming and retreat
+        if (action === 'jump' && (game.phase === 'aiming' || game.phase === 'retreat')) {
+            this.jump();
+        } else if (action === 'highJump' && (game.phase === 'aiming' || game.phase === 'retreat')) {
+            this.highJump();
+        }
+    }
+
+    onActionRelease(action) {
+        this.held[action] = false;
+
+        if (action === 'fire' && this.game.phase === 'blowtorch') {
+            this.simPointer.down = false;
+        }
+
+        // Release fire to lock in the shot (then press again to fire)
+        if (action === 'fire' && this.isCharging) {
+            this.lockAim();
+        }
+    }
+
+    onPointerMove(x, y) {
+        this.simPointer.x = x;
+        this.simPointer.y = y;
+
+        // Update aim angle (also while roping, so the crosshair shows where
+        // a rope re-fire would go)
+        const phase = this.game.phase;
+        if (phase === 'aiming' || phase === 'firing' || phase === 'armed' || phase === 'rope') {
+            this.updateAimFromPointer();
+        }
+    }
+
+    onPointerDown(x, y) {
+        this.simPointer.x = x;
+        this.simPointer.y = y;
+        this.simPointer.down = true;
+
+        if (!this.canAct()) return;
+
+        const game = this.game;
+        const currentKoala = game.getCurrentKoala();
+        if (!currentKoala || !currentKoala.isAlive) return;
+
+        // Aim is locked and waiting for confirmation — this click fires
+        if (game.phase === 'armed') {
+            this.confirmFire();
+            return;
+        }
+
+        // On the rope: click = re-fire toward the crosshair (same as fire key)
+        if (game.phase === 'rope') {
+            game.ropeRefire();
+            return;
+        }
+
+        if (game.phase !== 'aiming') return;
+
+        const weapon = game.weaponManager.currentWeapon;
+
+        // Homing missile: the first click places the target marker; once
+        // it's set, clicks charge and fire like any other weapon
+        if (weapon && weapon.requiresTarget && !game.homingTarget) {
+            game.setHomingTarget(x, y);
+            return;
+        }
+
+        if (weapon && weapon.targetted) {
+            // Airstrike, teleport, girder: fire at the clicked point
+            game.fireTargettedWeapon(weapon, x, y);
+        } else if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
+            game.fireWeapon(currentKoala.aimAngle, 1.0);
+        } else {
+            this.startCharging();
+        }
+    }
+
+    onPointerUp() {
+        this.simPointer.down = false;
+
+        // Releasing the button locks in the power and shows the committed
+        // trajectory; the player clicks again to actually fire.
+        if (this.isCharging) {
+            this.lockAim();
+        }
+    }
+
+    /** Right button: cancel a charging/locked shot, or clear a homing marker. */
+    onSecondaryDown() {
+        if (!this.canAct()) return;
+        const game = this.game;
+        if (game.phase === 'firing' || game.phase === 'armed') {
+            this.cancelCharge();
+            return;
+        }
+        const weapon = game.weaponManager.currentWeapon;
+        if (game.phase === 'aiming' && weapon && weapon.requiresTarget && game.homingTarget) {
+            game.clearHomingTarget();
+        }
+    }
+
+    /**
+     * Would a right-button press do something to the simulation right now?
+     * (Otherwise it belongs to the UI: weapon menu / camera drag.)
+     */
+    secondaryAffectsSim() {
+        if (!this.canAct()) return false;
+        const game = this.game;
+        if (game.phase === 'firing' || game.phase === 'armed') return true;
+        const weapon = game.weaponManager.currentWeapon;
+        return game.phase === 'aiming' && !!weapon && !!weapon.requiresTarget && !!game.homingTarget;
+    }
+
+    onSelectWeapon(weaponId) {
+        // Block weapon selection if not our turn or during countdown
+        if (!this.canAct()) return;
+
+        const game = this.game;
+
+        // Clicking the active blowtorch again ends the turn early
+        if (game.phase === 'blowtorch' && weaponId === 'blowtorch') {
+            log.debug('Ending blowtorch turn early');
+            game.endBlowtorch();
+            return;
+        }
+
+        game.weaponManager.selectWeapon(weaponId);
+        game.updateWeaponUI();
+
+        // Save as team's last selected weapon
+        const team = game.getCurrentTeam();
+        if (team) team.lastSelectedWeapon = weaponId;
+
+        // NETWORK SYNC: Send weapon selection to opponents
+        if (game.networkManager && !game.isPractice) {
+            game.networkManager.send({ type: 'weaponSelect', weaponId });
+        }
+    }
+
+    // ==================== PHYSICAL LAYER ====================
+
     setupWeaponSelection() {
         this.weaponBar = document.getElementById('weapon-bar');
         this.activeWeaponCard = document.getElementById('active-weapon-card');
@@ -66,8 +360,7 @@ export class InputManager {
             this.handleWeaponClick = (e) => {
                 const weaponEl = e.target.closest('.weapon');
                 if (weaponEl && !weaponEl.classList.contains('disabled')) {
-                    const weaponId = weaponEl.dataset.weapon;
-                    this.selectWeapon(weaponId);
+                    this.selectWeapon(weaponEl.dataset.weapon);
                     this.closeWeaponMenu();
                 }
             };
@@ -85,7 +378,6 @@ export class InputManager {
         // Click outside handler to close the menu
         this.handleOutsideClick = (e) => {
             if (!this.isWeaponMenuOpen) return;
-            // If click is not inside the weapon bar and not inside the active weapon card
             if (this.weaponBar && !this.weaponBar.contains(e.target) &&
                 this.activeWeaponCard && !this.activeWeaponCard.contains(e.target)) {
                 this.closeWeaponMenu();
@@ -94,181 +386,101 @@ export class InputManager {
         document.addEventListener('click', this.handleOutsideClick);
     }
 
-    /**
-     * Select a weapon
-     */
+    /** Select a weapon (weapon bar, touch menu, ...). */
     selectWeapon(weaponId) {
-        // Block weapon selection if not our turn or during countdown
-        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
-            return;
-        }
-
-        // Special case: if blowtorch is active and user clicks blowtorch again, end turn early
-        if (this.game.phase === 'blowtorch' && weaponId === 'blowtorch') {
-            console.log('Ending blowtorch turn early');
-            this.game.endBlowtorch();
-            return;
-        }
-
-        this.game.weaponManager.selectWeapon(weaponId);
-        this.game.updateWeaponUI();
-
-        // Save as team's last selected weapon
-        const team = this.game.getCurrentTeam();
-        if (team) {
-            team.lastSelectedWeapon = weaponId;
-        }
-
-        // NETWORK SYNC: Send weapon selection to opponent
-        if (this.game.networkManager && !this.game.isPractice) {
-            this.game.networkManager.send({
-                type: 'weaponSelect',
-                weaponId
-            });
-        }
+        this.dispatch({ t: 'sel', id: weaponId });
     }
 
-    /**
-     * Handle key down
-     */
-    handleKeyDown(e) {
-        this.keys[e.code] = true;
+    /** True while the player is typing into a text field (chat, names). */
+    isTyping(e) {
+        const el = e.target;
+        return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+            el.tagName === 'SELECT' || el.isContentEditable);
+    }
 
-        // F3 to toggle performance debugging (always allowed)
+    handleKeyDown(e) {
+        if (this.isTyping(e)) return;
+
+        // F3 toggles the performance monitor (always allowed)
         if (e.code === 'F3') {
             window.debugPerformance = !window.debugPerformance;
-            console.log(`🔧 Performance debugging: ${window.debugPerformance ? 'ON' : 'OFF'}`);
+            log.debug(`🔧 Performance debugging: ${window.debugPerformance ? 'ON' : 'OFF'}`);
             e.preventDefault();
             return;
         }
 
-        // Block game actions if it's not our turn or during countdown
-        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
-            return;
-        }
+        const actions = actionsForCode(e.code);
+        if (actions.length === 0) return;
 
-        // Tab or Backquote (tilde) to toggle weapon selection menu
-        if (e.code === 'Tab' || e.code === 'Backquote') {
+        // Keys the browser would otherwise act on (scroll, back, focus move)
+        if (['Space', 'Backspace', 'Tab', 'F1', 'ArrowUp', 'ArrowDown'].includes(e.code) ||
+            actions.includes('weaponMenu')) {
             e.preventDefault();
-            this.toggleWeaponMenu();
-            return;
         }
+        if (e.repeat) return; // held keys auto-repeat; actions are edge-triggered
 
-        // Escape to close weapon selection menu, or clear a placed homing
-        // target so it can be re-placed
-        if (e.code === 'Escape') {
-            if (this.isWeaponMenuOpen) {
-                this.closeWeaponMenu();
-                return;
+        for (const action of actions) {
+            // ---- UI-only actions ----
+            if (action === 'help') {
+                this.onHelp?.();
+                continue;
             }
-            const weapon = this.game.weaponManager.currentWeapon;
-            if (this.game.phase === 'aiming' && this.game.isMyTurn() &&
-                weapon && weapon.requiresTarget && this.game.homingTarget) {
-                this.game.clearHomingTarget();
-            }
-            return;
-        }
-
-        // Block input if current koala is dead
-        const currentKoala = this.game.getCurrentKoala();
-        if (!currentKoala || !currentKoala.isAlive) {
-            return;
-        }
-
-        // On the ninja rope: Space re-fires toward the crosshair, Enter lets
-        // go (swing velocity carries). Left/right/up/down are read as held
-        // keys by Game.updateRopeSwing.
-        if (this.game.phase === 'rope') {
-            if (e.code === 'Space') {
-                e.preventDefault();
-                this.game.ropeRefire();
-            } else if (e.code === 'Enter') {
-                this.game.releaseRope();
-            }
-            return;
-        }
-
-        // Number keys for weapon timer
-        if (e.code >= 'Digit1' && e.code <= 'Digit5') {
-            const timer = parseInt(e.code.replace('Digit', ''));
-            this.game.weaponManager.setTimer(timer);
-        }
-
-        // Space to fire
-        if (e.code === 'Space') {
-            e.preventDefault(); // Prevent spacebar from triggering focused buttons
-
-            // If aim is locked (armed), space confirms the shot
-            if (this.game.phase === 'armed') {
-                this.confirmFire();
-                return;
-            }
-
-            if (this.game.phase === 'aiming') {
-                const weapon = this.game.weaponManager.currentWeapon;
-                // Instant activation for melee, tools and utilities
-                if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
-                    const koala = this.game.getCurrentKoala();
-                    this.game.fireWeapon(koala.aimAngle, 1.0);
-                } else if (weapon && weapon.requiresTarget && !this.game.homingTarget) {
-                    // Homing missile can't charge until a target is placed
-                    const koala = this.game.getCurrentKoala();
-                    this.game.createFloatingText(koala.x, koala.y - 40, 'Click to mark a target first!', '#ff6b6b');
-                    this.game.audioManager.playClick();
-                } else if (weapon && !weapon.targetted) {
-                    // Don't start charging for targetted weapons (use mouse click instead)
-                    this.startCharging();
+            if (action === 'chat') {
+                if (this.onChat) {
+                    e.preventDefault();
+                    this.onChat();
                 }
+                continue;
             }
-        }
+            if (action === 'weaponMenu') {
+                if (this.canAct()) this.toggleWeaponMenu();
+                continue;
+            }
+            if (action === 'cancel' && this.isWeaponMenuOpen) {
+                this.closeWeaponMenu();
+                continue;
+            }
 
-        // Enter to jump (works during aiming and retreat)
-        if (e.code === 'Enter') {
-            if (this.game.phase === 'aiming' || this.game.phase === 'retreat') {
-                this.jump();
-            }
-        }
-
-        // Backspace for high jump / backflip (works during aiming and retreat)
-        if (e.code === 'Backspace') {
-            if (this.game.phase === 'aiming' || this.game.phase === 'retreat') {
-                this.highJump();
-            }
-            e.preventDefault();
+            this.dispatch({ t: 'press', a: action });
         }
     }
 
-    /**
-     * Handle key up
-     */
     handleKeyUp(e) {
-        this.keys[e.code] = false;
-
-        // Release space to lock in the shot (then press again to fire)
-        if (e.code === 'Space' && this.isCharging) {
-            this.lockAim();
+        if (this.isTyping(e)) return;
+        for (const action of actionsForCode(e.code)) {
+            if (this.held[action]) this.dispatch({ t: 'release', a: action });
         }
     }
 
-    /**
-     * Handle mouse move
-     */
-    handleMouseMove(e) {
+    /** Convert a client (screen) point to world coordinates. */
+    screenToWorld(clientX, clientY) {
         const rect = this.game.canvas.getBoundingClientRect();
+        return {
+            x: (clientX - rect.left) / this.game.camera.zoom + this.game.camera.x,
+            y: (clientY - rect.top) / this.game.camera.zoom + this.game.camera.y
+        };
+    }
+
+    /**
+     * Pointer moved to a world position. The UI cursor always follows; the
+     * simulation only hears about it while the pointer actually steers
+     * something, so replays don't fill up with idle mouse wiggles.
+     */
+    pointerMoveWorld(x, y) {
+        this.mouse.x = x;
+        this.mouse.y = y;
+        this.mouse.lastMoveTime = performance.now();
+
+        if (this.canAct() && InputManager.POINTER_PHASES.includes(this.game.phase)) {
+            this.dispatch({ t: 'pmove', x, y });
+        }
+    }
+
+    handleMouseMove(e) {
         this.mouse.screenX = e.clientX;
         this.mouse.screenY = e.clientY;
-        this.mouse.x = (e.clientX - rect.left) / this.game.camera.zoom + this.game.camera.x;
-        this.mouse.y = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
-
-        // Update aim angle based on mouse position (also while roping, so the
-        // crosshair shows where a rope re-fire would go)
-        if (this.game.phase === 'aiming' || this.game.phase === 'firing' ||
-            this.game.phase === 'armed' || this.game.phase === 'rope') {
-            this.updateAimFromMouse();
-        }
-
-        // Track movement for weapon-bar auto-hide
-        this.mouse.lastMoveTime = performance.now();
+        const p = this.screenToWorld(e.clientX, e.clientY);
+        this.pointerMoveWorld(p.x, p.y);
 
         // Drag camera with right mouse button
         if (this.mouse.rightDown) {
@@ -277,137 +489,65 @@ export class InputManager {
             if (Math.hypot(dx, dy) > 5) {
                 this.mouse.rightHasDragged = true;
             }
-            this.game.camera.targetX -= e.movementX / this.game.camera.zoom;
-            this.game.camera.targetY -= e.movementY / this.game.camera.zoom;
+            this.panCamera(e.movementX, e.movementY);
         }
     }
 
-    /**
-     * Handle mouse down
-     */
     handleMouseDown(e) {
-        if (e.button === 0) { // Left click
+        if (e.button === 0) {
             this.mouse.down = true;
-
             // Ignore clicks right after refocusing window
             if (!this.windowFocused) return;
-
-            // Block game actions if it's not our turn or during countdown
-            if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
-                return;
-            }
-
-            // Block input if current koala is dead
-            const currentKoala = this.game.getCurrentKoala();
-            if (!currentKoala || !currentKoala.isAlive) {
-                return;
-            }
-
-            // Aim is locked and waiting for confirmation — this click fires
-            if (this.game.phase === 'armed') {
-                this.confirmFire();
-                return;
-            }
-
-            // On the rope: click = re-fire toward the crosshair (same as Space)
-            if (this.game.phase === 'rope') {
-                this.game.ropeRefire();
-                return;
-            }
-
-            if (this.game.phase === 'aiming') {
-                const weapon = this.game.weaponManager.currentWeapon;
-
-                // Homing missile: the first click places the target marker;
-                // once it's set, clicks charge and fire like any other weapon
-                if (weapon && weapon.requiresTarget && !this.game.homingTarget) {
-                    const rect = this.game.canvas.getBoundingClientRect();
-                    const worldX = (e.clientX - rect.left) / this.game.camera.zoom + this.game.camera.x;
-                    const worldY = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
-                    this.game.setHomingTarget(worldX, worldY);
-                    return;
-                }
-
-                // Check if this is a targetted weapon (airstrike, teleport)
-                if (weapon && weapon.targetted) {
-                    // Get click position in world coordinates (zoom-aware)
-                    const rect = this.game.canvas.getBoundingClientRect();
-                    const worldX = (e.clientX - rect.left) / this.game.camera.zoom + this.game.camera.x;
-                    const worldY = (e.clientY - rect.top) / this.game.camera.zoom + this.game.camera.y;
-
-                    // Fire the targetted weapon
-                    this.game.fireTargettedWeapon(weapon, worldX, worldY);
-                } else if (weapon && InputManager.INSTANT_FIRE_TYPES.includes(weapon.type)) {
-                    // Melee/tool/utility weapons activate instantly without charging
-                    const koala = this.game.getCurrentKoala();
-                    this.game.fireWeapon(koala.aimAngle, 1.0);
-                } else {
-                    this.startCharging();
-                }
-            }
-        } else if (e.button === 2) { // Right click
+            const p = this.screenToWorld(e.clientX, e.clientY);
+            this.dispatch({ t: 'pdown', x: p.x, y: p.y });
+        } else if (e.button === 2) {
             this.mouse.rightDown = true;
             this.mouse.rightStartX = e.clientX;
             this.mouse.rightStartY = e.clientY;
             this.mouse.rightHasDragged = false;
-            this.mouse.rightClearedTarget = false;
+            this.mouse.rightUsedBySim = false;
 
-            // Cancel a charging or locked-in shot so the player can re-aim
-            if ((this.game.phase === 'firing' || this.game.phase === 'armed') && this.game.isMyTurn()) {
-                this.cancelCharge();
-                return;
-            }
-
-            // Clear a placed homing target so the next left click re-places it
-            // (suppresses the weapon menu toggle on this click's release)
-            if (this.game.phase === 'aiming' && this.game.isMyTurn()) {
-                const weapon = this.game.weaponManager.currentWeapon;
-                if (weapon && weapon.requiresTarget && this.game.homingTarget) {
-                    this.game.clearHomingTarget();
-                    this.mouse.rightClearedTarget = true;
-                }
+            if (this.secondaryAffectsSim()) {
+                this.mouse.rightUsedBySim = true;
+                this.dispatch({ t: 'rdown' });
             }
         }
     }
 
-    /**
-     * Handle mouse up
-     */
     handleMouseUp(e) {
         if (e.button === 0) {
             this.mouse.down = false;
-
-            // Releasing the button locks in the power and shows the committed
-            // trajectory; the player clicks again to actually fire.
-            if (this.isCharging) {
-                this.lockAim();
-            }
+            if (this.simPointer.down) this.dispatch({ t: 'pup' });
         } else if (e.button === 2) {
             this.mouse.rightDown = false;
-            if (!this.mouse.rightHasDragged && !this.mouse.rightClearedTarget &&
+            if (!this.mouse.rightHasDragged && !this.mouse.rightUsedBySim &&
                 this.game.isMyTurn() && (this.game.phase === 'aiming' || this.game.phase === 'retreat')) {
                 this.toggleWeaponMenu();
             }
-            this.mouse.rightClearedTarget = false;
+            this.mouse.rightUsedBySim = false;
         }
     }
 
-    /**
-     * Handle mouse wheel for zoom
-     */
-    handleWheel(e) {
-        const zoomSpeed = 0.1;
-        const direction = e.deltaY > 0 ? -1 : 1;
+    /** Pan the camera by a screen-space delta (mouse drag / touch drag). */
+    panCamera(dxScreen, dyScreen) {
         const camera = this.game.camera;
+        camera.targetX -= dxScreen / camera.zoom;
+        camera.targetY -= dyScreen / camera.zoom;
+        this.game.noteManualCamera?.();
+    }
 
+    /**
+     * Zoom the camera around a screen point, keeping the world point under
+     * it fixed (mouse wheel / pinch).
+     */
+    zoomAt(screenX, screenY, newZoom) {
+        const camera = this.game.camera;
         const oldZoom = camera.zoom;
-        camera.zoom = Math.max(0.5, Math.min(2, camera.zoom + direction * zoomSpeed));
-
-        // Zoom toward the cursor so the point under the mouse stays put
+        camera.zoom = Math.max(0.5, Math.min(2, newZoom));
         if (camera.zoom !== oldZoom) {
             const rect = this.game.canvas.getBoundingClientRect();
-            const sx = e.clientX - rect.left;
-            const sy = e.clientY - rect.top;
+            const sx = screenX - rect.left;
+            const sy = screenY - rect.top;
             const worldX = sx / oldZoom + camera.x;
             const worldY = sy / oldZoom + camera.y;
 
@@ -416,72 +556,66 @@ export class InputManager {
             camera.targetX = camera.x;
             camera.targetY = camera.y;
         }
-
-        // Update zoom display
+        this.game.noteManualCamera?.();
         this.updateZoomDisplay();
+    }
 
+    handleWheel(e) {
+        const direction = e.deltaY > 0 ? -1 : 1;
+        this.zoomAt(e.clientX, e.clientY, this.game.camera.zoom + direction * 0.1);
         e.preventDefault();
     }
 
-    /**
-     * Update zoom level display
-     */
     updateZoomDisplay() {
         const zoomEl = this.game.dom.elements.zoomLevel;
         if (zoomEl) {
-            const percentage = Math.round(this.game.camera.zoom * 100);
-            zoomEl.textContent = percentage + '%';
+            zoomEl.textContent = Math.round(this.game.camera.zoom * 100) + '%';
         }
     }
 
+    // ==================== SIMULATION HELPERS ====================
+
     /**
-     * Update aim angle from mouse position
+     * Aim at the simulation pointer. Always applies the exact angle (no
+     * change threshold) so the result depends only on the LAST pointer
+     * position — that's what lets a replay coalesce pointer moves per frame.
      */
-    updateAimFromMouse() {
-        // Block aiming if it's not our turn or during countdown
-        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
-            return;
-        }
+    updateAimFromPointer() {
+        if (!this.canAct()) return;
 
         const koala = this.game.getCurrentKoala();
         if (!koala) return;
 
-        const dx = this.mouse.x - koala.x;
-        const dy = this.mouse.y - (koala.y - 10);
+        const dx = this.simPointer.x - koala.x;
+        const dy = this.simPointer.y - (koala.y - 10);
 
-        // Determine facing direction based on mouse position - ONLY if not manually moving
-        const isMoving = this.keys['KeyA'] || this.keys['ArrowLeft'] || this.keys['KeyD'] || this.keys['ArrowRight'];
-        if (!isMoving) {
+        // Face the pointer - ONLY if not manually walking
+        if (!this.isHeld('left') && !this.isHeld('right')) {
             koala.facingLeft = dx < 0;
         }
 
-        // Calculate world angle directly (full 360 degrees)
-        // atan2 returns -PI to PI, this gives us full freedom
         const newAngle = Math.atan2(dy, dx);
+        const changed = Math.abs(newAngle - koala.aimAngle) > 0.01;
+        koala.aimAngle = newAngle;
 
-        // Only sync if angle actually changed significantly
-        if (Math.abs(newAngle - koala.aimAngle) > 0.01) {
-            koala.aimAngle = newAngle;
-
-            // NETWORK SYNC: Send aim update to opponent (throttled)
-            if (this.game.networkManager && !this.game.isPractice) {
-                const now = performance.now();
-                if (!this.lastMouseAimSync || now - this.lastMouseAimSync > 66) {
-                    this.game.networkManager.sendAim(koala.aimAngle,
-                        this.game.currentTeamIndex, this.game.currentKoalaIndex);
-                    this.lastMouseAimSync = now;
-                }
+        // NETWORK SYNC: Send aim update to opponents (throttled)
+        if (changed && this.game.networkManager && !this.game.isPractice) {
+            const now = performance.now();
+            if (!this.lastMouseAimSync || now - this.lastMouseAimSync > 66) {
+                this.game.networkManager.sendAim(koala.aimAngle,
+                    this.game.currentTeamIndex, this.game.currentKoalaIndex);
+                this.lastMouseAimSync = now;
             }
         }
     }
 
     /**
-     * Update loop for input-related UI or states
+     * Per-frame UI upkeep (weapon menu, cursor)
      */
     update(dt) {
+        if (this.game.options?.headless) return;
         this.updateWeaponMenuDOM();
 
-        // Premium touch: show a crosshair cursor while we can aim/fire
         const canAim = this.game.isMyTurn() &&
             (this.game.phase === 'aiming' || this.game.phase === 'firing' ||
                 this.game.phase === 'armed' || this.game.phase === 'rope');
@@ -492,28 +626,22 @@ export class InputManager {
     }
 
     /**
-     * Update during aiming phase
+     * Walking and keyboard aiming, called every frame during the phases the
+     * koala can move in. Reads held actions only — never raw keys.
      */
     updateAiming(koala, dt) {
         // Block movement if it's not our turn or during countdown
-        if (!this.game.isMyTurn() || this.game.phase === 'countdown') {
-            return;
-        }
+        if (!this.canAct()) return;
 
-        // A dead koala (e.g. one that just drowned) can't be walked around while
-        // the turn winds down. handleKeyDown already blocks fresh input, but a
-        // key held down at the moment of death would otherwise keep moving it.
-        if (!koala.isAlive) {
-            return;
-        }
+        // A dead koala (e.g. one that just drowned) can't be walked around
+        if (!koala.isAlive) return;
 
-        // WASD or Arrow key movement
         let moveDir = 0;
-        if (this.keys['KeyA'] || this.keys['ArrowLeft']) {
+        if (this.isHeld('left')) {
             moveDir = -1;
             koala.facingLeft = true;
         }
-        if (this.keys['KeyD'] || this.keys['ArrowRight']) {
+        if (this.isHeld('right')) {
             moveDir = 1;
             koala.facingLeft = false;
         }
@@ -526,16 +654,14 @@ export class InputManager {
 
         let positionChanged = false;
         if (moveDir !== 0) {
-            // Double-check that koala is actually on ground before allowing ground movement
-            // This prevents "walking on air" after terrain is destroyed
+            // Double-check that koala is actually on ground before allowing
+            // ground movement (prevents "walking on air" after terrain is destroyed)
             if (koala.onGround) {
                 const footY = koala.y + koala.height / 2;
-                // Check if there's actually terrain below feet
                 const stillOnGround = this.game.terrain.checkCollision(koala.x, footY) ||
                     this.game.terrain.checkCollision(koala.x, footY + 1) ||
                     this.game.terrain.checkCollision(koala.x, footY + 2);
                 if (!stillOnGround) {
-                    // Terrain was destroyed! Start falling.
                     koala.onGround = false;
                 }
             }
@@ -563,13 +689,13 @@ export class InputManager {
             }
         }
 
-        // Keyboard aiming (up/down arrows) - full rotation
+        // Keyboard aiming - full rotation
         let aimChanged = false;
-        if (this.keys['ArrowUp'] || this.keys['KeyW']) {
+        if (this.isHeld('aimUp')) {
             koala.aimAngle -= this.aimSpeed * dt;
             aimChanged = true;
         }
-        if (this.keys['ArrowDown'] || this.keys['KeyS']) {
+        if (this.isHeld('aimDown')) {
             koala.aimAngle += this.aimSpeed * dt;
             aimChanged = true;
         }
@@ -578,11 +704,9 @@ export class InputManager {
         while (koala.aimAngle > Math.PI) koala.aimAngle -= 2 * Math.PI;
         while (koala.aimAngle < -Math.PI) koala.aimAngle += 2 * Math.PI;
 
-        // Update facing from aim ONLY when the player is actively aiming with
-        // the keyboard (W/S). Walking sets facing to the move direction (above),
-        // and the mouse sets it on mouse-move (updateAimFromMouse). When idle we
-        // leave facing alone — this kills the annoying snap-back where the body
-        // whipped around to face the mouse the instant you stopped walking.
+        // Update facing from aim ONLY when actively aiming with the keyboard.
+        // Walking sets facing to the move direction (above), and the pointer
+        // sets it when it moves. When idle we leave facing alone.
         if (moveDir === 0 && aimChanged) {
             koala.facingLeft = Math.abs(koala.aimAngle) > Math.PI / 2;
         }
@@ -592,7 +716,7 @@ export class InputManager {
             positionChanged = true;
         }
 
-        // NETWORK SYNC: Send position and aim updates to opponent (throttled)
+        // NETWORK SYNC: Send position and aim updates to opponents (throttled)
         if (this.game.networkManager && !this.game.isPractice) {
             const now = performance.now();
 
@@ -602,7 +726,7 @@ export class InputManager {
                     koala.x,
                     koala.y,
                     koala.facingLeft,
-                    koala.blowtorchActive ? this.mouse.down : undefined,
+                    koala.blowtorchActive ? this.simPointer.down : undefined,
                     this.game.currentTeamIndex,
                     this.game.currentKoalaIndex
                 );
@@ -618,10 +742,10 @@ export class InputManager {
         }
     }
 
-    /**
-     * Toggle the weapon menu open/close
-     */
+    // ==================== WEAPON MENU (UI) ====================
+
     toggleWeaponMenu() {
+        if (this.game.isReplay) return;
         if (this.game.phase !== 'aiming' && this.game.phase !== 'retreat') return;
         if (!this.game.isMyTurn()) return;
 
@@ -629,9 +753,6 @@ export class InputManager {
         this.updateWeaponMenuDOM();
     }
 
-    /**
-     * Close the weapon menu
-     */
     closeWeaponMenu() {
         if (this.isWeaponMenuOpen) {
             this.isWeaponMenuOpen = false;
@@ -639,16 +760,11 @@ export class InputManager {
         }
     }
 
-    /**
-     * Update the visibility/classes of the weapon menu based on its open state
-     */
     updateWeaponMenuDOM() {
         if (!this.weaponBar) return;
 
         // Auto-close menu if moving
-        const moveKeys = ['KeyA', 'KeyD', 'ArrowLeft', 'ArrowRight', 'Enter', 'Backspace'];
-        const isMoving = moveKeys.some(key => this.keys[key]);
-        if (isMoving) {
+        if (this.isHeld('left') || this.isHeld('right') || this.isHeld('jump') || this.isHeld('highJump')) {
             this.isWeaponMenuOpen = false;
         }
 
@@ -663,9 +779,8 @@ export class InputManager {
         }
     }
 
-    /**
-     * Start charging power
-     */
+    // ==================== CHARGING / FIRING ====================
+
     startCharging() {
         if (this.game.phase !== 'aiming') return;
 
@@ -673,7 +788,6 @@ export class InputManager {
         this.game.phase = 'firing';
         this.game.weaponManager.startCharge();
 
-        // Show power bar
         const powerBarContainer = this.game.dom.elements.powerBarContainer;
         if (powerBarContainer) {
             powerBarContainer.classList.remove('hidden');
@@ -682,8 +796,8 @@ export class InputManager {
 
     /**
      * Lock in the current power and enter the "armed" phase. The trajectory
-     * stays on screen and the player can keep fine-tuning the aim with the
-     * mouse before committing with a second click.
+     * stays on screen and the player can keep fine-tuning the aim before
+     * committing with a second press.
      */
     lockAim() {
         if (!this.isCharging) return;
@@ -706,9 +820,7 @@ export class InputManager {
         }
     }
 
-    /**
-     * Commit the locked-in shot and actually fire.
-     */
+    /** Commit the locked-in shot and actually fire. */
     confirmFire() {
         if (this.game.phase !== 'armed') return;
 
@@ -720,17 +832,14 @@ export class InputManager {
             : this.game.weaponManager.power / this.game.weaponManager.maxPower;
         this.lockedPower = null;
 
-        // aimAngle is the world angle directly (full 360)
-        console.log('Firing - angle:', koala.aimAngle.toFixed(2), 'radians,',
+        log.debug('Firing - angle:', koala.aimAngle.toFixed(2), 'radians,',
             (koala.aimAngle * 180 / Math.PI).toFixed(1), 'degrees, power:', power.toFixed(2));
 
         this._hidePowerBar();
         this.game.fireWeapon(koala.aimAngle, power);
     }
 
-    /**
-     * Cancel a charging or locked shot without firing, returning to aiming.
-     */
+    /** Cancel a charging or locked shot without firing, returning to aiming. */
     cancelCharge() {
         if (this.game.phase !== 'firing' && this.game.phase !== 'armed') return;
 
@@ -743,12 +852,9 @@ export class InputManager {
         this._hidePowerBar();
         this.game.audioManager.playClick();
 
-        console.log('🚫 Shot cancelled — re-aim');
+        log.debug('🚫 Shot cancelled — re-aim');
     }
 
-    /**
-     * Hide and reset the power bar UI (shared by fire/cancel paths).
-     */
     _hidePowerBar() {
         const powerBarContainer = this.game.dom.elements.powerBarContainer;
         const powerFill = this.game.dom.elements.powerFill;
@@ -759,14 +865,11 @@ export class InputManager {
         if (powerFill) powerFill.style.width = '0%';
     }
 
-    // Window (ms) after takeoff in which a second tap of the jump key
-    // converts the jump, exactly like Worms Armageddon's double-tap jumps:
-    // Enter,Enter = backward hop, Backspace,Backspace = backflip.
-    static JUMP_CONVERT_WINDOW = 280;
+    // ==================== JUMPS ====================
 
     /**
-     * Enter: forward jump. A second tap shortly after takeoff converts it
-     * into a small backward hop (Worms-style double-tap). Jumps are committed
+     * Forward jump. A second tap shortly after takeoff converts it into a
+     * small backward hop (Worms-style double-tap). Jumps are committed
      * ballistic arcs — there is no mid-air steering.
      */
     jump() {
@@ -780,14 +883,14 @@ export class InputManager {
             // Forward jump - a short, snappy arc. Air friction is ~1.0 so the
             // horizontal momentum is preserved through the jump.
             koala.vy = -260;
-            koala.vx = koala.facingLeft ? -135 : 135; // Forward momentum
+            koala.vx = koala.facingLeft ? -135 : 135;
             koala.onGround = false;
             koala.isJumping = true;
             koala.jumpType = 'forward';
-            koala.jumpStartTime = performance.now();
+            koala.jumpStartTime = this.game.simTime;
             this._syncJump(koala, 'jump');
         } else if (koala.jumpType === 'forward' &&
-            performance.now() - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
+            this.game.simTime - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
             // Double-tap: convert into a small backward hop
             koala.vx = koala.facingLeft ? 100 : -100;
             koala.jumpType = 'backward';
@@ -796,9 +899,8 @@ export class InputManager {
     }
 
     /**
-     * Backspace: high jump straight up. A second tap shortly after takeoff
-     * converts it into a backflip — a high backward arc with one somersault
-     * (Worms-style double-tap).
+     * High jump straight up. A second tap shortly after takeoff converts it
+     * into a backflip — a high backward arc with one somersault.
      */
     highJump() {
         // Artillery mode (scheme): no jumping
@@ -814,10 +916,10 @@ export class InputManager {
             koala.onGround = false;
             koala.isJumping = true;
             koala.jumpType = 'high';
-            koala.jumpStartTime = performance.now();
+            koala.jumpStartTime = this.game.simTime;
             this._syncJump(koala, 'highJump', false);
         } else if (koala.jumpType === 'high' &&
-            performance.now() - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
+            this.game.simTime - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
             // Double-tap: backflip — kick backward and somersault once
             // (see Game.updateKoalaAnimations for the rotation)
             koala.vx = koala.facingLeft ? 165 : -165;
@@ -829,7 +931,7 @@ export class InputManager {
     }
 
     /**
-     * NETWORK SYNC: send a jump (or mid-air conversion) to the opponent.
+     * NETWORK SYNC: send a jump (or mid-air conversion) to the opponents.
      * `flip` only applies to highJump messages: true = somersault animation.
      */
     _syncJump(koala, type, flip) {
@@ -851,10 +953,9 @@ export class InputManager {
         this.game.networkManager.send(msg);
     }
 
-    /**
-     * Clean up event listeners
-     */
+    /** Clean up event listeners */
     destroy() {
+        if (this.game.options?.headless) return;
         window.removeEventListener('keydown', this.handleKeyDown);
         window.removeEventListener('keyup', this.handleKeyUp);
         window.removeEventListener('blur', this.handleBlur);

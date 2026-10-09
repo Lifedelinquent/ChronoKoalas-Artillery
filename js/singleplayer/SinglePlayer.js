@@ -52,10 +52,18 @@ export function loadProgress() {
         return {
             dmLevel: Math.max(0, Math.min(RANKS.length - 1, p.dmLevel | 0)),
             missionsCompleted: Array.isArray(p.missionsCompleted) ? p.missionsCompleted : [],
-            trainingCompleted: Array.isArray(p.trainingCompleted) ? p.trainingCompleted : []
+            trainingCompleted: Array.isArray(p.trainingCompleted) ? p.trainingCompleted : [],
+            // missionId → best star count (1-3)
+            missionStars: (p.missionStars && typeof p.missionStars === 'object') ? p.missionStars : {},
+            // rangeId → { medal: 'gold'|'silver'|'bronze', shots, time }
+            trainingMedals: (p.trainingMedals && typeof p.trainingMedals === 'object') ? p.trainingMedals : {},
+            tutorialDone: !!p.tutorialDone
         };
     } catch (e) {
-        return { dmLevel: 0, missionsCompleted: [], trainingCompleted: [] };
+        return {
+            dmLevel: 0, missionsCompleted: [], trainingCompleted: [],
+            missionStars: {}, trainingMedals: {}, tutorialDone: false
+        };
     }
 }
 
@@ -110,10 +118,10 @@ function pickEnemyNames(count) {
  * Instant match: you (red) vs 1-3 independent CPU squads at one difficulty.
  * Map + scheme come from the normal selection modal.
  */
-export function buildQuickGame(difficulty, enemyCount) {
+export function buildQuickGame(difficulty, enemyCount, style = null) {
     const names = pickEnemyNames(enemyCount);
     const teamsConfig = [
-        { name: 'Koala Commandos', color: 'red', isCPU: false },
+        { name: 'Koala Commandos', color: 'red', isCPU: false, style },
         ...names.map((name, i) => ({
             name,
             color: ENEMY_COLORS[i],
@@ -136,7 +144,7 @@ export function buildQuickGame(difficulty, enemyCount) {
  * numbers, brains and health as you climb. Enemy squads share one alliance
  * (they all want YOU), so the match ends when you or all of them fall.
  */
-export function buildDeathmatch(level) {
+export function buildDeathmatch(level, style = null) {
     const L = Math.max(0, Math.min(RANKS.length - 1, level));
     const enemyTeams = 1 + Math.floor(L / 4);                       // 1 → 2 → 3 squads
     const difficulty = Math.max(1, Math.min(5, 1 + Math.floor(L / 2)));
@@ -145,7 +153,7 @@ export function buildDeathmatch(level) {
 
     const names = pickEnemyNames(enemyTeams);
     const teamsConfig = [
-        { name: 'Koala Commandos', color: 'red', isCPU: false, koalaCount: 4, health: 100 },
+        { name: 'Koala Commandos', color: 'red', isCPU: false, koalaCount: 4, health: 100, style },
         ...names.map((name, i) => ({
             name,
             color: ENEMY_COLORS[i],
@@ -181,6 +189,9 @@ export function buildDeathmatch(level) {
  * Scripted scenarios on fixed seeds (same map every attempt, WA-style).
  * Unlocked in order; objective is always "eliminate all enemies" but the
  * setups force different play (limited arsenal, minefields, artillery...).
+ *
+ * Stars: ★ win · ★★ win without losing a koala · ★★★ ...and within the
+ * mission's par turn count (your turns).
  */
 export const MISSIONS = [
     {
@@ -263,14 +274,105 @@ export const MISSIONS = [
             turnTime: 30, windStrength: 1.5, suddenDeathTime: 240,
             mineCount: 6, oilDrumCount: 5, crateDropChance: 0.33
         }]
+    },
+    {
+        id: 'm7',
+        name: 'Sheep Dip',
+        briefing: 'Command says the Magpie Menace are holed up in the hills. Command also says we are out of rockets. We do, however, have sheep. Lots of sheep.',
+        seed: 6021,
+        player: { koalaCount: 3 },
+        enemies: [{ name: 'Magpie Menace', color: 'green', difficulty: 3, koalaCount: 4, health: 80 }],
+        scheme: ['Mission: Sheep Dip', {
+            turnTime: 40, windStrength: 0.5, suddenDeathTime: -1,
+            mineCount: 4, oilDrumCount: 4, crateDropChance: 0.3
+        }, { '*': { ammo: 0 }, sheep: { ammo: -1 }, banana: { ammo: 2 }, prod: { ammo: -1 }, rope: { ammo: 3 } }]
+    },
+    {
+        id: 'm8',
+        name: 'High Ground',
+        briefing: 'The Drop Bears have taken the floating islands and are lobbing shells from on high. Rope up, girder over and take the fight to them.',
+        seed: 3388,
+        player: { koalaCount: 3 },
+        enemies: [{ name: 'Drop Bear Air Wing', color: 'blue', difficulty: 4, koalaCount: 3, health: 100 }],
+        scheme: ['Mission: High Ground', {
+            turnTime: 45, windStrength: 1, suddenDeathTime: 480,
+            mineCount: 2, oilDrumCount: 2, crateDropChance: 0.25
+        }, {
+            '*': { ammo: 0 }, bazooka: { ammo: -1 }, grenade: { ammo: -1 }, shotgun: { ammo: -1 },
+            rope: { ammo: -1 }, girder: { ammo: 6 }, parachute: { ammo: 3 }, firepunch: { ammo: -1 }
+        }]
+    },
+    {
+        id: 'm9',
+        name: 'Rising Tide',
+        briefing: 'The levee broke. Sudden death hits in one minute and the water climbs fast — the Croc Commandos love the water. You do not.',
+        seed: 9902,
+        player: { koalaCount: 3 },
+        enemies: [{ name: 'Croc Commandos', color: 'yellow', difficulty: 4, koalaCount: 3, health: 100 }],
+        scheme: ['Mission: Rising Tide', {
+            turnTime: 25, windStrength: 1, suddenDeathTime: 60, waterRisePerTurn: 30,
+            suddenDeathDecay: 0, mineCount: 3, oilDrumCount: 3, crateDropChance: 0.4
+        }]
+    },
+    {
+        id: 'm10',
+        name: 'Lone Wolf',
+        briefing: 'One koala. Two hundred health. Three squads who want you gone. Every crate is a lifeline — grab them.',
+        seed: 1515,
+        player: { koalaCount: 1, health: 200 },
+        enemies: [
+            { name: 'Dingo Squad', color: 'blue', difficulty: 3, koalaCount: 2, health: 60 },
+            { name: 'Cane Toads', color: 'green', difficulty: 3, koalaCount: 2, health: 60 },
+            { name: 'Emu Empire', color: 'yellow', difficulty: 3, koalaCount: 2, health: 60 }
+        ],
+        scheme: ['Mission: Lone Wolf', {
+            turnTime: 35, windStrength: 1, suddenDeathTime: -1,
+            mineCount: 4, oilDrumCount: 6, crateDropChance: 0.7, maxCratesOnMap: 5
+        }]
+    },
+    {
+        id: 'm11',
+        name: 'Mine Over Matter',
+        briefing: 'The Wombat Warriors have mined everything, including, possibly, the mines. Bring your own: you get mine strikes too.',
+        seed: 4747,
+        player: { koalaCount: 4 },
+        enemies: [{ name: 'Wombat Warriors', color: 'blue', difficulty: 4, koalaCount: 4, health: 100 }],
+        scheme: ['Mission: Mine Over Matter', {
+            turnTime: 35, windStrength: 1.25, suddenDeathTime: 420,
+            mineCount: 26, mineDudChance: 0.2, oilDrumCount: 4, crateDropChance: 0.25
+        }, {
+            '*': { ammo: 0 }, bazooka: { ammo: -1 }, grenade: { ammo: -1 }, mine: { ammo: 4 },
+            minestrike: { ammo: 2 }, dynamite: { ammo: 2 }, teleport: { ammo: 2 }, prod: { ammo: -1 }
+        }]
+    },
+    {
+        id: 'm12',
+        name: 'Armageddon',
+        briefing: 'The final battle. The Elite Guard has joined forces with the Croc Commandos. Every weapon in the armoury is unlocked — including the one we do not talk about.',
+        seed: 8008,
+        player: { koalaCount: 4 },
+        enemies: [
+            { name: 'The Elite Guard', color: 'blue', difficulty: 5, koalaCount: 3, health: 120 },
+            { name: 'Croc Commandos', color: 'green', difficulty: 5, koalaCount: 3, health: 120 }
+        ],
+        scheme: ['Mission: Armageddon', {
+            turnTime: 30, windStrength: 1.5, suddenDeathTime: 360,
+            mineCount: 8, oilDrumCount: 6, crateDropChance: 0.4
+        }, { armageddon: { ammo: 1, delay: 3 }, banana: { ammo: 1 }, minigun: { ammo: 1 } }]
     }
 ];
 
-export function buildMission(mission) {
+/** Par (your turns) for the third star, by mission. */
+export const MISSION_PAR = {
+    m1: 4, m2: 5, m3: 6, m4: 7, m5: 9, m6: 9,
+    m7: 7, m8: 8, m9: 6, m10: 9, m11: 8, m12: 10
+};
+
+export function buildMission(mission, style = null) {
     const teamsConfig = [
         {
             name: 'Koala Commandos', color: 'red', isCPU: false,
-            koalaCount: mission.player.koalaCount, health: mission.player.health
+            koalaCount: mission.player.koalaCount, health: mission.player.health, style
         },
         ...mission.enemies.map(e => ({
             name: e.name,
@@ -322,6 +424,20 @@ export const TRAINING = [
         weapons: { '*': { ammo: 0 }, shotgun: { ammo: -1 }, handgun: { ammo: -1 }, uzi: { ammo: -1 } }
     },
     {
+        id: 'strikes',
+        name: 'Air Support Range',
+        desc: 'Air strikes, napalm and homing missiles. Read the wind before you call it in.',
+        wind: 1.25,
+        weapons: { '*': { ammo: 0 }, airstrike: { ammo: -1 }, napalmstrike: { ammo: -1 }, homing: { ammo: -1 } }
+    },
+    {
+        id: 'melee',
+        name: 'Close Quarters',
+        desc: 'Walk up and hit them. Fire Punch, Dragon Ball, Bat and Prod — mind the ledges.',
+        wind: 0,
+        weapons: { '*': { ammo: 0 }, firepunch: { ammo: -1 }, dragonball: { ammo: -1 }, bat: { ammo: -1 }, prod: { ammo: -1 }, rope: { ammo: -1 } }
+    },
+    {
         id: 'advanced',
         name: 'Advanced Range',
         desc: 'The whole arsenal, live mines on the ground. Improvise.',
@@ -331,11 +447,24 @@ export const TRAINING = [
 ];
 
 // Fixed seed per range so every visit uses the same practice map (WA-style)
-const TRAINING_SEEDS = { bazooka: 1201, grenade: 1202, guns: 1203, advanced: 1204 };
+const TRAINING_SEEDS = { bazooka: 1201, grenade: 1202, guns: 1203, strikes: 1205, melee: 1206, advanced: 1204 };
 
-export function buildTraining(range) {
+/** Medal thresholds by shots fired: [gold, silver] (anything else = bronze). */
+export const TRAINING_MEDALS = {
+    bazooka: [6, 9], grenade: [6, 10], guns: [5, 8], strikes: [4, 7], melee: [6, 10], advanced: [5, 8]
+};
+
+export function medalFor(rangeId, shots) {
+    const [gold, silver] = TRAINING_MEDALS[rangeId] || [5, 8];
+    return shots <= gold ? 'gold' : shots <= silver ? 'silver' : 'bronze';
+}
+
+const MEDAL_RANK = { bronze: 1, silver: 2, gold: 3 };
+export const MEDAL_ICON = { gold: '🥇', silver: '🥈', bronze: '🥉' };
+
+export function buildTraining(range, style = null) {
     const teamsConfig = [
-        { name: 'Trainee', color: 'red', isCPU: false, koalaCount: 1, health: 100 },
+        { name: 'Trainee', color: 'red', isCPU: false, koalaCount: 1, health: 100, style },
         {
             name: 'Practice Targets', color: 'yellow', alliance: 'cpu',
             isCPU: true, difficulty: 0, koalaCount: 5, health: 1
@@ -377,8 +506,15 @@ export function handleGameOver(context, result) {
     // The human squad is always red-alliance team 0 in single player
     const playerWon = !!winner && winner.alliance === 'red';
     const progress = loadProgress();
+    const me = result?.stats?.teams?.[0];
 
     switch (context.mode) {
+        case 'tutorial':
+            if (!playerWon) return { text: 'Not quite! Have another go — the dummies are waiting.', won: false };
+            progress.tutorialDone = true;
+            saveProgress(progress);
+            return { text: '🎓 Tutorial complete! Try Training, then the Missions campaign.', won: true };
+
         case 'quick':
             return playerWon
                 ? { text: '🎉 The CPU never stood a chance.', won: true }
@@ -411,14 +547,22 @@ export function handleGameOver(context, result) {
             }
             if (!progress.missionsCompleted.includes(context.missionId)) {
                 progress.missionsCompleted.push(context.missionId);
-                saveProgress(progress);
             }
+            // Stars: win, flawless (no koalas lost), and within par
+            let stars = 1;
+            const flawless = me && me.deaths === 0;
+            if (flawless) stars++;
+            if (flawless && (result?.stats?.playerTurns ?? Infinity) <= (MISSION_PAR[context.missionId] ?? 0)) stars++;
+            progress.missionStars[context.missionId] = Math.max(stars, progress.missionStars[context.missionId] || 0);
+            saveProgress(progress);
+
             const idx = MISSIONS.findIndex(m => m.id === context.missionId);
             const next = MISSIONS[idx + 1];
+            const starText = '★'.repeat(stars) + '☆'.repeat(3 - stars);
             return {
                 text: next
-                    ? `🎖️ Mission accomplished! Unlocked: "${next.name}"`
-                    : '🎖️ Campaign complete! Every mission conquered.',
+                    ? `🎖️ Mission accomplished! ${starText} · Unlocked: "${next.name}"`
+                    : `🎖️ Campaign complete! ${starText} Every mission conquered.`,
                 won: true
             };
         }
@@ -429,9 +573,19 @@ export function handleGameOver(context, result) {
             }
             if (!progress.trainingCompleted.includes(context.rangeId)) {
                 progress.trainingCompleted.push(context.rangeId);
-                saveProgress(progress);
             }
-            return { text: '🎯 All targets destroyed. Range passed!', won: true };
+            const shots = me?.shots ?? 99;
+            const medal = medalFor(context.rangeId, shots);
+            const prev = progress.trainingMedals[context.rangeId];
+            const better = !prev || MEDAL_RANK[medal] > MEDAL_RANK[prev.medal] ||
+                (prev.medal === medal && shots < prev.shots);
+            if (better) {
+                progress.trainingMedals[context.rangeId] = { medal, shots, time: Math.round(result?.stats?.duration || 0) };
+            }
+            saveProgress(progress);
+            const [gold, silver] = TRAINING_MEDALS[context.rangeId] || [5, 8];
+            const hint = medal === 'gold' ? '' : ` (${medal === 'silver' ? gold : silver} shots or fewer for ${medal === 'silver' ? 'gold' : 'silver'})`;
+            return { text: `${MEDAL_ICON[medal]} Range passed in ${shots} shot${shots === 1 ? '' : 's'}!${hint}`, won: true };
         }
     }
     return null;

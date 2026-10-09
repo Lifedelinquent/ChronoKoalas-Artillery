@@ -4,6 +4,7 @@
 
 import { MapManager } from '../utils/MapManager.js';
 import { processTerrainImage } from '../utils/TerrainMask.js';
+import { log } from '../utils/Logger.js';
 
 export class MapEditor {
     constructor(canvas) {
@@ -137,7 +138,7 @@ export class MapEditor {
         // Start render loop
         this.animationId = requestAnimationFrame(this.render);
 
-        console.log('🗺️ Map Editor initialized');
+        log.debug('🗺️ Map Editor initialized');
     }
 
     /**
@@ -301,12 +302,12 @@ export class MapEditor {
             } else if (this.currentTool === 'spawn1') {
                 const spawnPoint = { x: Math.round(this.mouse.x), y: Math.round(this.mouse.y) };
                 this.spawns.team1.push(spawnPoint);
-                console.log('📍 Team 1 Spawn placed:', spawnPoint, 'Total:', this.spawns.team1.length);
+                log.debug('📍 Team 1 Spawn placed:', spawnPoint, 'Total:', this.spawns.team1.length);
                 this.saveToHistory();
             } else if (this.currentTool === 'spawn2') {
                 const spawnPoint = { x: Math.round(this.mouse.x), y: Math.round(this.mouse.y) };
                 this.spawns.team2.push(spawnPoint);
-                console.log('📍 Team 2 Spawn placed:', spawnPoint, 'Total:', this.spawns.team2.length);
+                log.debug('📍 Team 2 Spawn placed:', spawnPoint, 'Total:', this.spawns.team2.length);
                 this.saveToHistory();
             } else {
                 // For brush tools, apply immediately
@@ -1095,13 +1096,13 @@ export class MapEditor {
             team2: this.spawns.team2.map(s => ({ x: s.x, y: s.y }))
         };
 
-        console.log('📦 Exporting map:', name);
-        console.log('   Team 1 spawns:', JSON.stringify(spawnsCopy.team1));
-        console.log('   Team 2 spawns:', JSON.stringify(spawnsCopy.team2));
+        log.debug('📦 Exporting map:', name);
+        log.debug('   Team 1 spawns:', JSON.stringify(spawnsCopy.team1));
+        log.debug('   Team 2 spawns:', JSON.stringify(spawnsCopy.team2));
 
         // Recalculate map bounds before export to ensure accuracy
         this.calculateMapBounds();
-        console.log('   Map bounds:', JSON.stringify(this.mapBounds));
+        log.debug('   Map bounds:', JSON.stringify(this.mapBounds));
 
         return {
             name: name,
@@ -1171,7 +1172,7 @@ export class MapEditor {
             this.spawns = { team1: [], team2: [] };
             this.saveToHistory();
 
-            console.log('🖼️ Image imported (Full Fill):', img.width, 'x', img.height, '→', this.worldWidth, 'x', this.worldHeight);
+            log.debug('🖼️ Image imported (Full Fill):', img.width, 'x', img.height, '→', this.worldWidth, 'x', this.worldHeight);
             resolve();
         });
     }
@@ -1233,7 +1234,7 @@ export class MapEditor {
             waterLevel: this.worldHeight - 60
         };
 
-        console.log(`📐 Map bounds calculated: Top Y=${this.mapBounds.topY}, Bottom Y=${this.mapBounds.bottomY}`);
+        log.debug(`📐 Map bounds calculated: Top Y=${this.mapBounds.topY}, Bottom Y=${this.mapBounds.bottomY}`);
     }
 
 

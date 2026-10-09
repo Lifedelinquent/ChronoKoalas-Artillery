@@ -2,6 +2,8 @@
  * Physics System - Gravity, collisions, and movement
  */
 
+import { log } from '../utils/Logger.js';
+
 export class Physics {
     constructor(game) {
         this.game = game;
@@ -132,14 +134,14 @@ export class Physics {
                 if (entity.isAlive && fallAmount > 260 && fallMult > 0) {
                     const damage = Math.floor(((fallAmount - 260) / 5) * fallMult);
                     entity.takeDamage(damage);
-                    console.log(`💥 ${entity.name} took ${damage} fall damage (fell ${fallAmount.toFixed(1)}px from peak Y:${entity.peakY.toFixed(1)})`);
+                    log.debug(`💥 ${entity.name} took ${damage} fall damage (fell ${fallAmount.toFixed(1)}px from peak Y:${entity.peakY.toFixed(1)})`);
 
                     // If this is the current player's koala, end their turn
                     const currentKoala = this.game.getCurrentKoala();
                     const interactivePhase = this.game.phase === 'aiming' ||
                         this.game.phase === 'firing' || this.game.phase === 'armed';
                     if (damage > 0 && entity === currentKoala && interactivePhase) {
-                        console.log('🛑 Fall damage ends turn!');
+                        log.debug('🛑 Fall damage ends turn!');
                         this.game.endTurn();
                     }
                 }

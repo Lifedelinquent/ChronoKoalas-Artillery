@@ -3,6 +3,8 @@
  * Uses IndexedDB for storage (supports hundreds of MB, unlike localStorage's ~5MB limit)
  */
 
+import { log } from './Logger.js';
+
 export class MapManager {
     static DB_NAME = 'koala_artillery_db';
     static STORE_NAME = 'maps';
@@ -55,7 +57,7 @@ export class MapManager {
                     await this.saveMap(map);
                 }
                 localStorage.removeItem(this.LEGACY_STORAGE_KEY);
-                console.log(`🗺️ Migrated ${maps.length} map(s) from localStorage → IndexedDB`);
+                log.debug(`🗺️ Migrated ${maps.length} map(s) from localStorage → IndexedDB`);
             }
         } catch (e) {
             console.error('Failed to migrate maps from localStorage:', e);
@@ -75,7 +77,7 @@ export class MapManager {
                 store.put(mapData);
 
                 tx.oncomplete = () => {
-                    console.log('🗺️ Map saved:', mapData.name);
+                    log.debug('🗺️ Map saved:', mapData.name);
                     resolve();
                 };
                 tx.onerror = (e) => {
@@ -139,7 +141,7 @@ export class MapManager {
                 store.delete(mapName);
 
                 tx.oncomplete = () => {
-                    console.log('🗺️ Map deleted:', mapName);
+                    log.debug('🗺️ Map deleted:', mapName);
                     resolve();
                 };
                 tx.onerror = (e) => {

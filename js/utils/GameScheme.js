@@ -90,8 +90,9 @@ export function defaultScheme() {
         fallDamageMultiplier: 1,
         damageMultiplier: 1,
         artilleryMode: false,
-        // Sudden death
-        suddenDeathTime: 180,
+        // Sudden death (30 minutes by default: a normal match finishes
+        // on its own long before the flood has to settle it)
+        suddenDeathTime: 1800,
         suddenDeathHealthCap: 25,
         suddenDeathDecay: 5,
         waterRisePerTurn: 12,

@@ -24,9 +24,9 @@
  * Flags:
  *   selfAmmo: the hook manages ammo itself (default: one per use)
  *
- * Every hook runs on EVERY client in multiplayer (local use, and the remote
- * replay via handleRemoteFire), so any randomness must come from the shared
- * seeded stream at fire time or a sub-RNG — see the RNG invariants in
+ * Hooks are part of the simulation: online they run on every client from
+ * the same command stream, and replays re-run them. Any randomness must
+ * come from the shared seeded stream at fire time or a sub-RNG — see
  * Game.makeSubRandom.
  */
 
@@ -273,8 +273,7 @@ export const WEAPON_BEHAVIORS = {
         // falling in the same turn are free.
         selfAmmo: true,
         fire(game, koala, weapon, angle) {
-            // Artillery mode forbids all movement, rope included (same check
-            // on every client, so a blocked fire is never sent or replayed)
+            // Artillery mode forbids all movement, rope included
             if (game.scheme?.artilleryMode) {
                 game.audioManager.playClick();
                 return false;
@@ -321,8 +320,7 @@ export const WEAPON_BEHAVIORS = {
     surrender: {
         // With more than two sides the match keeps going: the surrendering
         // squad dies and play moves on; the normal alliance win check ends
-        // the game when only one colour is left. Replayed on every client,
-        // so it's symmetric.
+        // the game when only one colour is left.
         fire(game) {
             log.debug('🏳️ Surrender!');
             game.forfeitTeam(game.currentTeamIndex);

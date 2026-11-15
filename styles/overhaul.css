@@ -768,3 +768,17 @@ body.touch-mode #tutorial-panel { top: 150px; }
     background: linear-gradient(rgba(10, 12, 24, 0.82), rgba(10, 12, 24, 0.82)),
         url('../assets/title_bg.png') no-repeat center center / cover;
 }
+
+/* Online match: connection chip in the HUD (ping / what we're waiting for) */
+#net-indicator {
+    font-size: 0.8rem;
+    font-weight: 700;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 8px 12px;
+    border-radius: 20px;
+    backdrop-filter: blur(5px);
+    color: #7ee08a;
+    white-space: nowrap;
+}
+#net-indicator[data-level="warn"] { color: #ffd35a; }
+#net-indicator[data-level="bad"] { color: #ff6b6b; }

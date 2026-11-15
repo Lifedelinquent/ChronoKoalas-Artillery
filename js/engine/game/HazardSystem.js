@@ -39,12 +39,6 @@ export const HazardSystem = {
     updateFirePatches(dt) {
         if (this.firePatches.length === 0) return;
 
-        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
-
-        // Terrain the fire burns away this frame, batched into one sync
-        // message so the guest's map stays identical to the host's
-        const burnCraters = [];
-
         for (let i = this.firePatches.length - 1; i >= 0; i--) {
             const fire = this.firePatches[i];
 
@@ -82,14 +76,10 @@ export const HazardSystem = {
                 // Burn into the terrain: every few ticks the flame eats a
                 // small pit under itself, then sinks into the hole it made —
                 // exactly how WA fire chews channels through the landscape.
-                // Terrain is host-authoritative; craters are synced below.
                 fire.burnTimer += dt;
                 if (fire.burnTimer >= 0.5) {
                     fire.burnTimer = 0;
-                    if (isAuthoritativeClient) {
-                        this.terrain.createCrater(fire.x, fire.y + 4, 9);
-                        burnCraters.push({ x: fire.x, y: fire.y + 4, r: 9 });
-                    }
+                    this.terrain.createCrater(fire.x, fire.y + 4, 9);
                 }
 
                 // Ground burned away beneath it?
@@ -103,29 +93,25 @@ export const HazardSystem = {
                 if (fire.tickTimer >= 0.45) {
                     fire.tickTimer = 0;
 
-                    if (isAuthoritativeClient) {
-                        for (const team of this.teams) {
-                            for (const koala of team.koalas) {
-                                if (!koala.isAlive) continue;
-                                if (Math.hypot(koala.x - fire.x, koala.y - fire.y) < 30) {
-                                    koala.takeDamage(5);
-                                    // A hop so the burn is felt and escapable
-                                    koala.applyKnockback((koala.x >= fire.x ? 1 : -1) * 60, -120);
-                                    this.createFloatingText(koala.x, koala.y - 40, '-5', '#ff8800');
-                                    this.audioManager.playDamage();
-                                }
+                    for (const team of this.teams) {
+                        for (const koala of team.koalas) {
+                            if (!koala.isAlive) continue;
+                            if (Math.hypot(koala.x - fire.x, koala.y - fire.y) < 30) {
+                                koala.takeDamage(5);
+                                // A hop so the burn is felt and escapable
+                                koala.applyKnockback((koala.x >= fire.x ? 1 : -1) * 60, -120);
+                                this.createFloatingText(koala.x, koala.y - 40, '-5', '#ff8800');
+                                this.audioManager.playDamage();
                             }
                         }
-                        this.updateTeamHealth();
+                    }
+                    this.updateTeamHealth();
 
-                        // Flames lick a nearby oil drum? Light its fuse.
-                        // Authoritative-only: the guest sees the detonation
-                        // via the synced drum id.
-                        for (const drum of this.oilDrums) {
-                            if (drum.detonated || drum.igniteTimer > 0) continue;
-                            if (Math.hypot(drum.x - fire.x, (drum.y - 17) - fire.y) < 34) {
-                                drum.igniteTimer = 0.6 + this.hostRandom() * 0.5;
-                            }
+                    // Flames lick a nearby oil drum? Light its fuse.
+                    for (const drum of this.oilDrums) {
+                        if (drum.detonated || drum.igniteTimer > 0) continue;
+                        if (Math.hypot(drum.x - fire.x, (drum.y - 17) - fire.y) < 34) {
+                            drum.igniteTimer = 0.6 + this.hostRandom() * 0.5;
                         }
                     }
                 }
@@ -150,27 +136,14 @@ export const HazardSystem = {
                 }
             }
         }
-
-        // Ship this frame's burn damage to the guest in one batched message
-        // (guest fire is visual-only; its terrain comes from these craters)
-        if (burnCraters.length > 0 && this.networkManager && !this.isPractice && this.networkManager.isHost) {
-            this.networkManager.send({
-                type: 'explosionSync',
-                explosionX: 0,
-                explosionY: 0,
-                explosionRadius: 0, // no single crater — craters[] carries the burns
-                craters: burnCraters,
-                results: []
-            });
-        }
     },
 
     // ==================== MAP HAZARDS (landmines + oil drums) ====================
 
     /**
      * Scatter landmines and oil drums across the freshly generated map.
-     * Runs on every client with the shared seeded RNG right after
-     * createTeams(), so all clients place identical hazards. Spots come from
+     * Uses the shared seeded RNG right after createTeams(), so every
+     * client (and every replay) places identical hazards. Spots come from
      * the same surface scan the koala spawner uses, kept clear of spawns.
      */
     spawnMapHazards() {
@@ -280,9 +253,7 @@ export const HazardSystem = {
 
     /**
      * Per-frame oil drum housekeeping: lit fuses burn down, unsupported
-     * drums fall (and drown). Runs on all clients — falling converges
-     * because the terrain is synced; fuses only ever start on the
-     * authoritative client, and detonations are synced by id.
+     * drums fall (and drown).
      */
     updateOilDrums(dt) {
         if (this.oilDrums.length === 0) return;
@@ -348,8 +319,7 @@ export const HazardSystem = {
     },
 
     /**
-     * Apply blast damage to drums near an explosion. Authoritative client
-     * only — guests hear about resulting detonations via explosionSync.
+     * Apply blast damage to drums near an explosion.
      * Damaged-to-death drums blow after a short fuse so chain reactions pop
      * in sequence instead of all in one frame.
      */
@@ -369,14 +339,11 @@ export const HazardSystem = {
     },
 
     /**
-     * Blow up an oil drum: big blast plus burning oil (WA-style). Visuals
-     * and fire run on whichever client calls this; crater, koala damage and
-     * the sync message are authoritative-only. Guests reach here via the
-     * drum ids in explosionSync.
+     * Blow up an oil drum: big blast plus burning oil (WA-style).
      */
     detonateOilDrum(drum) {
         const idx = this.oilDrums.indexOf(drum);
-        if (idx === -1) return; // already gone (e.g. synced removal won the race)
+        if (idx === -1) return; // already gone
         this.oilDrums.splice(idx, 1);
 
         const cx = drum.x;
@@ -389,23 +356,18 @@ export const HazardSystem = {
         this.addScreenShake(radius / 8, 0.35);
         this.audioManager.playExplosion('large');
 
-        // Kick nearby resting mines flying (symmetric on all clients)
+        // Kick nearby resting mines flying
         this.pushProjectilesFromBlast(cx, cy, radius);
 
         // Crates caught in the drum blast blow up too
         this.lootManager.damageCrates(cx, cy, radius);
 
-        // Burning oil sprays out — rolled from the drum's spawn seed so both
-        // clients scatter identical flames
+        // Burning oil sprays out — rolled from the drum's own spawn seed
         this.spawnFirePatches(cx, cy, 6, this.createSeededRandom(drum.effectSeed));
-
-        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
-        if (!isAuthoritativeClient) return;
 
         // Terrain + damage, mirroring handleProjectileImpact
         this.terrain.createCrater(cx, cy, radius);
 
-        const explosionResults = [];
         // Blast reach extends beyond the hole, WA-style
         const damageRadius = radius * DAMAGE_RADIUS_SCALE;
         const nearbyEntities = this.spatialGrid.queryRadius(cx, cy, damageRadius);
@@ -425,31 +387,11 @@ export const HazardSystem = {
                     this.audioManager.playDamage();
                     this.createFloatingText(koala.x, koala.y - 40, `-${dmg}`, '#ff5544');
                 }
-                explosionResults.push({
-                    koalaName: koala.name,
-                    damage: dmg,
-                    newHealth: koala.health,
-                    x: koala.x,
-                    y: koala.y,
-                    vx: koala.vx,
-                    vy: koala.vy
-                });
             }
         }
         this.updateTeamHealth();
 
         // Chain reaction into neighboring drums
         this.damageOilDrums(cx, cy, damageRadius, damage);
-
-        if (this.networkManager && !this.isPractice && this.networkManager.isHost) {
-            this.networkManager.send({
-                type: 'explosionSync',
-                explosionX: cx,
-                explosionY: cy,
-                explosionRadius: radius,
-                drums: [drum.id],
-                results: explosionResults
-            });
-        }
     },
 };

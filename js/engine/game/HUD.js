@@ -54,11 +54,11 @@ export const HUD = {
         const team = this.getCurrentTeam();
         const indicator = this.dom.elements.turnIndicator;
         if (indicator && team) {
-            // In multiplayer, show if it's your, an ally's, or an enemy's turn
-            if (!this.isPractice && this.networkManager) {
+            // Online: show if it's your, an ally's, or an enemy's turn
+            if (this.net) {
                 const isMyTurn = this.isMyTurn();
                 let turnText;
-                if (this.networkManager.isSpectator) {
+                if (this.net.isSpectator) {
                     turnText = '👀 Spectating';
                 } else if (isMyTurn) {
                     turnText = 'Your Turn!';

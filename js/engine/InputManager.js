@@ -12,8 +12,10 @@
  *  2. Everything that can change the simulation goes through dispatch() as a
  *     small command ({t:'press', a:'fire'}, {t:'pmove', x, y}, ...). This is
  *     the one door into the game for human input, which is what lets replays
- *     record a match as a list of commands and play it back exactly, and
- *     lets the touch controls drive the game with the same code paths.
+ *     record a match as a list of commands and play it back exactly, lets
+ *     the touch controls drive the game with the same code paths, and lets
+ *     an online match stay in sync by sending nothing but these commands
+ *     (network/LockstepSession.js).
  */
 
 import { log } from '../utils/Logger.js';
@@ -36,7 +38,8 @@ export class InputManager {
         this.game = game;
 
         // Held simulation actions (left/right/aimUp/... → bool). Only ever
-        // changed by commands, so a replay rebuilds identical state.
+        // changed by commands, so a replay — or another client following
+        // the same command stream — rebuilds identical state.
         this.held = {};
 
         // Simulation pointer: the last world position the player aimed with,
@@ -103,16 +106,23 @@ export class InputManager {
     // ==================== COMMAND LAYER ====================
 
     /**
-     * The single entry point for simulation input. Records the command for
-     * replays, then applies it. Replay playback calls applyCommand directly.
+     * The single entry point for LOCAL simulation input. Records the
+     * command (for replays, and for the other players online), then applies
+     * it. Replay playback and remote players' commands go straight to
+     * applyCommand.
      */
     dispatch(cmd) {
         // Watching a replay: the viewer's own input never reaches the sim
         if (this.game.isReplay) return;
+        // Online, only the turn owner's input exists: anything pressed out
+        // of turn is dropped here and never reaches any client's simulation
+        const net = this.game.net;
+        if (net && !net.acceptsLocalInput()) return;
         // During an instant replay only let-go events get through, so a key
         // released while it plays doesn't stay "held" into the next turn
         if (this.game.instantReplay?.isPlaying() && cmd.t !== 'release' && cmd.t !== 'pup') return;
         this.game.replayRecorder?.record(cmd);
+        net?.recordLocal(cmd);
         this.applyCommand(cmd);
     }
 
@@ -140,8 +150,31 @@ export class InputManager {
         return !!this.held[action];
     }
 
+    /** Let go of everything without emitting commands (turn handover). */
+    resetSimInput() {
+        this.held = {};
+        this.simPointer.down = false;
+    }
+
+    /**
+     * SIMULATION side: may a command steer the current koala right now?
+     * Online every command in the stream comes from the turn owner (see
+     * dispatch), so the answer must not depend on who is watching — it has
+     * to be the same on every client.
+     */
     canAct() {
-        return this.game.isMyTurn() && this.game.phase !== 'countdown';
+        if (this.game.phase === 'countdown') return false;
+        return this.game.net ? true : this.game.isMyTurn();
+    }
+
+    /**
+     * UI side: may the LOCAL player give input right now? Decides what the
+     * physical layer offers (weapon menu, pointer steering) before anything
+     * is dispatched.
+     */
+    canInput() {
+        if (this.game.phase === 'countdown' || !this.game.isMyTurn()) return false;
+        return this.game.net ? this.game.net.acceptsLocalInput() : true;
     }
 
     onActionPress(action) {
@@ -316,7 +349,7 @@ export class InputManager {
      * (Otherwise it belongs to the UI: weapon menu / camera drag.)
      */
     secondaryAffectsSim() {
-        if (!this.canAct()) return false;
+        if (!this.canInput()) return false;
         const game = this.game;
         if (game.phase === 'firing' || game.phase === 'armed') return true;
         const weapon = game.weaponManager.currentWeapon;
@@ -342,11 +375,6 @@ export class InputManager {
         // Save as team's last selected weapon
         const team = game.getCurrentTeam();
         if (team) team.lastSelectedWeapon = weaponId;
-
-        // NETWORK SYNC: Send weapon selection to opponents
-        if (game.networkManager && !game.isPractice) {
-            game.networkManager.send({ type: 'weaponSelect', weaponId });
-        }
     }
 
     // ==================== PHYSICAL LAYER ====================
@@ -433,7 +461,7 @@ export class InputManager {
                 continue;
             }
             if (action === 'weaponMenu') {
-                if (this.canAct()) this.toggleWeaponMenu();
+                if (this.canInput()) this.toggleWeaponMenu();
                 continue;
             }
             if (action === 'cancel' && this.isWeaponMenuOpen) {
@@ -471,7 +499,7 @@ export class InputManager {
         this.mouse.y = y;
         this.mouse.lastMoveTime = performance.now();
 
-        if (this.canAct() && InputManager.POINTER_PHASES.includes(this.game.phase)) {
+        if (this.canInput() && InputManager.POINTER_PHASES.includes(this.game.phase)) {
             this.dispatch({ t: 'pmove', x, y });
         }
     }
@@ -594,19 +622,7 @@ export class InputManager {
             koala.facingLeft = dx < 0;
         }
 
-        const newAngle = Math.atan2(dy, dx);
-        const changed = Math.abs(newAngle - koala.aimAngle) > 0.01;
-        koala.aimAngle = newAngle;
-
-        // NETWORK SYNC: Send aim update to opponents (throttled)
-        if (changed && this.game.networkManager && !this.game.isPractice) {
-            const now = performance.now();
-            if (!this.lastMouseAimSync || now - this.lastMouseAimSync > 66) {
-                this.game.networkManager.sendAim(koala.aimAngle,
-                    this.game.currentTeamIndex, this.game.currentKoalaIndex);
-                this.lastMouseAimSync = now;
-            }
-        }
+        koala.aimAngle = Math.atan2(dy, dx);
     }
 
     /**
@@ -630,7 +646,7 @@ export class InputManager {
      * koala can move in. Reads held actions only — never raw keys.
      */
     updateAiming(koala, dt) {
-        // Block movement if it's not our turn or during countdown
+        // No steering during the countdown (or, locally, a CPU's turn)
         if (!this.canAct()) return;
 
         // A dead koala (e.g. one that just drowned) can't be walked around
@@ -652,7 +668,6 @@ export class InputManager {
             moveDir = 0;
         }
 
-        let positionChanged = false;
         if (moveDir !== 0) {
             // Double-check that koala is actually on ground before allowing
             // ground movement (prevents "walking on air" after terrain is destroyed)
@@ -677,7 +692,6 @@ export class InputManager {
                     if (result.newY !== koala.y) {
                         koala.y = result.newY;
                     }
-                    positionChanged = true;
                 }
             } else if (koala.parachuteActive) {
                 // Worms-style: jumps and knockback arcs are committed — no
@@ -685,7 +699,6 @@ export class InputManager {
                 // drift it left/right while it rides the wind.
                 koala.vx += moveDir * 80 * dt;
                 koala.vx = Math.max(-90, Math.min(90, koala.vx));
-                positionChanged = true;
             }
         }
 
@@ -709,36 +722,6 @@ export class InputManager {
         // sets it when it moves. When idle we leave facing alone.
         if (moveDir === 0 && aimChanged) {
             koala.facingLeft = Math.abs(koala.aimAngle) > Math.PI / 2;
-        }
-
-        // Blowtorch movement sync
-        if (koala.blowtorchActive && koala.blowtorchDigging) {
-            positionChanged = true;
-        }
-
-        // NETWORK SYNC: Send position and aim updates to opponents (throttled)
-        if (this.game.networkManager && !this.game.isPractice) {
-            const now = performance.now();
-
-            // Throttle position updates to 20 times per second (every 50ms)
-            if (positionChanged && (!this.lastMoveSync || now - this.lastMoveSync > 50)) {
-                this.game.networkManager.sendMove(
-                    koala.x,
-                    koala.y,
-                    koala.facingLeft,
-                    koala.blowtorchActive ? this.simPointer.down : undefined,
-                    this.game.currentTeamIndex,
-                    this.game.currentKoalaIndex
-                );
-                this.lastMoveSync = now;
-            }
-
-            // Throttle aim updates to 15 times per second (every 66ms)
-            if (aimChanged && (!this.lastAimSync || now - this.lastAimSync > 66)) {
-                this.game.networkManager.sendAim(koala.aimAngle,
-                    this.game.currentTeamIndex, this.game.currentKoalaIndex);
-                this.lastAimSync = now;
-            }
         }
     }
 
@@ -888,13 +871,11 @@ export class InputManager {
             koala.isJumping = true;
             koala.jumpType = 'forward';
             koala.jumpStartTime = this.game.simTime;
-            this._syncJump(koala, 'jump');
         } else if (koala.jumpType === 'forward' &&
             this.game.simTime - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
             // Double-tap: convert into a small backward hop
             koala.vx = koala.facingLeft ? 100 : -100;
             koala.jumpType = 'backward';
-            this._syncJump(koala, 'jump');
         }
     }
 
@@ -917,7 +898,6 @@ export class InputManager {
             koala.isJumping = true;
             koala.jumpType = 'high';
             koala.jumpStartTime = this.game.simTime;
-            this._syncJump(koala, 'highJump', false);
         } else if (koala.jumpType === 'high' &&
             this.game.simTime - koala.jumpStartTime < InputManager.JUMP_CONVERT_WINDOW) {
             // Double-tap: backflip — kick backward and somersault once
@@ -926,31 +906,7 @@ export class InputManager {
             koala.jumpType = 'backflip';
             koala.isBackflipping = true;
             koala.backflipRotation = 0;
-            this._syncJump(koala, 'highJump', true);
         }
-    }
-
-    /**
-     * NETWORK SYNC: send a jump (or mid-air conversion) to the opponents.
-     * `flip` only applies to highJump messages: true = somersault animation.
-     */
-    _syncJump(koala, type, flip) {
-        if (!this.game.networkManager || this.game.isPractice) return;
-
-        const msg = {
-            type,
-            x: koala.x,
-            y: koala.y,
-            vx: koala.vx,
-            vy: koala.vy,
-            teamIndex: this.game.currentTeamIndex,
-            koalaIndex: this.game.currentKoalaIndex
-        };
-        if (type === 'highJump') {
-            msg.facingLeft = koala.facingLeft;
-            msg.flip = flip;
-        }
-        this.game.networkManager.send(msg);
     }
 
     /** Clean up event listeners */

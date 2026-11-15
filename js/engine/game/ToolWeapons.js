@@ -21,9 +21,6 @@ export const ToolWeapons = {
         const hitX = shooter.x + Math.cos(angle) * weapon.range;
         const hitY = (shooter.y - 10) + Math.sin(angle) * weapon.range;
 
-        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
-        const explosionResults = [];
-
         // Check for targets (koalas)
         for (const team of this.teams) {
             for (const target of team.koalas) {
@@ -31,46 +28,34 @@ export const ToolWeapons = {
 
                 const dist = Math.hypot(target.x - hitX, target.y - hitY);
                 if (dist < weapon.range + 10) {
-                    if (isAuthoritativeClient) {
-                        // HIT! (double damage crate buff applies to melee too)
-                        const damage = weapon.damage * this.getDamageMultiplier();
-                        if (damage > 0) {
-                            target.takeDamage(damage);
-                            this.createFloatingText(target.x, target.y - 40, `-${damage}`, '#ff5544');
-                            shooter.damageDealt = (shooter.damageDealt || 0) + damage;
-                        }
-
-                        // Knockback direction depends on the weapon:
-                        // Fire Punch launches skyward, Dragon Ball sends them
-                        // flat, Prod is a pure WA-style nudge (no lift, no
-                        // tumble — just enough to walk someone off a ledge),
-                        // everything else follows the swing angle
-                        let kbX, kbY;
-                        if (weapon.verticalKnockback) {
-                            kbX = Math.cos(angle) * 0.35 * weapon.knockback;
-                            kbY = -weapon.knockback;
-                        } else if (weapon.flatKnockback) {
-                            kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
-                            kbY = -0.3 * weapon.knockback;
-                        } else if (weapon.pushKnockback) {
-                            kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
-                            kbY = 0;
-                        } else {
-                            kbX = Math.cos(angle) * weapon.knockback;
-                            kbY = Math.sin(angle) * weapon.knockback;
-                        }
-                        target.applyKnockback(kbX, kbY, { tumble: !weapon.pushKnockback });
-
-                        explosionResults.push({
-                            koalaName: target.name,
-                            damage,
-                            newHealth: target.health,
-                            x: target.x,
-                            y: target.y,
-                            vx: target.vx,
-                            vy: target.vy
-                        });
+                    // HIT! (double damage crate buff applies to melee too)
+                    const damage = weapon.damage * this.getDamageMultiplier();
+                    if (damage > 0) {
+                        target.takeDamage(damage);
+                        this.createFloatingText(target.x, target.y - 40, `-${damage}`, '#ff5544');
+                        shooter.damageDealt = (shooter.damageDealt || 0) + damage;
                     }
+
+                    // Knockback direction depends on the weapon:
+                    // Fire Punch launches skyward, Dragon Ball sends them
+                    // flat, Prod is a pure WA-style nudge (no lift, no
+                    // tumble — just enough to walk someone off a ledge),
+                    // everything else follows the swing angle
+                    let kbX, kbY;
+                    if (weapon.verticalKnockback) {
+                        kbX = Math.cos(angle) * 0.35 * weapon.knockback;
+                        kbY = -weapon.knockback;
+                    } else if (weapon.flatKnockback) {
+                        kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
+                        kbY = -0.3 * weapon.knockback;
+                    } else if (weapon.pushKnockback) {
+                        kbX = (Math.cos(angle) >= 0 ? 1 : -1) * weapon.knockback;
+                        kbY = 0;
+                    } else {
+                        kbX = Math.cos(angle) * weapon.knockback;
+                        kbY = Math.sin(angle) * weapon.knockback;
+                    }
+                    target.applyKnockback(kbX, kbY, { tumble: !weapon.pushKnockback });
 
                     this.audioManager.playDamage();
                     // Particle effects for hit
@@ -80,23 +65,8 @@ export const ToolWeapons = {
             }
         }
 
-        // Whacking an oil drum sets it off. Authoritative client applies the
-        // damage; the resulting detonation reaches the guest via the synced
-        // drum id in explosionSync.
-        if (isAuthoritativeClient) {
-            this.damageOilDrums(hitX, hitY, weapon.range + 10, weapon.damage || 30);
-        }
-
-        // Send sync to ensure players match health and positions
-        if (this.networkManager && !this.isPractice && this.networkManager.isHost && explosionResults.length > 0) {
-            this.networkManager.send({
-                type: 'explosionSync',
-                explosionX: 0,
-                explosionY: 0,
-                explosionRadius: 0, // 0 means no terrain destruction
-                results: explosionResults
-            });
-        }
+        // Whacking an oil drum sets it off
+        this.damageOilDrums(hitX, hitY, weapon.range + 10, weapon.damage || 30);
     },
 
     /**
@@ -113,9 +83,6 @@ export const ToolWeapons = {
         koala.blowtorchDigRadius = weapon.digRadius;
         koala.blowtorchDrainRate = 33; // Meter per second when digging (~3 seconds total)
         koala.blowtorchDigging = false; // Not digging until mouse pressed
-        // Passive-client carve anchor (see updateBlowtorch) — reset each use
-        koala._btCarveX = koala.x;
-        koala._btCarveY = koala.y;
 
         // Show power bar as blowtorch meter at 100%
         if (this.dom.elements.powerBarContainer) {
@@ -138,40 +105,11 @@ export const ToolWeapons = {
             return;
         }
 
-        const myTurn = this.isMyTurn();
-
-        // PASSIVE CLIENT: we don't own this koala. Its position arrives via
-        // remote 'move' messages and the active player is the sole authority on
-        // when the blowtorch ends (we leave it on the 'turnEnd' message in
-        // handleRemoteTurnEnd). Carve terrain along the path the koala actually
-        // travels so both clients dig identical tunnels — driving movement from
-        // OUR local mouse here would dig in a totally different direction.
-        if (!myTurn && !this.isPractice) {
-            const isDigging = koala.blowtorchDigging;
-            if (koala._btCarveX === undefined) {
-                koala._btCarveX = koala.x;
-                koala._btCarveY = koala.y;
-            }
-            if (isDigging) {
-                const moved = Math.hypot(koala.x - koala._btCarveX, koala.y - koala._btCarveY);
-                if (moved >= 4) {
-                    koala._btCarveX = koala.x;
-                    koala._btCarveY = koala.y;
-                    this.terrain.createCrater(koala.x, koala.y, koala.blowtorchDigRadius);
-                }
-            } else {
-                // Keep the carve anchor on the koala while idle so we don't
-                // carve a long gash the instant digging resumes.
-                koala._btCarveX = koala.x;
-                koala._btCarveY = koala.y;
-            }
-            return;
-        }
-
-        // ACTIVE CLIENT (or local game): pointer-driven digging. The pointer
-        // is the human's, or the CPU's virtual pad on a CPU turn.
+        // Pointer-driven digging. The pointer is whoever is at the controls:
+        // the local player, the CPU's virtual pad, or the turn owner's
+        // command stream in an online match.
         const control = this.getControl();
-        const isDigging = this.hasLocalControl() ? control.simPointer.down : koala.blowtorchDigging;
+        const isDigging = control.simPointer.down;
         koala.blowtorchDigging = isDigging;
 
         // Only deplete meter when actively digging
@@ -277,11 +215,6 @@ export const ToolWeapons = {
         }
         if (this.dom.elements.powerFill) {
             this.dom.elements.powerFill.style.width = '0%';
-        }
-
-        // NETWORK SYNC: Send turn end/retreat to remote player
-        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.sendTurnEnd();
         }
 
         this.startRetreat();
@@ -738,9 +671,6 @@ export const ToolWeapons = {
             koala.onGround = false; // let physics settle them into the shaft
         }
 
-        // No turn-end message needed: the drill runs for a fixed duration at a
-        // fixed speed with no player input, so both clients reach endDrill on
-        // their own (the same deterministic handover used by a normal shot).
         this.startRetreat();
     },
 
@@ -799,19 +729,16 @@ export const ToolWeapons = {
         });
 
         // Batter anyone touched along the way (once each)
-        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
         for (const team of this.teams) {
             for (const target of team.koalas) {
                 if (!target.isAlive || target === koala || state.hitVictims.has(target)) continue;
                 if (Math.hypot(target.x - koala.x, target.y - koala.y) < 28) {
                     state.hitVictims.add(target);
-                    if (isAuthoritativeClient) {
-                        const dmg = (weapon.dashDamage || 30) * this.getDamageMultiplier();
-                        target.takeDamage(dmg);
-                        target.applyKnockback(state.dirX * 400, -300);
-                        this.createFloatingText(target.x, target.y - 40, `-${dmg}`, '#ff5544');
-                        koala.damageDealt = (koala.damageDealt || 0) + dmg;
-                    }
+                    const dmg = (weapon.dashDamage || 30) * this.getDamageMultiplier();
+                    target.takeDamage(dmg);
+                    target.applyKnockback(state.dirX * 400, -300);
+                    this.createFloatingText(target.x, target.y - 40, `-${dmg}`, '#ff5544');
+                    koala.damageDealt = (koala.damageDealt || 0) + dmg;
                     this.audioManager.playDamage();
                 }
             }

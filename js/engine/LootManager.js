@@ -15,10 +15,7 @@ export class LootManager {
         // Active crates on the map
         this.crates = [];
 
-        // Monotonic crate id shared across clients: the host generates it and
-        // ships it in the crateSpawn message, so 'crateCollected' messages can
-        // reference an exact crate on both sides. (The old Date.now()-based id
-        // differed per client, which made cross-client references impossible.)
+        // Monotonic crate id (deterministic, so it matches on every client)
         this.nextCrateId = 1;
 
         // Category weights: weapon crates most common, then health, then utility
@@ -79,16 +76,10 @@ export class LootManager {
     }
 
     /**
-     * Loot RNG. IMPORTANT: this deliberately uses the game's hostRandom side
-     * stream and NOT the shared seededRandom stream. Crate spawns are decided
-     * on the host only (onTurnStart runs solely on the host) and the chosen
-     * item/position are broadcast to the guest via the 'crateSpawn' message,
-     * so loot never needs cross-client determinism. Drawing from the shared
-     * seededRandom here would advance it a different number of times on the
-     * host than on the guest, desyncing everything else that relies on it —
-     * per-turn wind and all weapon spread (cluster, airstrike, burst, mine
-     * duds). hostRandom is seeded too, so local games (and their replays)
-     * still roll the same crates every time.
+     * Loot RNG: the game's hostRandom side stream — seeded from the match
+     * seed, so every client and every replay rolls the same crates, but kept
+     * apart from the shared seededRandom stream that drives wind and weapon
+     * spread.
      */
     random() {
         return this.game.hostRandom ? this.game.hostRandom() : Math.random();
@@ -166,63 +157,12 @@ export class LootManager {
 
         log.debug(`📦 Crate spawned: ${item.name} (${item.rarity}) at (${position.x}, ${position.y})`);
 
-        // NETWORK SYNC: Send crate spawn to opponent
-        if (this.game.networkManager && !this.game.isPractice) {
-            this.game.networkManager.send({
-                type: 'crateSpawn',
-                crateId: crate.id,
-                category,
-                itemId: item.id,
-                x: position.x,
-                y: position.y
-            });
-        }
-
         return crate;
     }
 
     /**
-     * Handle remote crate spawn from network
-     */
-    handleRemoteCrateSpawn(data) {
-        log.debug('📦 Remote crate spawn:', data);
-
-        // Find the item from loot tables
-        const item = this.getLootTable(data.category).find(i => i.id === data.itemId);
-
-        if (item) {
-            this.createCrate(data.category, item, data.x, data.y, data.crateId);
-        }
-    }
-
-    /**
-     * Handle host's authoritative crate collection. The guest never detects
-     * collection itself: collection depends on koala positions, which drift
-     * between clients — one side collecting a crate the other didn't meant
-     * permanently diverged ammo, buffs and health.
-     */
-    handleRemoteCrateCollected(data) {
-        const crate = this.crates.find(c => c.id === data.crateId && !c.collected);
-        if (!crate) {
-            console.warn('📦 crateCollected for unknown crate id', data.crateId);
-            return;
-        }
-        const koala = this.game.findKoalaByName(data.koalaName);
-        const team = koala ? this.game.teams.find(t => t.koalas.includes(koala)) : null;
-        if (!koala || !team) {
-            console.warn('📦 crateCollected for unknown koala', data.koalaName);
-            return;
-        }
-        this.collectCrate(crate, koala, team);
-    }
-
-    /**
      * WA-style shootable crates: any damage destroys the crate, which blows
-     * up with a real blast. Detection runs symmetrically on every client
-     * (crate positions are synced at spawn and projectile flight is
-     * deterministic); the host also broadcasts 'crateDestroyed' as the
-     * authority so a drifted client can't keep a ghost crate. The `collected`
-     * flag makes the destroy idempotent, so the duplicate is harmless.
+     * up with a real blast.
      */
     destroyCrate(crate) {
         if (crate.collected) return;
@@ -245,16 +185,8 @@ export class LootManager {
         }
         this.game.createFloatingText?.(crate.x, crate.y - 30, `💥 ${crate.item.name}`, this.rarityColors[crate.rarity]);
 
-        // Host is the destruction authority — tell the guest which crate blew
-        if (this.game.networkManager && !this.game.isPractice && this.game.networkManager.isHost) {
-            this.game.networkManager.send({
-                type: 'crateDestroyed',
-                crateId: crate.id
-            });
-        }
-
         // The crate's blast goes through the standard impact pipeline
-        // (craters, chain damage, mine flinging, network sync). A short fuse
+        // (craters, chain damage, mine flinging). A short fuse
         // keeps chain reactions popping in sequence instead of one mega-frame,
         // and stops the blast from recursing inside the impact that killed it.
         const cx = crate.x, cy = crate.y;
@@ -267,9 +199,7 @@ export class LootManager {
     }
 
     /**
-     * Blast damage to crates near an explosion. Runs UNGATED on every client
-     * (like pushProjectilesFromBlast): both sides replay the same impact
-     * against the same crate positions, so they destroy the same boxes.
+     * Blast damage to crates near an explosion.
      */
     damageCrates(x, y, radius) {
         for (const crate of this.crates) {
@@ -281,16 +211,7 @@ export class LootManager {
     }
 
     /**
-     * Handle host's authoritative crate destruction (idempotent if our own
-     * simulation already blew it up)
-     */
-    handleRemoteCrateDestroyed(data) {
-        const crate = this.crates.find(c => c.id === data.crateId && !c.collected);
-        if (crate) this.destroyCrate(crate);
-    }
-
-    /**
-     * Serialize crates for reconnect state sync
+     * Serialize crates for multiplayer turn snapshots (network/StateSync.js)
      */
     serializeCrates() {
         return this.crates.map(c => ({
@@ -299,12 +220,15 @@ export class LootManager {
             itemId: c.item.id,
             x: c.x,
             y: c.y,
-            falling: c.falling
+            falling: !!c.falling,
+            targetY: c.targetY,
+            fallSpeed: c.fallSpeed || 0,
+            parachuteOpen: !!c.parachuteOpen
         }));
     }
 
     /**
-     * Rebuild the crate list from a reconnect state sync
+     * Rebuild the crate list from a host snapshot
      */
     applyCrateSync(crates) {
         if (!Array.isArray(crates)) return;
@@ -316,9 +240,10 @@ export class LootManager {
             // Place exactly where the host has it (createCrate starts crates
             // high up for the parachute-drop animation)
             crate.y = cd.y;
-            crate.targetY = cd.y;
-            crate.falling = cd.falling;
-            crate.parachuteOpen = false;
+            crate.targetY = cd.targetY ?? cd.y;
+            crate.falling = !!cd.falling;
+            crate.fallSpeed = cd.fallSpeed || 0;
+            crate.parachuteOpen = !!cd.parachuteOpen;
             this.nextCrateId = Math.max(this.nextCrateId, (cd.id || 0) + 1);
         }
     }
@@ -451,14 +376,8 @@ export class LootManager {
                 }
             }
 
-            // Check collection by any koala using spatial grid.
-            // Multiplayer: HOST-ONLY. Collection depends on koala positions,
-            // which drift between clients; the host decides and broadcasts
-            // 'crateCollected' so ammo/buffs/heals stay identical (guest
-            // crates are visual until that message arrives).
-            const isCollectAuthority = this.game.isPractice ||
-                !this.game.networkManager || this.game.networkManager.isHost;
-            if (!crate.falling && !crate.collected && isCollectAuthority) {
+            // Check collection by any koala using spatial grid
+            if (!crate.falling && !crate.collected) {
                 const collectionRadius = 30;
                 const nearbyEntities = this.game.spatialGrid.queryRadius(crate.x, crate.y, collectionRadius);
 
@@ -489,17 +408,6 @@ export class LootManager {
     collectCrate(crate, koala, team) {
         crate.collected = true;
         this.game.stats?.onCrate(team);
-
-        // NETWORK SYNC: the host is the collection authority — tell the guest
-        // exactly which crate was picked up and by whom (guests reach here
-        // only via that message, and isHost=false keeps them from re-sending)
-        if (this.game.networkManager && !this.game.isPractice && this.game.networkManager.isHost) {
-            this.game.networkManager.send({
-                type: 'crateCollected',
-                crateId: crate.id,
-                koalaName: koala.name
-            });
-        }
 
         // Play collection sound
         this.game.audioManager.playPowerup?.();

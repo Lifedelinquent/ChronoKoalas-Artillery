@@ -39,7 +39,7 @@ export class InstantReplay {
     }
 
     static isEnabledFor(game) {
-        return !game.options.headless && (game.isPractice || !game.networkManager) &&
+        return !game.options.headless && !game.net &&
             getSettings().instantReplay !== false;
     }
 

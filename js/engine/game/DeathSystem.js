@@ -17,15 +17,12 @@ export const DeathSystem = {
     /**
      * A koala at 0 HP panics for a beat, then self-destructs with a real
      * blast that can chain into neighbours, mines and drums (WA-style).
-     * Detection runs on EVERY client from its own synced health values;
-     * the blast damage itself stays host-authoritative inside
-     * handleProjectileImpact. Drowned/ring-out koalas die elsewhere
-     * (Physics) without ever entering this sequence.
+     * Drowned/ring-out koalas die elsewhere (Physics) without ever entering
+     * this sequence.
      */
     updateDeathSequences(dt) {
         // One self-destruct at a time so the death-cam can show each in
-        // sequence (team/koala order is deterministic, so both network
-        // clients stagger multi-kills identically).
+        // sequence (team/koala order is deterministic).
         let anyoneDying = this.teams.some(t => t.koalas.some(k => k.isAlive && k.isDying));
         for (const team of this.teams) {
             for (const koala of team.koalas) {

@@ -408,9 +408,7 @@ export const ProjectileSystem = {
 
     /**
      * WA-style: blasts kick resting mines (and dud mines) flying instead of
-     * leaving them glued to the ground. Runs UNGATED on every client — mine
-     * physics is deterministic, and both clients replay the same impact, so
-     * the mines land in the same place everywhere.
+     * leaving them glued to the ground.
      */
     pushProjectilesFromBlast(cx, cy, radius, exclude = null) {
         const pushRadius = radius * DAMAGE_RADIUS_SCALE;
@@ -449,13 +447,6 @@ export const ProjectileSystem = {
         // Double damage crate buff (applies while the collecting team is shooting)
         const damageMultiplier = this.getDamageMultiplier();
 
-        // Collect explosion results for network sync
-        const explosionResults = [];
-
-        // In multiplayer, the Host calculates authoritative damage/terrain
-        // The Guest will receive synced data via explosionSync from the Host
-        const isAuthoritativeClient = this.isPractice || !this.networkManager || this.networkManager.isHost;
-
         // Create explosion
         if (weapon.explosionRadius > 0) {
             // Play explosion sound based on size (thresholds match the
@@ -465,10 +456,10 @@ export const ProjectileSystem = {
 
             this.createExplosion(projectile.x, projectile.y, weapon.explosionRadius);
 
-            // Kick nearby resting mines flying (symmetric on all clients)
+            // Kick nearby resting mines flying
             this.pushProjectilesFromBlast(projectile.x, projectile.y, weapon.explosionRadius, projectile);
 
-            // Crates caught in the blast blow up too (symmetric on all clients)
+            // Crates caught in the blast blow up too
             this.lootManager.damageCrates(projectile.x, projectile.y, weapon.explosionRadius);
 
             // Screen shake scaled to explosion size (skip tiny pellet hits)
@@ -476,89 +467,72 @@ export const ProjectileSystem = {
                 this.addScreenShake(weapon.explosionRadius / 8, 0.35);
             }
 
-            // Damage terrain - ONLY on authoritative client
-            // Non-active player will receive terrain sync via explosionSync
-            if (isAuthoritativeClient) {
-                this.terrain.createCrater(projectile.x, projectile.y, weapon.explosionRadius);
-            }
+            // Damage terrain
+            this.terrain.createCrater(projectile.x, projectile.y, weapon.explosionRadius);
 
-            // Damage koalas in radius - ONLY on authoritative client
-            // Use spatial grid for efficient radius query
-            if (isAuthoritativeClient) {
-                // Blast reach extends beyond the hole, WA-style
-                const damageRadius = weapon.explosionRadius * DAMAGE_RADIUS_SCALE;
-                const nearbyEntities = this.spatialGrid.queryRadius(
-                    projectile.x, projectile.y, damageRadius
-                );
+            // Damage koalas in radius (spatial grid query)
+            // Blast reach extends beyond the hole, WA-style
+            const damageRadius = weapon.explosionRadius * DAMAGE_RADIUS_SCALE;
+            const nearbyEntities = this.spatialGrid.queryRadius(
+                projectile.x, projectile.y, damageRadius
+            );
 
-                for (const { entity, distance } of nearbyEntities) {
-                    // Skip if not a koala (no isAlive property)
-                    if (entity.isAlive === undefined) continue;
+            for (const { entity, distance } of nearbyEntities) {
+                // Skip if not a koala (no isAlive property)
+                if (entity.isAlive === undefined) continue;
 
-                    const koala = entity;
+                const koala = entity;
 
-                    // Worms Armageddon-style knockback: launch speed is
-                    // proportional to the damage this hit would deal (same
-                    // distance falloff, double-damage buff included). Big
-                    // weapons fling koalas across the map, grazes just nudge.
-                    // Dead bodies use the same would-be damage so ragdolls
-                    // still fly.
-                    const falloff = this.blastFalloff(distance, damageRadius);
-                    const launchDamage = weapon.damage * damageMultiplier * falloff;
-                    const knockback = Math.min(launchDamage * 9, 900);
+                // Worms Armageddon-style knockback: launch speed is
+                // proportional to the damage this hit would deal (same
+                // distance falloff, double-damage buff included). Big
+                // weapons fling koalas across the map, grazes just nudge.
+                // Dead bodies use the same would-be damage so ragdolls
+                // still fly.
+                const falloff = this.blastFalloff(distance, damageRadius);
+                const launchDamage = weapon.damage * damageMultiplier * falloff;
+                const knockback = Math.min(launchDamage * 9, 900);
 
-                    // Apply knockback with biased origin (shifted down 10px)
-                    // This ensures characters fly "up and out" instead of sliding sideways
-                    // IMPORTANT: Apply knockback to BOTH alive AND dead koalas (ragdoll effect)
-                    const biasedExplosionY = projectile.y + 10;
-                    const angle = Math.atan2(koala.y - biasedExplosionY, koala.x - projectile.x);
-                    // applyKnockback adds the impulse, marks them airborne, and
-                    // starts a tumble scaled to the launch speed (works on dead
-                    // bodies too for ragdoll flinging).
-                    koala.applyKnockback(Math.cos(angle) * knockback, Math.sin(angle) * knockback * 1.3);
+                // Apply knockback with biased origin (shifted down 10px)
+                // This ensures characters fly "up and out" instead of sliding sideways
+                // IMPORTANT: Apply knockback to BOTH alive AND dead koalas (ragdoll effect)
+                const biasedExplosionY = projectile.y + 10;
+                const angle = Math.atan2(koala.y - biasedExplosionY, koala.x - projectile.x);
+                // applyKnockback adds the impulse, marks them airborne, and
+                // starts a tumble scaled to the launch speed (works on dead
+                // bodies too for ragdoll flinging).
+                koala.applyKnockback(Math.cos(angle) * knockback, Math.sin(angle) * knockback * 1.3);
 
-                    // Only apply damage to alive koalas
-                    if (koala.isAlive) {
-                        const damage = Math.round(launchDamage);
-                        koala.takeDamage(damage);
+                // Only apply damage to alive koalas
+                if (koala.isAlive) {
+                    const damage = Math.round(launchDamage);
+                    koala.takeDamage(damage);
 
-                        // Play damage sound
-                        if (damage > 0) {
-                            if (projectile.shooter && koala.team.alliance !== projectile.shooter.team?.alliance) {
-                                this.stats?.onImpactHit(projectile, projectile.x, projectile.y);
-                            }
-                            this.audioManager.playDamage();
-                            // Floating damage number + stat attribution
-                            this.createFloatingText(koala.x, koala.y - 40, `-${damage}`, '#ff5544');
-                            if (projectile.shooter && projectile.shooter !== koala) {
-                                projectile.shooter.damageDealt = (projectile.shooter.damageDealt || 0) + damage;
-                            }
+                    // Play damage sound
+                    if (damage > 0) {
+                        if (projectile.shooter && koala.team.alliance !== projectile.shooter.team?.alliance) {
+                            this.stats?.onImpactHit(projectile, projectile.x, projectile.y);
                         }
-
-                        // Record for sync
-                        explosionResults.push({
-                            koalaName: koala.name,
-                            damage,
-                            newHealth: koala.health,
-                            x: koala.x,
-                            y: koala.y,
-                            vx: koala.vx,
-                            vy: koala.vy
-                        });
+                        this.audioManager.playDamage();
+                        // Floating damage number + stat attribution
+                        this.createFloatingText(koala.x, koala.y - 40, `-${damage}`, '#ff5544');
+                        if (projectile.shooter && projectile.shooter !== koala) {
+                            projectile.shooter.damageDealt = (projectile.shooter.damageDealt || 0) + damage;
+                        }
                     }
                 }
-
-                // Blast damage to oil drums (detonations get synced by id)
-                this.damageOilDrums(projectile.x, projectile.y,
-                    damageRadius, weapon.damage * damageMultiplier);
             }
+
+            // Blast damage to oil drums
+            this.damageOilDrums(projectile.x, projectile.y,
+                damageRadius, weapon.damage * damageMultiplier);
         }
 
-        // Direct hit bonus - ONLY on authoritative client
+        // Direct hit bonus.
         // Use ?? so weapons with an explicit directDamage of 0 (bazooka etc.)
         // don't get a phantom double-damage bonus on direct hits
         const directDamage = Math.round((weapon.directDamage ?? weapon.damage) * damageMultiplier);
-        if (directHitKoala && isAuthoritativeClient && directDamage > 0) {
+        if (directHitKoala && directDamage > 0) {
             directHitKoala.takeDamage(directDamage);
             if (projectile.shooter && directHitKoala.team.alliance !== projectile.shooter.team?.alliance) {
                 this.stats?.onImpactHit(projectile, projectile.x, projectile.y);
@@ -577,50 +551,21 @@ export const ProjectileSystem = {
             if (projectile.shooter && projectile.shooter !== directHitKoala) {
                 projectile.shooter.damageDealt = (projectile.shooter.damageDealt || 0) + directDamage;
             }
-
-            // Add to sync results if not already there from AoE
-            const existing = explosionResults.find(r => r.koalaName === directHitKoala.name);
-            if (existing) {
-                existing.newHealth = directHitKoala.health;
-            } else {
-                explosionResults.push({
-                    koalaName: directHitKoala.name,
-                    damage: directDamage,
-                    newHealth: directHitKoala.health,
-                    x: directHitKoala.x,
-                    y: directHitKoala.y,
-                    vx: directHitKoala.vx,
-                    vy: directHitKoala.vy
-                });
-            }
         }
 
         // Create particles
         this.createExplosionParticles(projectile.x, projectile.y, weapon.explosionRadius);
 
-        // Cluster weapons split into fragments (both clients simulate these
-        // with the shared seeded RNG, damage stays host-authoritative)
+        // Cluster weapons split into fragments
         if (weapon.clusters) {
             this.spawnClusterFragments(projectile, weapon);
         }
 
         // Petrol bomb / napalm missiles seed burning ground (rolled from the
-        // projectile's own effect RNG — impacts aren't symmetric events)
+        // projectile's own effect RNG)
         if (weapon.spawnsFire) {
             this.spawnFirePatches(projectile.x, projectile.y, weapon.fireCount || 5,
                 this.getProjectileEffectRand(projectile));
-        }
-
-        // NETWORK SYNC: ALWAYS send explosion results to opponent for terrain sync
-        // Host sends explosion results to Guest to maintain authority
-        if (this.networkManager && !this.isPractice && this.networkManager.isHost) {
-            this.networkManager.send({
-                type: 'explosionSync',
-                explosionX: projectile.x,
-                explosionY: projectile.y,
-                explosionRadius: weapon.explosionRadius,
-                results: explosionResults
-            });
         }
     },
 
@@ -629,7 +574,7 @@ export const ProjectileSystem = {
      */
     spawnClusterFragments(projectile, weapon) {
         // Impact-time event: roll from the projectile's own effect RNG, never
-        // the shared stream (this impact may not happen on the other client)
+        // the shared stream
         const rand = this.getProjectileEffectRand(projectile);
         const fragDef = this.weaponManager.getSubMunition(weapon.clusterType || 'clusterFrag');
         if (!fragDef) return;

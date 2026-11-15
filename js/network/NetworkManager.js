@@ -10,14 +10,20 @@
  * full roster after every change ('lobbyUpdate'). A player's colour is their
  * alliance — several players may share one colour to play as a team.
  *
- * In-game authority is unchanged from the 2-player model: the host is the
- * damage/loot authority, and whichever client owns the current turn drives
- * the turn flow ('turnStart' announcements).
+ * This class is only the TRANSPORT and the lobby. How a running match stays
+ * in sync lives in LockstepSession.js: every client simulates the whole
+ * game and only the turn owner's input commands travel, as { type: 'ls' }
+ * messages that this class hands straight to the session.
  *
  * Spectators join with `spectator: true` in their handshake. They get a
  * roster entry (slot 100+) but no team, don't count toward the 4 players,
- * and may join mid-game: the host sends them the match setup and, once
- * their game has started, a full state sync (terrain included).
+ * and may join mid-game. Anyone arriving mid-game — a spectator or a player
+ * reconnecting — is sent the match setup plus the command log so far and
+ * rebuilds the match by replaying it.
+ *
+ * Every connection carries a heartbeat (ping/pong). WebRTC can take half a
+ * minute to notice a dead link, and often never fires 'close' at all; the
+ * heartbeat turns a silent peer into a proper disconnect within seconds.
  */
 
 import { EventEmitter } from '../utils/EventEmitter.js';
@@ -28,15 +34,14 @@ export const MAX_PLAYERS = 4;
 export const MAX_SPECTATORS = 6;
 const SPECTATOR_SLOT_BASE = 100;
 
-// In-game messages the host forwards to the other guests, so every client
-// sees every action no matter which player produced it. Lobby control
-// messages (handshake/setColor/setReady) are handled by the host, not
-// relayed; host-authored broadcasts (damage, crates, lobbyUpdate, gameStart)
-// never arrive FROM a guest so they don't need to be here.
-const RELAY_TYPES = new Set([
-    'move', 'aim', 'fire', 'targetWeapon', 'jump', 'highJump', 'ropeRelease',
-    'weaponSelect', 'turnEnd', 'turnStart', 'gameOver', 'chat'
-]);
+// Guest messages the host forwards verbatim to the other guests. (Match
+// traffic is relayed by the LockstepSession, which validates it first.)
+const RELAY_TYPES = new Set(['chat']);
+
+// Heartbeat: ping every connection this often; a connection that has been
+// completely silent for PEER_TIMEOUT_MS is treated as dead.
+const PING_INTERVAL_MS = 2000;
+const PEER_TIMEOUT_MS = 12000;
 
 export class NetworkManager extends EventEmitter {
     constructor() {
@@ -77,7 +82,16 @@ export class NetworkManager extends EventEmitter {
         // Queuing and reconnection (guest side)
         this.outboundQueue = [];
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.maxReconnectAttempts = 6;
+
+        // Heartbeat state: last time anything arrived per connection, and
+        // the measured round trip (ms) — to the host on a guest, the worst
+        // guest on the host
+        this.lastSeen = new Map();
+        this.rttByPeer = new Map();
+        this.rtt = null;
+        this.heartbeatId = null;
+        this.reconnectTimer = null;
     }
 
     /**
@@ -123,6 +137,7 @@ export class NetworkManager extends EventEmitter {
                         style: this.localStyle,
                         spectator: false
                     }];
+                    this.startHeartbeat();
                     this.emit('hostReady', { roomCode: this.roomCode });
                     this.emit('lobbyUpdate', { roster: this.publicRoster() });
                     resolve(this.roomCode);
@@ -183,9 +198,15 @@ export class NetworkManager extends EventEmitter {
                     debug: 1
                 });
 
+                let joined = false;
                 this.peer.on('open', (id) => {
                     log.debug('✅ Our peer ID:', id);
                     this.playerId = id;
+
+                    // The signalling server re-opens after a blip too: only
+                    // the first open starts the join
+                    if (joined) return;
+                    joined = true;
 
                     // Now connect to the host
                     log.debug('📡 Connecting to host:', this.roomCode);
@@ -194,6 +215,7 @@ export class NetworkManager extends EventEmitter {
                     });
 
                     this.setupConnectionHandlers(this.connection);
+                    this.startHeartbeat();
 
                     // Set a timeout for connection
                     const timeout = setTimeout(() => {
@@ -201,17 +223,32 @@ export class NetworkManager extends EventEmitter {
                             this.emit('error', { message: 'Connection timed out' });
                             reject(new Error('Connection timed out'));
                         }
-                    }, 10000);
+                    }, 15000);
 
                     this.connection.on('open', () => {
                         clearTimeout(timeout);
                     });
                 });
 
+                // Lost the signalling server (not the game link): get back on
+                // it so a later reconnect to the host can be brokered
+                this.peer.on('disconnected', () => {
+                    if (this.peer && !this.peer.destroyed) {
+                        try { this.peer.reconnect(); } catch (e) { /* retried on next drop */ }
+                    }
+                });
+
                 this.peer.on('error', (err) => {
                     console.error('❌ Peer error:', err);
-                    this.connectionState = 'disconnected';
 
+                    // Mid-match these are reconnect attempts failing (the
+                    // host is briefly unreachable): keep retrying quietly
+                    if (this.gameInProgress || this.reconnectAttempts > 0) {
+                        if (err.type === 'peer-unavailable') this.attemptReconnect();
+                        return;
+                    }
+
+                    this.connectionState = 'disconnected';
                     if (err.type === 'peer-unavailable') {
                         this.emit('error', { message: 'Room not found. Check the code!' });
                     } else {
@@ -243,10 +280,12 @@ export class NetworkManager extends EventEmitter {
     setupHostConnection(conn) {
         conn.on('open', () => {
             log.debug('✅ Data channel open (guest):', conn.peer);
+            this.lastSeen.set(conn, performance.now());
             // Roster placement happens on handshake
         });
 
         conn.on('data', (data) => {
+            this.lastSeen.set(conn, performance.now());
             this.handleMessage(data, conn);
         });
 
@@ -266,10 +305,18 @@ export class NetworkManager extends EventEmitter {
         // Reconnect: the guest asks for its old slot back
         if (data.reclaimSlot !== undefined && data.reclaimSlot !== null) {
             const entry = this.roster.find(r => r.slot === data.reclaimSlot);
-            if (entry && !entry.connected) {
+            // The seat is free to reclaim if we saw its player drop — or if
+            // this IS that player on a fresh channel (a guest often notices
+            // a dead link before we do, and keeps its peer id)
+            if (entry && (!entry.connected || entry.peerId === conn.peer)) {
                 log.debug(`🔗 Guest reclaiming slot ${entry.slot}`);
-                // Drop any dead connection still registered for the old peer id
+                // Retire the channel still registered for that seat
+                const old = entry.peerId ? this.connections.get(entry.peerId) : null;
                 if (entry.peerId) this.connections.delete(entry.peerId);
+                if (old && old !== conn) {
+                    this.lastSeen.delete(old);
+                    try { old.close(); } catch (e) { /* already gone */ }
+                }
                 entry.peerId = conn.peer;
                 entry.connected = true;
                 this.connections.set(conn.peer, conn);
@@ -286,6 +333,8 @@ export class NetworkManager extends EventEmitter {
                     const evt = { slot: entry.slot, name: entry.name };
                     this.broadcastExcept(conn.peer, { type: 'playerReturned', ...evt });
                     this.emit('playerReturned', evt);
+                    // They rebuild the match from the log (see sendResume)
+                    this.emit('needResume', { peerId: conn.peer, spectate: false });
                 }
                 return;
             }
@@ -379,8 +428,23 @@ export class NetworkManager extends EventEmitter {
         this.broadcastLobby();
 
         if (this.gameInProgress && this.lastGameState) {
-            this.sendToConn(conn, { type: 'gameStart', gameState: this.lastGameState, spectate: true });
+            this.emit('needResume', { peerId: conn.peer, spectate: true });
         }
+    }
+
+    /**
+     * Host: send a late joiner (reconnecting player or mid-game spectator)
+     * the match setup and everything that has happened in it so far.
+     * `resume` comes from LockstepSession.resumeData().
+     */
+    sendResume(peerId, resume, { spectate = false } = {}) {
+        if (!this.isHost || !this.lastGameState) return;
+        this.sendTo(peerId, {
+            type: 'gameStart',
+            gameState: this.lastGameState,
+            spectate,
+            resume
+        });
     }
 
     rejectGuest(conn, message) {
@@ -394,8 +458,15 @@ export class NetworkManager extends EventEmitter {
      * keep their seat so they can reconnect and reclaim it.
      */
     handleGuestGone(conn) {
+        this.lastSeen.delete(conn);
+        // A stale channel closing after its guest already reconnected on a
+        // new one (same peer id) is not a departure
+        const current = this.connections.get(conn.peer);
+        if (current && current !== conn) return;
+
         const entry = this.roster.find(r => r.peerId === conn.peer);
         this.connections.delete(conn.peer);
+        this.rttByPeer.delete(conn.peer);
 
         if (!entry || !entry.connected || entry.peerId !== conn.peer) {
             // Never handshook, or already superseded by a reconnect
@@ -453,10 +524,13 @@ export class NetworkManager extends EventEmitter {
      */
     setupConnectionHandlers(conn) {
         conn.on('open', () => {
+            if (conn !== this.connection) return; // superseded by a newer attempt
             log.debug('✅ Data channel open!');
+            this.lastSeen.set(conn, performance.now());
             // Capture BEFORE resetting: this is how we know the channel came
-            // back from a reconnect (and therefore needs a full state sync)
+            // back from a reconnect (the host then sends us the match again)
             const wasReconnect = this.reconnectAttempts > 0;
+            this.reconnectTimer = null;
             this.isConnected = true;
             this.connectionState = 'connected';
             this.reconnectAttempts = 0; // Reset attempts on successful connection
@@ -476,7 +550,8 @@ export class NetworkManager extends EventEmitter {
                 spectator: this.isSpectator
             });
 
-            // Flush offline queue if any
+            // Flush offline queue if any (lobby/chat messages only — match
+            // traffic is never queued, see send())
             if (this.outboundQueue.length > 0) {
                 log.debug(`📤 Flushing ${this.outboundQueue.length} queued messages...`);
                 while (this.outboundQueue.length > 0) {
@@ -484,30 +559,81 @@ export class NetworkManager extends EventEmitter {
                     conn.send(data);
                 }
             }
-
-            // If we are a guest that just reconnected, request state sync
-            // (terrain, health, ammo, crates — we missed everything while away)
-            if (!this.isHost && wasReconnect) {
-                this.send({ type: 'requestStateSync' });
-            }
         });
 
         conn.on('data', (data) => {
+            if (conn !== this.connection) return;
+            this.lastSeen.set(conn, performance.now());
             this.handleMessage(data, null);
         });
 
-        conn.on('close', () => {
-            log.debug('🔌 Connection closed');
-            this.isConnected = false;
-            this.connectionState = 'disconnected';
-            this.emit('disconnected', { reason: 'Connection closed' });
-            this.attemptReconnect();
-        });
+        conn.on('close', () => this.handleHostLinkLost(conn, 'Connection closed'));
 
         conn.on('error', (err) => {
             console.error('Connection error:', err);
-            this.emit('error', { message: err.message });
+            if (conn !== this.connection) return;
+            // Mid-match a broken channel is a disconnect, not a lobby error
+            if (this.gameInProgress) this.handleHostLinkLost(conn, 'Connection error');
+            else this.emit('error', { message: err.message });
         });
+    }
+
+    /**
+     * Guest: our channel to the host is gone (closed, errored, or silent
+     * past the heartbeat timeout). Tell the app and start reconnecting.
+     */
+    handleHostLinkLost(conn, reason) {
+        if (conn !== this.connection) return; // an old channel we already replaced
+        if (!this.isConnected && this.reconnectAttempts > 0) return; // already handling it
+        log.debug('🔌 Lost the host link:', reason);
+        this.lastSeen.delete(conn);
+        const wasConnected = this.isConnected;
+        this.isConnected = false;
+        this.connectionState = 'disconnected';
+        this.rtt = null;
+        if (wasConnected) this.emit('disconnected', { reason });
+        this.attemptReconnect();
+    }
+
+    // ==================== HEARTBEAT ====================
+
+    startHeartbeat() {
+        this.stopHeartbeat();
+        this.heartbeatId = setInterval(() => this.heartbeat(), PING_INTERVAL_MS);
+    }
+
+    stopHeartbeat() {
+        if (this.heartbeatId) clearInterval(this.heartbeatId);
+        this.heartbeatId = null;
+    }
+
+    heartbeat() {
+        const now = performance.now();
+        const ping = { type: 'ping', t: now };
+
+        if (this.isHost) {
+            for (const conn of [...this.connections.values()]) {
+                if (!conn.open) continue;
+                if (now - (this.lastSeen.get(conn) ?? now) > PEER_TIMEOUT_MS) {
+                    console.warn('💔 Guest went silent — dropping', conn.peer);
+                    try { conn.close(); } catch (e) { /* already gone */ }
+                    this.handleGuestGone(conn);
+                    continue;
+                }
+                try { conn.send(ping); } catch (e) { /* closing */ }
+            }
+            return;
+        }
+
+        const conn = this.connection;
+        if (!conn || !conn.open || !this.isConnected) return;
+        if (now - (this.lastSeen.get(conn) ?? now) > PEER_TIMEOUT_MS) {
+            console.warn('💔 Host went silent — reconnecting');
+            this.handleHostLinkLost(conn, 'Host stopped responding');
+            try { conn.close(); } catch (e) { /* already gone */ }
+            return;
+        }
+        try { conn.send(ping); } catch (e) { /* closing */ }
     }
 
     /**
@@ -529,9 +655,32 @@ export class NetworkManager extends EventEmitter {
      */
     handleMessage(data, sourceConn) {
         if (!data || typeof data !== 'object') return;
+
+        // Hot path: match traffic goes straight to the lockstep session
+        if (data.type === 'ls') {
+            this.emit('lockstep', { msg: data, fromPeer: sourceConn?.peer || null });
+            return;
+        }
+        if (data.type === 'ping') {
+            const reply = { type: 'pong', t: data.t };
+            if (sourceConn) this.sendToConn(sourceConn, reply);
+            else if (this.connection?.open) this.connection.send(reply);
+            return;
+        }
+        if (data.type === 'pong') {
+            const rtt = Math.max(0, performance.now() - data.t);
+            if (sourceConn) {
+                this.rttByPeer.set(sourceConn.peer, rtt);
+                this.rtt = Math.max(...this.rttByPeer.values());
+            } else {
+                this.rtt = rtt;
+            }
+            return;
+        }
+
         log.debug('📨 Received:', data.type);
 
-        // Host: forward guest-originated game traffic to the other guests
+        // Host: forward chat to the other guests
         if (this.isHost && sourceConn && RELAY_TYPES.has(data.type)) {
             this.broadcastExcept(sourceConn.peer, data);
         }
@@ -628,78 +777,12 @@ export class NetworkManager extends EventEmitter {
                 this.emit('mapSelected', data);
                 break;
 
-            case 'move':
-                this.emit('remoteMove', data);
-                break;
-
-            case 'aim':
-                this.emit('remoteAim', data);
-                break;
-
-            case 'fire':
-                this.emit('remoteFire', data);
-                break;
-
-            case 'targetWeapon':
-                this.emit('remoteTargetWeapon', data);
-                break;
-
-            case 'damage':
-                this.emit('remoteDamage', data);
-                break;
-
-            case 'turnEnd':
-                this.emit('remoteTurnEnd', data);
-                break;
-
-            case 'turnStart':
-                this.emit('remoteTurnStart', data);
-                break;
-
-            case 'gameOver':
-                this.emit('remoteGameOver', data);
-                break;
-
-            case 'crateCollected':
-                this.emit('remoteCrateCollected', data);
-                break;
-
-            case 'crateDestroyed':
-                this.emit('remoteCrateDestroyed', data);
-                break;
-
-            case 'explosionSync':
-                this.emit('remoteExplosionSync', data);
-                break;
-
-            case 'weaponSelect':
-                this.emit('remoteWeaponSelect', data);
-                break;
-
-            case 'jump':
-                this.emit('remoteJump', data);
-                break;
-
-            case 'highJump':
-                this.emit('remoteHighJump', data);
-                break;
-
-            case 'ropeRelease':
-                this.emit('remoteRopeRelease', data);
-                break;
-
-            case 'stateSync':
-                this.emit('remoteStateSync', data);
-                break;
-
-            case 'requestStateSync':
-                // Reply only to whoever asked (a reconnecting guest or a
-                // spectator joining mid-game), never to the whole room
-                this.emit('remoteRequestStateSync', { ...data, fromPeer: sourceConn?.peer || null });
-                break;
-
-            case 'crateSpawn':
-                this.emit('remoteCrateSpawn', data);
+            case 'requestResume':
+                // A guest whose match stream broke asks for the match again
+                if (this.isHost && sourceConn && this.gameInProgress) {
+                    const entry = this.roster.find(r => r.peerId === sourceConn.peer);
+                    this.emit('needResume', { peerId: sourceConn.peer, spectate: !!entry?.spectator });
+                }
                 break;
 
             case 'chat':
@@ -775,7 +858,7 @@ export class NetworkManager extends EventEmitter {
 
     /**
      * Send a message to everyone we're connected to: the host broadcasts to
-     * all guests; a guest sends to the host (which relays when appropriate).
+     * all guests; a guest sends to the host.
      */
     send(data) {
         // Strip Infinity/NaN before serialization so one blown-up number can't
@@ -793,8 +876,8 @@ export class NetworkManager extends EventEmitter {
                     console.error('❌ Failed to send message:', data && data.type, err);
                 }
             }
-            // No queueing on the host: a returning guest gets a full state
-            // sync (terrain included), which supersedes anything it missed.
+            // No queueing on the host: a returning guest is sent the whole
+            // match again, which supersedes anything it missed.
             return sent;
         }
 
@@ -807,13 +890,13 @@ export class NetworkManager extends EventEmitter {
             }
             return true;
         } else {
-            // Don't queue high-frequency cosmetic updates: replaying stale
-            // move/aim spam after a reconnect teleports things around. Turn
-            // structure and damage messages ARE queued so nothing is lost.
-            if (data.type === 'move' || data.type === 'aim') {
+            // Match traffic is never queued: after a reconnect we rebuild
+            // the match from the host's log, and frames produced while cut
+            // off don't exist as far as anyone else is concerned.
+            if (data.type === 'ls' || data.type === 'ping' || data.type === 'pong') {
                 return false;
             }
-            console.warn('⚠️ Cannot send - not connected. Queueing message:', data.type);
+            log.debug('⚠️ Not connected - queueing message:', data.type);
             this.outboundQueue.push(data);
             return false;
         }
@@ -845,6 +928,10 @@ export class NetworkManager extends EventEmitter {
      * Attempt to reconnect to the game
      */
     attemptReconnect() {
+        if (this.isHost) return;       // the host IS the room: guests come back to it
+        if (!this.roomCode) return;    // not in a room (or we were turned away)
+        if (this.reconnectTimer) return; // an attempt is already scheduled
+
         if (this.reconnectAttempts >= this.maxReconnectAttempts) {
             console.error('❌ Max reconnect attempts reached');
             this.emit('reconnectFailed');
@@ -852,40 +939,45 @@ export class NetworkManager extends EventEmitter {
             return;
         }
 
-        if (!this.roomCode) return; // Not currently in a game (or we were turned away)
-
         this.reconnectAttempts++;
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000); // Expon backoff max 10s
+        const attempt = this.reconnectAttempts;
+        const delay = Math.min(500 * Math.pow(2, attempt - 1), 8000); // backoff, max 8s
 
-        log.debug(`🔄 Attempting to reconnect (Attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+        log.debug(`🔄 Reconnecting (attempt ${attempt}/${this.maxReconnectAttempts}) in ${delay}ms...`);
         this.connectionState = 'connecting';
 
-        setTimeout(() => {
-            if (this.isHost) {
-                // Host just needs to make sure its peer is ready to accept connections
-                if (this.peer && this.peer.disconnected && !this.peer.destroyed) {
-                    this.peer.reconnect();
-                }
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            if (!this.peer || this.peer.destroyed || !this.roomCode) return;
+
+            const connectToHost = () => {
+                if (!this.peer || this.peer.destroyed || this.isConnected) return;
+                log.debug('📡 Reconnecting to host:', this.roomCode);
+                const old = this.connection;
+                this.connection = this.peer.connect(this.roomCode, { reliable: true });
+                this.setupConnectionHandlers(this.connection);
+                try { old?.close(); } catch (e) { /* already gone */ }
+
+                // This attempt gets a few seconds to open, then the next one
+                const conn = this.connection;
+                setTimeout(() => {
+                    if (this.connection === conn && !this.isConnected && attempt === this.reconnectAttempts) {
+                        this.attemptReconnect();
+                    }
+                }, 6000);
+            };
+
+            if (this.peer.disconnected) {
+                // Signalling server link is down too: restore it first
+                this.peer.once('open', connectToHost);
+                try { this.peer.reconnect(); } catch (e) { /* retried below */ }
+                setTimeout(() => {
+                    if (!this.isConnected && attempt === this.reconnectAttempts && this.connection && !this.connection.open) {
+                        this.attemptReconnect();
+                    }
+                }, 6000);
             } else {
-                // Guest needs to establish a new data channel to the host
-                if (this.peer && !this.peer.destroyed) {
-                    if (this.peer.disconnected) {
-                        this.peer.reconnect();
-                    }
-
-                    const connectToHost = () => {
-                        log.debug('📡 Reconnecting to host:', this.roomCode);
-                        this.connection = this.peer.connect(this.roomCode, { reliable: true });
-                        this.setupConnectionHandlers(this.connection);
-                    };
-
-                    if (this.peer.open) {
-                        connectToHost();
-                    } else {
-                        // Wait for peer to re-establish signaling connection before connecting
-                        this.peer.once('open', connectToHost);
-                    }
-                }
+                connectToHost();
             }
         }, delay);
     }
@@ -932,7 +1024,7 @@ export class NetworkManager extends EventEmitter {
     startGame(options = {}) {
         if (!this.isHost) {
             console.warn('Only host can start the game');
-            return;
+            return false;
         }
 
         const players = this.roster
@@ -941,11 +1033,11 @@ export class NetworkManager extends EventEmitter {
 
         if (players.length < 2) {
             console.warn('Need at least 2 connected players to start');
-            return;
+            return false;
         }
         if (new Set(players.map(p => p.color)).size < 2) {
             console.warn('Need at least 2 different team colours to start');
-            return;
+            return false;
         }
 
         const gameState = {
@@ -971,6 +1063,7 @@ export class NetworkManager extends EventEmitter {
 
         // Also trigger locally
         this.emit('gameStart', { gameState });
+        return true;
     }
 
     /**
@@ -1017,99 +1110,7 @@ export class NetworkManager extends EventEmitter {
         this.emit('mapSelected', { map, scheme });
     }
 
-    // ==================== IN-GAME ACTIONS ====================
-
-    /**
-     * Send movement update. teamIndex/koalaIndex identify the acting koala so
-     * the receiver can apply the update to the right entity even if its own
-     * turn indices have momentarily drifted.
-     */
-    sendMove(x, y, facingLeft, blowtorchDigging, teamIndex, koalaIndex) {
-        this.send({
-            type: 'move',
-            x,
-            y,
-            facingLeft,
-            blowtorchDigging,
-            teamIndex,
-            koalaIndex,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send aim update (throttled by caller)
-     */
-    sendAim(angle, teamIndex, koalaIndex) {
-        this.send({
-            type: 'aim',
-            angle,
-            teamIndex,
-            koalaIndex,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send fire action
-     */
-    sendFire(weaponId, angle, power, x, y, teamIndex, koalaIndex, targetX, targetY) {
-        const msg = {
-            type: 'fire',
-            weaponId,
-            angle,
-            power,
-            x,
-            y,
-            teamIndex,
-            koalaIndex,
-            timestamp: Date.now()
-        };
-        // Homing missile: the pre-placed target travels with the fire message
-        if (targetX !== undefined && targetY !== undefined) {
-            msg.targetX = targetX;
-            msg.targetY = targetY;
-        }
-        this.send(msg);
-    }
-
-    /**
-     * Send targeted weapon action (airstrike, teleport)
-     */
-    sendTargetWeapon(weaponId, targetX, targetY, teamIndex, koalaIndex) {
-        this.send({
-            type: 'targetWeapon',
-            weaponId,
-            targetX,
-            targetY,
-            teamIndex,
-            koalaIndex,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send damage results (host is authority)
-     */
-    sendDamageResults(damages) {
-        this.send({
-            type: 'damage',
-            damages,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send turn end signal
-     */
-    sendTurnEnd(nextTeam, nextKoala) {
-        this.send({
-            type: 'turnEnd',
-            nextTeam,
-            nextKoala,
-            timestamp: Date.now()
-        });
-    }
+    // ==================== CHAT ====================
 
     /**
      * Send chat message
@@ -1142,9 +1143,17 @@ export class NetworkManager extends EventEmitter {
      * Disconnect and cleanup
      */
     disconnect() {
+        this.stopHeartbeat();
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+        this.lastSeen.clear();
+        this.rttByPeer.clear();
+        this.rtt = null;
+
         if (this.connection) {
-            this.connection.close();
-            this.connection = null;
+            const conn = this.connection;
+            this.connection = null; // first, so its 'close' is ignored
+            try { conn.close(); } catch (e) { /* already gone */ }
         }
 
         for (const conn of this.connections.values()) {
@@ -1200,10 +1209,4 @@ export class NetworkManager extends EventEmitter {
         }
     }
 
-    /**
-     * Check if it's currently our turn
-     */
-    isMyTurn(currentTeamIndex) {
-        return this.isMyTeam(currentTeamIndex);
-    }
 }

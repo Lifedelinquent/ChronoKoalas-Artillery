@@ -125,80 +125,66 @@ export const RopeSystem = {
     },
 
     /**
-     * Swinging on the rope. The turn owner integrates the pendulum + input;
-     * remote clients only recompute wrap pivots around the streamed position.
+     * Swinging on the rope: integrate the pendulum from the held actions.
      */
     updateRopeSwing(rs, dt) {
         const koala = rs.koala;
 
-        if (this.hasLocalControl()) {
-            // Held actions from the human's input or the CPU's virtual pad
-            const control = this.getControl();
+        // Held actions: the player's input, the CPU's virtual pad, or
+        // (online) the turn owner's command stream
+        const control = this.getControl();
 
-            // Left/right: pump the swing
-            let swing = 0;
-            if (control.isHeld('left')) { swing = -1; koala.facingLeft = true; }
-            if (control.isHeld('right')) { swing = 1; koala.facingLeft = false; }
-            koala.vx += swing * rs.swingAccel * dt;
+        // Left/right: pump the swing
+        let swing = 0;
+        if (control.isHeld('left')) { swing = -1; koala.facingLeft = true; }
+        if (control.isHeld('right')) { swing = 1; koala.facingLeft = false; }
+        koala.vx += swing * rs.swingAccel * dt;
 
-            // Up/down: climb the rope. Total rope (wrapped + free) caps at maxLength.
-            const used = rs.pivots.reduce((sum, p) => sum + p.consumed, 0);
-            if (control.isHeld('aimUp')) {
-                rs.length = Math.max(ROPE_MIN_LENGTH, rs.length - rs.climbSpeed * dt);
+        // Up/down: climb the rope. Total rope (wrapped + free) caps at maxLength.
+        const used = rs.pivots.reduce((sum, p) => sum + p.consumed, 0);
+        if (control.isHeld('aimUp')) {
+            rs.length = Math.max(ROPE_MIN_LENGTH, rs.length - rs.climbSpeed * dt);
+        }
+        if (control.isHeld('aimDown')) {
+            rs.length = Math.min(Math.max(ROPE_MIN_LENGTH, rs.maxLength - used), rs.length + rs.climbSpeed * dt);
+        }
+
+        // Pendulum integration: gravity, then constrain to the rope circle
+        koala.vy += this.physics.gravity * dt;
+        const prevX = koala.x, prevY = koala.y;
+        koala.x += koala.vx * dt;
+        koala.y += koala.vy * dt;
+
+        const p = rs.pivots[rs.pivots.length - 1];
+        const dx = koala.x - p.x;
+        const dy = (koala.y - ROPE_HAND_OFFSET) - p.y;
+        const d = Math.hypot(dx, dy);
+        if (d > rs.length && d > 0) {
+            const nx = dx / d, ny = dy / d;
+            koala.x = p.x + nx * rs.length;
+            koala.y = p.y + ny * rs.length + ROPE_HAND_OFFSET;
+            // Kill outward radial velocity; keep the tangential component
+            // (this is what makes the swing feel like WA — energy carries)
+            const vr = koala.vx * nx + koala.vy * ny;
+            if (vr > 0) {
+                koala.vx -= vr * nx;
+                koala.vy -= vr * ny;
             }
-            if (control.isHeld('aimDown')) {
-                rs.length = Math.min(Math.max(ROPE_MIN_LENGTH, rs.maxLength - used), rs.length + rs.climbSpeed * dt);
-            }
+        }
 
-            // Pendulum integration: gravity, then constrain to the rope circle
-            koala.vy += this.physics.gravity * dt;
-            const prevX = koala.x, prevY = koala.y;
-            koala.x += koala.vx * dt;
-            koala.y += koala.vy * dt;
+        // Don't swing through walls: if the body ended up inside terrain,
+        // step back and deaden the impact (a soft thud, not a bounce)
+        if (this.ropeBodyCollides(koala)) {
+            koala.x = prevX;
+            koala.y = prevY;
+            koala.vx *= -0.3;
+            koala.vy *= -0.3;
+        }
 
-            const p = rs.pivots[rs.pivots.length - 1];
-            const dx = koala.x - p.x;
-            const dy = (koala.y - ROPE_HAND_OFFSET) - p.y;
-            const d = Math.hypot(dx, dy);
-            if (d > rs.length && d > 0) {
-                const nx = dx / d, ny = dy / d;
-                koala.x = p.x + nx * rs.length;
-                koala.y = p.y + ny * rs.length + ROPE_HAND_OFFSET;
-                // Kill outward radial velocity; keep the tangential component
-                // (this is what makes the swing feel like WA — energy carries)
-                const vr = koala.vx * nx + koala.vy * ny;
-                if (vr > 0) {
-                    koala.vx -= vr * nx;
-                    koala.vy -= vr * ny;
-                }
-            }
-
-            // Don't swing through walls: if the body ended up inside terrain,
-            // step back and deaden the impact (a soft thud, not a bounce)
-            if (this.ropeBodyCollides(koala)) {
-                koala.x = prevX;
-                koala.y = prevY;
-                koala.vx *= -0.3;
-                koala.vy *= -0.3;
-            }
-
-            // Swung into the drink: let go, normal physics handles the splash
-            if (koala.y + koala.height / 2 > this.waterLevel) {
-                this.releaseRope();
-                return;
-            }
-
-            // Stream position over the wire like walking does (20/s)
-            if (this.networkManager && !this.isPractice) {
-                const now = performance.now();
-                if (!this.lastRopeSync || now - this.lastRopeSync > 50) {
-                    this.networkManager.sendMove(
-                        koala.x, koala.y, koala.facingLeft, undefined,
-                        this.currentTeamIndex, this.currentKoalaIndex
-                    );
-                    this.lastRopeSync = now;
-                }
-            }
+        // Swung into the drink: let go, normal physics handles the splash
+        if (koala.y + koala.height / 2 > this.waterLevel) {
+            this.releaseRope();
+            return;
         }
 
         this.updateRopeWrap(rs);
@@ -282,21 +268,8 @@ export const RopeSystem = {
      */
     releaseRope() {
         if (!this.ropeState) return;
-        const koala = this.ropeState.koala;
-        const wasMyAction = this.isMyTurn() && !this.isGameOver;
-
         this.clearRope();
         this.phase = 'aiming';
-
-        if (wasMyAction && this.networkManager && !this.isPractice) {
-            this.networkManager.send({
-                type: 'ropeRelease',
-                x: koala.x, y: koala.y,
-                vx: koala.vx, vy: koala.vy,
-                teamIndex: this.currentTeamIndex,
-                koalaIndex: this.currentKoalaIndex
-            });
-        }
     },
 
     /**
@@ -307,7 +280,7 @@ export const RopeSystem = {
         const rs = this.ropeState;
         if (!rs) return;
         const koala = rs.koala;
-        // fireWeapon's rope branch clears the old rope and replays remotely
+        // fireWeapon's rope branch clears the old rope
         this.weaponManager.selectWeapon('rope');
         this.fireWeapon(koala.aimAngle, 1.0);
     },
@@ -324,21 +297,5 @@ export const RopeSystem = {
             rs.koala.peakY = rs.koala.y;
         }
         this.ropeState = null;
-    },
-
-    /**
-     * Remote turn owner let go of their rope
-     */
-    handleRemoteRopeRelease(data) {
-        if (!this.adoptRemoteTurn(data, 'rope release')) return;
-        const koala = this.getCurrentKoala();
-        if (koala && data.x !== undefined) {
-            koala.x = data.x;
-            koala.y = data.y;
-            koala.vx = data.vx || 0;
-            koala.vy = data.vy || 0;
-        }
-        this.clearRope();
-        this.phase = 'aiming';
     },
 };

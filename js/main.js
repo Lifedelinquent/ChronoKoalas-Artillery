@@ -6,6 +6,7 @@
 import { Game } from './engine/Game.js';
 import { MenuManager } from './ui/MenuManager.js';
 import { NetworkManager } from './network/NetworkManager.js';
+import { LockstepSession } from './network/LockstepSession.js';
 import { MapEditor } from './editor/MapEditor.js';
 import { MapManager } from './utils/MapManager.js';
 import { globalAudioManager } from './engine/AudioManager.js';
@@ -55,6 +56,8 @@ async function init() {
     // Initialize managers
     menuManager = new MenuManager();
     networkManager = new NetworkManager();
+    // Exposed (like window.game) for debugging from the console
+    window.networkManager = networkManager;
 
     // Set up menu event handlers
     setupMenuHandlers();
@@ -365,14 +368,12 @@ function setupMenuHandlers() {
     networkManager.on('connected', (data) => {
         log.debug('🎮 Connected to host!', data);
 
-        // Mid-game reconnect: resume the paused game instead of showing the
-        // lobby. The guest automatically requests a full state sync (terrain,
-        // health, ammo, crates) — see NetworkManager's open handler.
+        // Mid-game reconnect: the host now sends the match again (setup +
+        // every command so far) and we rebuild it — see the 'gameStart'
+        // handler. Until that arrives the old, paused game stays on screen.
         if (game && !game.isGameOver && data.wasReconnect) {
-            log.debug('🔗 Reconnected mid-game — resuming');
-            hideConnectionBanner();
-            game.isPaused = false;
-            game.lastTime = performance.now();
+            log.debug('🔗 Reconnected mid-game — waiting for the match');
+            showConnectionBanner('🔗 Reconnected — rejoining the match…');
             return;
         }
         // Fresh guest connection: the lobby appears when 'welcome' arrives
@@ -381,8 +382,16 @@ function setupMenuHandlers() {
 
     // Guest: the host accepted us and told us our seat
     networkManager.on('welcome', (data) => {
-        // Mid-game reconnect welcome: stay in the game, don't pop the lobby
-        if (data.midGame && game && !game.isGameOver) return;
+        // Mid-game (re)join: the match itself follows in a 'gameStart'
+        if (data.midGame) return;
+
+        // We came back from a drop but the match is over on the host's side
+        if (game && !game.isPractice) {
+            hideConnectionBanner();
+            game.destroy();
+            game = null;
+            afterGameTeardown();
+        }
 
         menuManager.showLobby(networkManager.roomCode, false);
         renderLobby();
@@ -423,10 +432,13 @@ function setupMenuHandlers() {
         log.debug('🔌 Disconnected:', data?.reason);
 
         // Mid-game drop: don't kill the game — NetworkManager is already
-        // retrying with backoff. Pause and wait; 'connected' resumes us and
-        // 'reconnectFailed' tears down for real.
+        // retrying with backoff. Freeze what we have; once we are back the
+        // host sends the match again and we rebuild it ('gameStart'), and
+        // 'reconnectFailed' tears down for real. The session is retired
+        // now: frames we might still produce don't exist for anyone else.
         if (game && !game.isGameOver && networkManager.roomCode) {
             game.isPaused = true;
+            game.net?.destroy();
             showConnectionBanner('⚠️ Connection lost — reconnecting…');
             return;
         }
@@ -455,9 +467,17 @@ function setupMenuHandlers() {
     const FORFEIT_TIMEOUT_MS = 45000;
     const forfeitTimers = new Map(); // slot -> timeout id (host only)
 
+    /** Everyone: a drop has been resolved one way or the other — play on. */
+    function resumeAfterDrop() {
+        if (!game || game.isGameOver) return;
+        hideConnectionBanner();
+        game.isPaused = false;
+        game.lastTime = performance.now();
+    }
+
     function hostForfeitDroppedPlayer(slot) {
         forfeitTimers.delete(slot);
-        if (!game || game.isGameOver || !networkManager.isHost) return;
+        if (!game || game.isGameOver || !game.net || !networkManager.isHost) return;
 
         const teamIndex = networkManager.gamePlayers
             ? networkManager.gamePlayers.findIndex(p => p.slot === slot)
@@ -465,25 +485,12 @@ function setupMenuHandlers() {
         if (teamIndex < 0) return;
 
         console.warn(`⏱️ Player in slot ${slot} never returned — forfeiting team ${teamIndex}`);
-        networkManager.send({ type: 'teamForfeit', teamIndex });
-        game.forfeitTeam(teamIndex);
-
-        hideConnectionBanner();
-        game.isPaused = false;
-        game.lastTime = performance.now();
-
-        // Only one colour left? Host ends the game (broadcasts gameOver).
-        const alive = game.teams.filter(t => t.isAlive());
-        if (game.countAliveAlliances(alive) <= 1) {
-            game.endGame(alive[0] || null);
-            return;
-        }
-
-        // If it was the dropped player's turn, the host drives the handover
-        if (game.currentTeamIndex === teamIndex) {
-            game.turnManager.localFallback = true;
-            game.turnManager.processDamage();
-        }
+        // The forfeit is a command in the match stream, so it lands on the
+        // same frame for everyone (and the win check / turn handover that
+        // follow are just the simulation doing its thing)
+        game.net.inject({ t: 'forfeit', team: teamIndex, gone: true });
+        networkManager.send({ type: 'teamForfeit', teamIndex, slot });
+        resumeAfterDrop();
     }
 
     networkManager.on('playerDropped', (data) => {
@@ -493,6 +500,8 @@ function setupMenuHandlers() {
             game.isPaused = true;
             showConnectionBanner(`⚠️ ${data.name || 'A player'} disconnected — waiting for them to return…`);
             if (networkManager.isHost) {
+                game.net?.setAbsent(data.slot, true);
+                clearTimeout(forfeitTimers.get(data.slot));
                 forfeitTimers.set(data.slot, setTimeout(() => hostForfeitDroppedPlayer(data.slot), FORFEIT_TIMEOUT_MS));
             }
         }
@@ -502,35 +511,41 @@ function setupMenuHandlers() {
 
     networkManager.on('playerReturned', (data) => {
         log.debug('🔗 Player returned:', data);
-        if (networkManager.isHost && forfeitTimers.has(data.slot)) {
-            clearTimeout(forfeitTimers.get(data.slot));
-            forfeitTimers.delete(data.slot);
+        if (networkManager.isHost) {
+            game?.net?.setAbsent(data.slot, false);
+            if (forfeitTimers.has(data.slot)) {
+                clearTimeout(forfeitTimers.get(data.slot));
+                forfeitTimers.delete(data.slot);
+            }
         }
-        if (game && !game.isGameOver) {
-            hideConnectionBanner();
-            game.isPaused = false;
-            game.lastTime = performance.now();
-        }
+        resumeAfterDrop();
     });
 
+    // The host gave up waiting for a dropped player (their forfeit travels
+    // in the match stream; this only lifts the pause)
     networkManager.on('remoteTeamForfeit', (data) => {
         log.debug('🏳️ Team forfeited:', data);
-        if (game && !game.isGameOver) {
-            game.forfeitTeam(data.teamIndex);
-            hideConnectionBanner();
-            game.isPaused = false;
-            game.lastTime = performance.now();
-        }
+        resumeAfterDrop();
+    });
+
+    // ---- Match traffic: straight to the running game's lockstep session ----
+    networkManager.on('lockstep', ({ msg, fromPeer }) => {
+        game?.net?.handleMessage(msg, fromPeer);
+    });
+
+    // Host: someone needs the match so far (a player reconnecting, a
+    // spectator arriving mid-game, or a guest whose stream broke)
+    networkManager.on('needResume', ({ peerId, spectate }) => {
+        if (!game?.net) return;
+        networkManager.sendResume(peerId, game.net.resumeData(), { spectate });
     });
 
     networkManager.on('gameStart', (data) => {
         log.debug('🎮 Game starting!', data);
-        const started = startGame(false, data.gameState, data.gameState?.customMap);
-        // A spectator joining mid-game builds the world from the seed, then
-        // asks the host for the current state (terrain, health, hazards...)
-        if (data.spectate) {
-            started.then(() => networkManager.send({ type: 'requestStateSync' }));
-        }
+        hideConnectionBanner();
+        // data.resume (joining a match in progress): the command log so far.
+        // The session replays it at full speed, then follows live.
+        startGame(false, data.gameState, data.gameState?.customMap, null, null, data.resume || null);
     });
 
     // Host sent everyone back to the lobby after a match
@@ -609,14 +624,15 @@ function setupMenuHandlers() {
         if (game.isReplay) {
             // "Watch again"
             if (lastReplay) startReplay(lastReplay);
-        } else if (game.isPractice || !networkManager.isConnected) {
+        } else if (game.isPractice) {
             // Local rematch - reset in place (records a fresh replay)
             game.reset();
             menuManager.showScreen('game-screen');
         } else if (networkManager.isHost) {
-            // Multiplayer rematch must go through the host so every client
-            // restarts with the same fresh seed (local reset would desync)
-            networkManager.startGame({ customMap: window.selectedMap, scheme: window.selectedScheme });
+            // Online rematch goes through the host so every client starts
+            // the same new match. Nobody left to play with? Back to the lobby.
+            const started = networkManager.startGame({ customMap: window.selectedMap, scheme: window.selectedScheme });
+            if (!started) networkManager.returnToLobby();
         } else {
             // Guests vote; the host gets a notice and decides
             networkManager.requestRematch();
@@ -708,111 +724,6 @@ function setupMenuHandlers() {
         menuManager.updateLobbyMapName(name);
     });
 
-    // Remote game actions (for multiplayer synchronization)
-    networkManager.on('remoteFire', (data) => {
-        if (game) {
-            game.handleRemoteFire(data);
-        }
-    });
-
-    networkManager.on('remoteMove', (data) => {
-        if (game) {
-            game.handleRemoteMove(data);
-        }
-    });
-
-    networkManager.on('remoteAim', (data) => {
-        if (game) {
-            game.handleRemoteAim(data);
-        }
-    });
-
-    networkManager.on('remoteTargetWeapon', (data) => {
-        if (game) {
-            game.handleRemoteTargetWeapon(data);
-        }
-    });
-
-    networkManager.on('remoteTurnEnd', (data) => {
-        if (game) {
-            game.handleRemoteTurnEnd(data);
-        }
-    });
-
-    networkManager.on('remoteExplosionSync', (data) => {
-        if (game) {
-            game.handleRemoteExplosionSync(data);
-        }
-    });
-
-    networkManager.on('remoteWeaponSelect', (data) => {
-        if (game) {
-            game.handleRemoteWeaponSelect(data);
-        }
-    });
-
-    networkManager.on('remoteJump', (data) => {
-        if (game) {
-            game.handleRemoteJump(data);
-        }
-    });
-
-    networkManager.on('remoteHighJump', (data) => {
-        if (game) {
-            game.handleRemoteHighJump(data);
-        }
-    });
-
-    networkManager.on('remoteRopeRelease', (data) => {
-        if (game) {
-            game.handleRemoteRopeRelease(data);
-        }
-    });
-
-    networkManager.on('remoteStateSync', (data) => {
-        if (game) {
-            game.handleRemoteStateSync(data);
-        }
-    });
-
-    networkManager.on('remoteRequestStateSync', (data) => {
-        if (game && game.sendFullStateSync) {
-            // A peer only asks for this after a reconnect or when spectating
-            // mid-game — include the terrain snapshot so they get every
-            // crater they missed, and send it to them alone
-            game.sendFullStateSync({ includeTerrain: true, toPeer: data.fromPeer });
-        }
-    });
-
-    networkManager.on('remoteCrateSpawn', (data) => {
-        if (game) {
-            game.lootManager.handleRemoteCrateSpawn(data);
-        }
-    });
-
-    networkManager.on('remoteCrateCollected', (data) => {
-        if (game) {
-            game.lootManager.handleRemoteCrateCollected(data);
-        }
-    });
-
-    networkManager.on('remoteCrateDestroyed', (data) => {
-        if (game) {
-            game.lootManager.handleRemoteCrateDestroyed(data);
-        }
-    });
-
-    networkManager.on('remoteTurnStart', (data) => {
-        if (game) {
-            game.handleRemoteTurnStart(data);
-        }
-    });
-
-    networkManager.on('remoteGameOver', (data) => {
-        if (game) {
-            game.handleRemoteGameOver(data);
-        }
-    });
 }
 
 /**
@@ -838,12 +749,96 @@ function hideConnectionBanner() {
 }
 
 /**
+ * Guest: our copy of the match stream is unusable (the session detected a
+ * gap). Ask the host to send the match again; we rebuild from its log.
+ */
+let lastResumeRequest = 0;
+function requestMatchResume() {
+    const now = performance.now();
+    if (now - lastResumeRequest < 4000) return;
+    lastResumeRequest = now;
+    console.warn('🔄 Match stream broken — asking the host for the match again');
+    showConnectionBanner('🔄 Resyncing with the host…');
+    networkManager.send({ type: 'requestResume' });
+}
+
+/**
+ * Hook a new online game up to the lockstep session that keeps it in sync.
+ */
+function attachLockstep(newGame, gameState, resume) {
+    const session = new LockstepSession(newGame, networkManager, {
+        players: gameState?.players || [],
+        tag: gameState?.seed || 0,
+        resume
+    });
+
+    session.onCatchUp = (progress) => {
+        if (game !== newGame) return;
+        if (progress === null) hideConnectionBanner();
+        else showConnectionBanner(`⏩ Catching up with the match… ${Math.round(progress * 100)}%`);
+    };
+    session.onDesync = ({ turn, sections }) => {
+        if (game !== newGame) return;
+        chatUI?.system(`🔧 Resynced with the host (turn ${turn}: ${sections.join(', ')}).`);
+    };
+    session.onBroken = () => {
+        if (game === newGame) requestMatchResume();
+    };
+
+    // Host: players who are disconnected right now (a rematch started
+    // while someone was away) are absent from the first frame
+    if (networkManager.isHost) {
+        for (const r of networkManager.roster) {
+            if (!r.spectator && !r.connected) session.setAbsent(r.slot, true);
+        }
+    }
+
+    newGame.net = session;
+    startNetIndicator(newGame);
+}
+
+/**
+ * Tiny HUD chip for online matches: round-trip time and, when something is
+ * up, what the game is waiting for.
+ */
+let netIndicatorTimer = null;
+function startNetIndicator(forGame) {
+    stopNetIndicator();
+    const el = document.getElementById('net-indicator');
+    if (!el) return;
+    el.classList.remove('hidden');
+
+    const update = () => {
+        if (game !== forGame || !forGame.net) return stopNetIndicator();
+        const status = forGame.net.status();
+        const rtt = networkManager.rtt;
+        const ms = rtt === null ? '…' : `${Math.round(rtt)} ms`;
+        const level = !networkManager.isConnected && !networkManager.isHost ? 'bad'
+            : status !== 'ok' ? 'warn'
+                : rtt !== null && rtt > 250 ? 'warn' : 'good';
+        el.dataset.level = level;
+        el.textContent = status === 'ok' ? `● ${ms}` : `● ${status}`;
+        const repaired = forGame.net.stats.repaired;
+        el.title = `Connection: ${ms} round trip` + (repaired ? ` · ${repaired} resync${repaired > 1 ? 's' : ''} this match` : '');
+    };
+    update();
+    netIndicatorTimer = setInterval(update, 500);
+}
+
+function stopNetIndicator() {
+    clearInterval(netIndicatorTimer);
+    netIndicatorTimer = null;
+    document.getElementById('net-indicator')?.classList.add('hidden');
+}
+
+/**
  * Start the game
  * @param {boolean} isPractice - Local game (single player / hotseat)
  * @param {Object} networkState - Initial state from network (multiplayer)
  * @param {Object} spOptions - Single-player bundle: { teamsConfig, seed, context }
+ * @param {Object} resume - Online, joining a match in progress: its command log
  */
-function startGame(isPractice = false, networkState = null, customMap = null, scheme = null, spOptions = null) {
+function startGame(isPractice = false, networkState = null, customMap = null, scheme = null, spOptions = null, resume = null) {
     const canvas = document.getElementById('game-canvas');
 
     // Destroy any previous game so we don't leak loops and input listeners
@@ -863,7 +858,6 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
     // none — fixed seed instead), so a leftover lobby map must not leak in.
     game = new Game(canvas, {
         isPractice,
-        networkManager: isPractice ? null : networkManager,
         initialState: networkState,
         customMap: customMap ?? (spOptions ? null : window.selectedMap),
         scheme: activeScheme,
@@ -873,6 +867,10 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
         replay: spOptions?.replay || null,
         replayMeta: spOptions?.replayMeta || null
     });
+
+    // Online: every client simulates the match; the session streams the
+    // turn owner's input and gates each frame (must exist before start())
+    if (!isPractice) attachLockstep(game, networkState, resume);
 
     // Expose game instance globally for debugging/export
     window.game = game;
@@ -919,6 +917,7 @@ function startGame(isPractice = false, networkState = null, customMap = null, sc
 
 /** Tear down per-game UI (tutorial coach, replay bar, touch controls). */
 function afterGameTeardown() {
+    stopNetIndicator();
     tutorialDirector?.destroy();
     tutorialDirector = null;
     replayUI?.detach();

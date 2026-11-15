@@ -45,7 +45,7 @@ const SETTING_SECTIONS = [
         title: '💀 Sudden Death',
         settings: [
             {
-                key: 'suddenDeathTime', label: 'Starts After', min: -1, max: 900, step: 60,
+                key: 'suddenDeathTime', label: 'Starts After', min: -1, max: 1800, step: 60,
                 // Slider snaps -1 (never) then whole minutes
                 fmt: v => v === -1 ? 'Never' : `${Math.round(v / 60)} min`,
                 snap: v => v <= 0 ? -1 : Math.max(60, Math.round(v / 60) * 60)

@@ -518,8 +518,7 @@ export const SpawnSystem = {
      * Get a fun koala name
      */
     getKoalaName(teamIndex, index) {
-        // One pool per team slot. Names must stay unique across ALL teams:
-        // network sync messages identify koalas by name (findKoalaByName).
+        // One pool per team slot (names stay unique across ALL teams)
         const names = [
             ['DelinquentKoala', 'Sleepy Steve', 'Chompy Charlie'],
             ['ChronoKoala', 'Koala Kate', 'Dropbear Dan'],

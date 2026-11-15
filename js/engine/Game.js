@@ -33,7 +33,7 @@ import { ToolWeapons } from './game/ToolWeapons.js';
 import { Firing } from './game/Firing.js';
 import { CameraSystem } from './game/CameraSystem.js';
 import { HUD } from './game/HUD.js';
-import { NetSync } from './game/NetSync.js';
+import { Control } from './game/Control.js';
 
 export class Game extends EventEmitter {
     // Gameplay constants (defined in GameConstants.js, mirrored here for
@@ -52,7 +52,7 @@ export class Game extends EventEmitter {
         this.options = options;
 
         // Match-rule scheme (health, timers, ammo, hazards, crates, sudden
-        // death). Guests receive the host's scheme inside initialState.
+        // death). Online guests receive the host's scheme inside initialState.
         // MUST be set before WeaponManager is constructed — createWeapons()
         // reads scheme ammo/delay overrides off this.game.scheme.
         this.scheme = sanitizeScheme(options.scheme || options.initialState?.scheme);
@@ -149,7 +149,11 @@ export class Game extends EventEmitter {
         this.lastTime = 0;
         this.animationId = null;
 
-        this.networkManager = options.networkManager;
+        // Online match: the LockstepSession that feeds this simulation the
+        // turn owner's input and decides when a frame may be stepped. Set by
+        // the app shell after construction; null for local games.
+        this.net = null;
+        // Local game (single player / hotseat / replay) as opposed to online
         this.isPractice = options.isPractice || false;
 
         // Replays (local games only): watching one feeds recorded input back
@@ -172,7 +176,7 @@ export class Game extends EventEmitter {
         this.lootManager = new LootManager(this);
 
         // CPU brain for single player — created in createTeams when any
-        // team config is flagged isCPU (local games only, never networked)
+        // team config is flagged isCPU (local games only, never online)
         this.aiController = null;
 
         // Atmospheric weather particles (cosmetic, theme-driven, local-only)
@@ -207,11 +211,9 @@ export class Game extends EventEmitter {
         this.turnManager.turnTime = this.turnManager.defaultTurnTime;
         this.turnManager.elapsedGameTime = 0;
         this.turnManager.turnCounter = 0;
-        this.turnManager.passiveWait = 0;
-        this.turnManager.localFallback = false;
         this.waterLevel = this.worldHeight - 60;
 
-        // Get game seed for multiplayer sync (or generate random for practice)
+        // Match seed: from the host online, fixed for missions, else random
         // (?? not ||: a seed of 0 must not silently become a local random one)
         const initialState = this.options.initialState;
         // options.seed: fixed seed for single-player missions (reproducible maps)
@@ -222,11 +224,10 @@ export class Game extends EventEmitter {
         this.seededRandom = this.createSeededRandom(this.gameSeed);
 
         // Side streams, derived from the same seed but never sharing draws
-        // with the shared stream above (see the RNG invariants in
-        // NetSync/ProjectileSystem). hostRandom: rolls only the authority
-        // makes (loot crates, oil-drum fuses). aiRandom: CPU decisions.
-        // Seeding them (instead of Math.random) keeps local games fully
-        // reproducible, which replays and the determinism test rely on.
+        // with the shared stream above. hostRandom: loot crates and oil-drum
+        // fuses. aiRandom: CPU decisions. Seeding them (instead of
+        // Math.random) keeps the whole simulation reproducible, which online
+        // lockstep, replays and the determinism tests all rely on.
         this.hostRandom = this.createSeededRandom((this.gameSeed ^ 0x5BD1E995) >>> 0);
         this.aiRandom = this.createSeededRandom((this.gameSeed ^ 0x27D4EB2D) >>> 0);
 
@@ -258,7 +259,7 @@ export class Game extends EventEmitter {
             // Load custom map from editor
             await this.loadCustomMap(this.options.customMap);
         } else {
-            // Pass seeded random to terrain for multiplayer sync
+            // Same seed, same map — on every client and in every replay
             this.terrain.setSeededRandom(this.seededRandom);
             // Generate terrain procedurally
             this.terrain.generate();
@@ -291,8 +292,10 @@ export class Game extends EventEmitter {
             this.gameLoop();
         }
 
-        // Start background timer for when tab is inactive (multiplayer sync)
-        if (this.networkManager && !this.isPractice) {
+        // Online, the match must keep moving while our tab is in the
+        // background (requestAnimationFrame stops there). Headless games
+        // are stepped by whoever owns them.
+        if (this.net && !this.options.headless) {
             this.startBackgroundTimer();
         }
 
@@ -320,30 +323,31 @@ export class Game extends EventEmitter {
     set projectileGraceTimer(v) { this.turnManager.projectileGraceTimer = v; }
 
     /**
-     * Create a seeded random number generator for multiplayer sync
+     * Create a seeded random number generator
      */
     createSeededRandom(seed) {
         // mulberry32: fast, well-distributed PRNG with a full 32-bit state.
-        // Deterministic for a given seed so all multiplayer clients agree,
-        // and far less biased than the old Math.sin() approach.
+        // Deterministic for a given seed, so every client and every replay
+        // draws the same numbers.
         let s = (Math.floor(seed) || 1) >>> 0;
-        return () => {
+        const rand = () => {
             s = (s + 0x6D2B79F5) >>> 0;
             let t = s;
             t = Math.imul(t ^ (t >>> 15), t | 1);
             t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
             return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
         };
+        // The stream's position, for multiplayer snapshots (StateSync)
+        rand.getState = () => s;
+        rand.setState = (state) => { s = state >>> 0; };
+        return rand;
     }
 
     /**
-     * Derive an independent RNG from the shared seeded stream. The one draw
-     * happens at a SYMMETRIC point (weapon fire / projectile creation, which
-     * both clients replay identically), so impact-time effects can roll dice
-     * without touching the shared stream. Before this, an impact that only
-     * happened on one client — e.g. a cluster bomb that lands in water here
-     * but on the crater lip there — consumed a different number of shared
-     * rolls and silently desynced every later wind/spread/dud draw.
+     * Derive an independent RNG from the shared seeded stream with a single
+     * draw (taken at weapon fire / projectile creation), so impact-time
+     * effects can roll as many dice as they like without moving the shared
+     * stream that wind, spread and duds depend on.
      */
     makeSubRandom(rand = this.seededRandom) {
         if (!rand) return Math.random;
@@ -352,9 +356,8 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Per-projectile effect RNG, seeded when the projectile was created (a
-     * symmetric event). Used for impact-spawned effects: cluster fragments
-     * and fire patches.
+     * Per-projectile effect RNG, seeded when the projectile was created.
+     * Used for impact-spawned effects: cluster fragments and fire patches.
      */
     getProjectileEffectRand(projectile) {
         if (!projectile._effectRand) {
@@ -468,6 +471,7 @@ export class Game extends EventEmitter {
             deltaTime = (currentTime - this.lastTime) / 1000;
         }
         this.lastTime = currentTime;
+        this.lastLoopAt = currentTime; // tells the background timer we're alive
 
         // Fixed timestep definitions
         if (this.fixedAccumulator === undefined) this.fixedAccumulator = 0;
@@ -501,10 +505,7 @@ export class Game extends EventEmitter {
 
             if (!this.isPaused) {
                 const t0 = performance.now();
-                while (this.fixedAccumulator >= FIXED_DT && !this.simFrozen()) {
-                    this.update(FIXED_DT);
-                    this.fixedAccumulator -= FIXED_DT;
-                }
+                this.stepSimulation();
                 updateTime = performance.now() - t0;
             }
 
@@ -533,16 +534,27 @@ export class Game extends EventEmitter {
             }
         } else {
             // Normal loop (no debugging overhead)
-            if (!this.isPaused) {
-                while (this.fixedAccumulator >= FIXED_DT && !this.simFrozen()) {
-                    this.update(FIXED_DT);
-                    this.fixedAccumulator -= FIXED_DT;
-                }
-            }
+            if (!this.isPaused) this.stepSimulation();
             this.render();
         }
 
         this.animationId = requestAnimationFrame((t) => this.gameLoop(t));
+    }
+
+    /**
+     * Run the simulation steps the accumulated time allows. A local game
+     * simply steps; an online game asks the lockstep session, which only
+     * lets a frame run once its input is known (see LockstepSession.pump).
+     */
+    stepSimulation() {
+        if (this.net) {
+            this.fixedAccumulator = this.net.pump(this.fixedAccumulator);
+            return;
+        }
+        while (this.fixedAccumulator >= FIXED_DT && !this.simFrozen()) {
+            this.update(FIXED_DT);
+            this.fixedAccumulator -= FIXED_DT;
+        }
     }
 
     /**
@@ -567,42 +579,18 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Start background update timer (for when tab is inactive)
-     * requestAnimationFrame pauses when tab is not visible, but we need
-     * to keep processing network updates and game state
+     * Online matches must keep stepping when the render loop stops:
+     * requestAnimationFrame is suspended in a background tab, a minimised
+     * or fully covered window, and some embedded views — and if it is our
+     * turn, everyone else is waiting on the frames we produce.
+     *
+     * A plain timer watches the render loop and takes over the stepping
+     * whenever it has gone quiet (rather than trusting document.hidden,
+     * which not every one of those cases reports).
      */
     startBackgroundTimer() {
-        // Listen for visibility changes
-        if (!this.visibilityHandler) {
-            this.visibilityHandler = () => {
-                if (document.hidden) {
-                    // Tab became hidden - start fallback timer
-                    log.debug('🔄 Tab hidden - starting background timer');
-                    this.startFallbackTimer();
-                } else {
-                    // Tab became visible - stop fallback timer
-                    log.debug('🔄 Tab visible - stopping background timer');
-                    this.stopFallbackTimer();
-                    // Sync time to prevent huge deltaTime
-                    this.lastTime = performance.now();
-                }
-            };
-            document.addEventListener('visibilitychange', this.visibilityHandler);
-        }
-
-        // Started in a background tab (a guest whose host hit Start while
-        // they were tabbed away): no visibilitychange will come, so begin
-        // ticking right away
-        if (document.hidden) {
-            this.startFallbackTimer();
-        }
-    }
-
-    /**
-     * Start the fallback setInterval timer for background updates
-     */
-    startFallbackTimer() {
-        if (this.fallbackTimerId) return; // Already running
+        if (this.fallbackTimerId) return;
+        this.lastLoopAt = performance.now();
 
         this.fallbackTimerId = setInterval(() => {
             if (this.isGameOver) {
@@ -610,22 +598,22 @@ export class Game extends EventEmitter {
                 return;
             }
 
+            // The render loop is alive: it does the stepping
             const now = performance.now();
-            let deltaTime = (now - this.lastTime) / 1000;
+            if (now - this.lastLoopAt < 250) return;
+
+            // (lastTime is 0 until the render loop has run once)
+            let deltaTime = this.lastTime > 0 ? (now - this.lastTime) / 1000 : 0;
             this.lastTime = now;
 
             if (this.fixedAccumulator === undefined) this.fixedAccumulator = 0;
-            if (deltaTime > 1.0) deltaTime = 1.0;
+            // Timers are throttled to about one a second in the background
+            deltaTime = Math.max(0, Math.min(deltaTime, 1.5));
             this.fixedAccumulator += deltaTime;
 
-            if (!this.isPaused) {
-                while (this.fixedAccumulator >= FIXED_DT && !this.simFrozen()) {
-                    this.update(FIXED_DT);
-                    this.fixedAccumulator -= FIXED_DT;
-                }
-            }
-            // Skip rendering when tab is hidden (saves resources)
-        }, 50); // 20 updates per second when hidden
+            if (!this.isPaused) this.stepSimulation();
+            // No rendering: nobody is looking
+        }, 50);
     }
 
     /**
@@ -672,8 +660,7 @@ export class Game extends EventEmitter {
         // If the koala whose turn it is has died mid-turn — usually by walking,
         // jumping or drilling into the water — don't let the timer keep ticking on
         // a corpse the player can still nudge around. Hand the turn over right
-        // away. This runs deterministically on every client (same model as the
-        // turn-timer expiry in TurnManager), so no extra network message is needed.
+        // away.
         if (!this.isGameOver && Game.LIVE_TURN_PHASES.includes(this.phase)) {
             const activeKoala = this.getCurrentKoala();
             if (activeKoala && !activeKoala.isAlive) {
@@ -723,11 +710,7 @@ export class Game extends EventEmitter {
                 this.updateRetreat(dt);
                 break;
             case 'damage':
-                // Damage phase is handled by processDamage timeout.
-                // A passive multiplayer client parks here until the turn
-                // owner's 'turnStart' arrives — the watchdog un-sticks us if
-                // that message never comes.
-                this.turnManager.updatePassiveWatchdog(dt);
+                // Handled by processDamage's delayed actions
                 break;
         }
 
@@ -987,8 +970,7 @@ export class Game extends EventEmitter {
 
     /**
      * Scheme weapon delays: a weapon with delay N unlocks on round N+1
-     * (WA-style). roundNumber is deterministic on both clients, so this
-     * agrees across the network.
+     * (WA-style).
      */
     isWeaponAvailable(weapon) {
         if (!weapon) return false;
@@ -1005,10 +987,9 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Randomize wind (uses seeded random for multiplayer sync)
+     * Randomize wind (from the shared seeded stream)
      */
     randomizeWind() {
-        // Use seeded random for multiplayer sync, or regular random for practice.
         // Always draw the roll (even at 0 wind strength) so the shared RNG
         // stream advances identically no matter the scheme.
         const rand = this.seededRandom ? this.seededRandom() : Math.random();
@@ -1074,22 +1055,13 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * End the game. In multiplayer the client that decided the result tells
-     * the peer — game over used to be decided independently on each client
-     * from locally-drifted health/positions, so one side could see a win
-     * while the other kept playing.
+     * End the game. Decided inside the simulation, so online it happens on
+     * the same frame, with the same winner, on every client.
      */
-    endGame(winningTeam, options = {}) {
+    endGame(winningTeam) {
         if (this.isGameOver) return;
         this.isGameOver = true;
         this.phase = 'gameOver';
-
-        if (this.networkManager && !this.isPractice && !options.fromRemote) {
-            this.networkManager.send({
-                type: 'gameOver',
-                winnerTeamIndex: winningTeam ? this.teams.indexOf(winningTeam) : -1
-            });
-        }
 
         // Play end game sound (the winners cheer in their own voice pack)
         if (winningTeam) {
@@ -1183,12 +1155,12 @@ export class Game extends EventEmitter {
     }
 
     /**
-     * Alliance colour of the local player's squad (null in practice)
+     * Alliance colour of the local player's squad (null in local games)
      */
     getMyAlliance() {
-        if (this.isPractice || !this.networkManager) return null;
+        if (!this.net) return null;
         for (let i = 0; i < this.teams.length; i++) {
-            if (this.networkManager.isMyTeam(i)) {
+            if (this.net.isMyTeam(i)) {
                 return this.teams[i].alliance;
             }
         }
@@ -1197,7 +1169,6 @@ export class Game extends EventEmitter {
 
     /**
      * Kill an entire team (player left and never came back, or surrendered).
-     * Deterministic, so every client can apply it from the same message.
      */
     forfeitTeam(teamIndex) {
         const team = this.teams[teamIndex];
@@ -1315,12 +1286,7 @@ export class Game extends EventEmitter {
         // Stop background timer
         this.stopFallbackTimer();
 
-        // Remove visibility handler
-        if (this.visibilityHandler) {
-            document.removeEventListener('visibilitychange', this.visibilityHandler);
-            this.visibilityHandler = null;
-        }
-
+        this.net?.destroy();
         this.inputManager.destroy();
         this.instantReplay?.destroy();
         clearTimeout(this.victoryDanceTimeout);
@@ -1342,5 +1308,5 @@ Object.assign(Game.prototype,
     Firing,
     CameraSystem,
     HUD,
-    NetSync
+    Control
 );

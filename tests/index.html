@@ -28,7 +28,15 @@
     <div id="summary"></div>
 
     <script type="module">
-        import { TESTS } from './tests/determinism.test.js';
+        import { TESTS as DETERMINISM_TESTS } from './tests/determinism.test.js';
+        import { LOCKSTEP_TESTS } from './tests/lockstep.test.js';
+
+        // ?only=lockstep / ?only=determinism runs one suite
+        const only = new URLSearchParams(location.search).get('only');
+        const TESTS = [
+            ...(only === 'lockstep' ? [] : DETERMINISM_TESTS),
+            ...(only === 'determinism' ? [] : LOCKSTEP_TESTS)
+        ];
 
         const results = document.getElementById('results');
         const summary = document.getElementById('summary');

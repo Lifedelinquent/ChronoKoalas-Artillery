@@ -5,8 +5,13 @@
 
 import { imageHasAir, deriveTerrainFromOpaqueImage } from '../utils/TerrainMask.js';
 import { log } from '../utils/Logger.js';
+import { FNV_OFFSET, hashInt, hashNumber } from '../utils/Hash.js';
 
 export class Terrain {
+    // A crater's hole is this fraction of its (enlarged) blast radius; the
+    // band outside it survives as the charred rim
+    static HOLE_FRACTION = 0.875;
+
     constructor(width, height) {
         this.width = width;
         this.height = height;
@@ -41,6 +46,17 @@ export class Terrain {
         // Visual theme chosen by generate(). Null for custom/editor maps —
         // the renderer falls back to its default sky.
         this.theme = null;
+
+        // Collision-mask fingerprint for multiplayer checksums. baseHash is
+        // the hash of the mask as it was loaded/generated; opHash is a
+        // running hash of every edit (crater, girder) applied since. Two
+        // clients with equal base masks and equal edit sequences have equal
+        // masks, so comparing these numbers is as good as comparing every
+        // pixel — and costs nothing per turn.
+        this.baseHash = 0;
+        this.opHash = FNV_OFFSET;
+        this.opCount = 0;
+        this._maskValid = false;
     }
 
     /**
@@ -65,6 +81,8 @@ export class Terrain {
      * match seed.
      */
     generate() {
+        // The previous match's mask (rematch) is stale until we finish
+        this._maskValid = false;
         this.theme = this.pickTheme();
         const layout = this.pickLayout();
         log.debug(`🗺️ Generating map: theme=${this.theme.id}, layout=${layout}`);
@@ -616,8 +634,21 @@ export class Terrain {
     getVisualGroundY(x) {
         x = Math.floor(x);
         if (x < 0 || x >= this.width) return [];
-        const imageData = this.ctx.getImageData(x, 0, 1, this.height);
-        const data = imageData.data;
+
+        // At runtime this reads the COLLISION MASK — the simulation's single
+        // source of truth, edited with plain arithmetic so it is identical
+        // on every client. Only mid-generation (before the mask exists) does
+        // it fall back to reading the canvas pixels.
+        let data, stride, offset;
+        if (this._maskValid) {
+            data = this.imageData.data;
+            stride = this.width * 4;
+            offset = x * 4 + 3;
+        } else {
+            data = this.ctx.getImageData(x, 0, 1, this.height).data;
+            stride = 4;
+            offset = 3;
+        }
         const surfaces = [];
 
         // Scan from top to bottom, find all transitions from air to solid.
@@ -633,7 +664,7 @@ export class Terrain {
         let airStreak = 0;          // No usable air above the top edge
 
         for (let y = 0; y < this.height - 10; y++) {
-            const alpha = data[y * 4 + 3];
+            const alpha = data[y * stride + offset];
             const isSolid = alpha >= 128;
             const isAir = !isSolid;
 
@@ -1176,6 +1207,131 @@ export class Terrain {
             }
 
             this.maskCtx.putImageData(this.imageData, 0, 0);
+            this.rehashMask();
+        }
+    }
+
+    /**
+     * Fingerprint the whole mask (load / generation / host repair) and
+     * restart the edit hash from there.
+     */
+    rehashMask() {
+        const data = this.imageData.data;
+        let h = FNV_OFFSET;
+        // Hash solid/air run lengths rather than 2.9M single pixels
+        let run = 0, solid = false;
+        for (let i = 3; i < data.length; i += 4) {
+            const s = data[i] > 128;
+            if (s === solid) { run++; continue; }
+            h = hashInt(h, run);
+            run = 1;
+            solid = s;
+        }
+        h = hashInt(h, run);
+        this.baseHash = h >>> 0;
+        this.opHash = FNV_OFFSET;
+        this.opCount = 0;
+        this._maskValid = true;
+    }
+
+    /** Fold one terrain edit into the running edit hash. */
+    noteMaskOp(code, a, b, c, d = 0) {
+        let h = hashInt(this.opHash, code);
+        h = hashNumber(h, a);
+        h = hashNumber(h, b);
+        h = hashNumber(h, c);
+        h = hashNumber(h, d);
+        this.opHash = h >>> 0;
+        this.opCount++;
+    }
+
+    /**
+     * Clear every mask pixel whose centre lies inside a circle. Plain
+     * IEEE arithmetic — no canvas rasteriser involved — so every browser
+     * carves exactly the same pixels.
+     */
+    carveMaskCircle(cx, cy, r) {
+        if (!(r > 0)) return;
+        const data = this.imageData.data;
+        const W = this.width, H = this.height;
+        const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(W - 1, Math.ceil(cx + r));
+        const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(H - 1, Math.ceil(cy + r));
+        const r2 = r * r;
+        for (let y = y0; y <= y1; y++) {
+            const dy = y + 0.5 - cy;
+            const dy2 = dy * dy;
+            let idx = (y * W + x0) * 4 + 3;
+            for (let x = x0; x <= x1; x++, idx += 4) {
+                const dx = x + 0.5 - cx;
+                if (dx * dx + dy2 < r2) data[idx] = 0;
+            }
+        }
+    }
+
+    /** Mark a whole-pixel rectangle solid in the mask. */
+    fillMaskRect(x, y, w, h) {
+        const data = this.imageData.data;
+        const W = this.width, H = this.height;
+        const x0 = Math.max(0, x), x1 = Math.min(W, x + w);
+        const y0 = Math.max(0, y), y1 = Math.min(H, y + h);
+        for (let py = y0; py < y1; py++) {
+            let idx = (py * W + x0) * 4 + 3;
+            for (let px = x0; px < x1; px++, idx += 4) data[idx] = 255;
+        }
+    }
+
+    /**
+     * The collision mask as alternating air/solid run lengths (starting
+     * with air). A whole map is a few thousand numbers — small enough to
+     * ship to a client whose mask has drifted from the host's.
+     */
+    encodeMask() {
+        const data = this.imageData.data;
+        const runs = [];
+        let run = 0, solid = false;
+        for (let i = 3; i < data.length; i += 4) {
+            const s = data[i] > 128;
+            if (s === solid) { run++; continue; }
+            runs.push(run);
+            run = 1;
+            solid = s;
+        }
+        runs.push(run);
+        return runs;
+    }
+
+    /**
+     * Replace the collision mask with one from encodeMask() and patch the
+     * picture to match: pixels that became air are erased, pixels that
+     * became solid are filled with plain soil. `hashes` carries the
+     * sender's [baseHash, opHash, opCount] so both sides keep counting
+     * edits from the same place.
+     */
+    applyMask(runs, hashes = null) {
+        const mask = this.imageData.data;
+        const visual = this.ctx.getImageData(0, 0, this.width, this.height);
+        const px = visual.data;
+        let i = 3, solid = false;
+        for (const run of runs) {
+            const end = Math.min(mask.length, i + run * 4);
+            for (; i < end; i += 4) {
+                mask[i] = solid ? 255 : 0;
+                if (!solid) {
+                    if (px[i] !== 0) px[i] = 0;
+                } else if (px[i] < 128) {
+                    px[i - 3] = 101; px[i - 2] = 67; px[i - 1] = 33; px[i] = 255;
+                }
+            }
+            solid = !solid;
+        }
+        this.ctx.putImageData(visual, 0, 0);
+        this._maskValid = true;
+        if (hashes) {
+            this.baseHash = hashes[0];
+            this.opHash = hashes[1];
+            this.opCount = hashes[2];
+        } else {
+            this.rehashMask();
         }
     }
 
@@ -1219,9 +1375,8 @@ export class Terrain {
 
     /**
      * Deterministic per-crater PRNG (mulberry32, same as Game's) seeded from
-     * the crater's own numbers. Both clients receive identical (cx, cy,
-     * radius) via explosionSync, so they carve identical lumps without ever
-     * touching the shared seeded RNG stream.
+     * the crater's own numbers, so every client carves identical lumps
+     * without ever touching the shared seeded RNG stream.
      */
     createCraterRandom(cx, cy, radius) {
         const f = new Float32Array(1);
@@ -1281,19 +1436,16 @@ export class Terrain {
         }
         this.ctx.restore();
 
-        // 2. Punch the hole: soft-edged main blast + hard-edged lumps
+        // 2. Punch the hole: main blast + lumps. The picture is only for
+        //    show — the hole the simulation sees is carved into the
+        //    collision mask below, from the same circles.
+        const holeR = r * Terrain.HOLE_FRACTION;
         this.ctx.save();
         this.ctx.globalCompositeOperation = 'destination-out';
-        const gradient = this.ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(1, r));
-        gradient.addColorStop(0, 'rgba(255,255,255,1)');
-        gradient.addColorStop(0.75, 'rgba(255,255,255,1)');
-        gradient.addColorStop(1, 'rgba(255,255,255,0)');
-        this.ctx.fillStyle = gradient;
-        this.ctx.beginPath();
-        this.ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        this.ctx.fill();
-
         this.ctx.fillStyle = 'rgba(255,255,255,1)';
+        this.ctx.beginPath();
+        this.ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
+        this.ctx.fill();
         for (const l of lobes) {
             this.ctx.beginPath();
             this.ctx.arc(l.x, l.y, l.r, 0, Math.PI * 2);
@@ -1302,18 +1454,12 @@ export class Terrain {
         this.ctx.restore();
 
         if (updateMask) {
-            // Cover the main hole plus the farthest lump
-            let extent = r;
-            for (const l of lobes) {
-                extent = Math.max(extent, Math.hypot(l.x - cx, l.y - cy) + l.r);
-            }
-            extent += 8;
-            this.updateCollisionMask({
-                x: cx - extent,
-                y: cy - extent,
-                width: extent * 2,
-                height: extent * 2
-            });
+            // Canvas anti-aliasing differs between browsers and GPUs, so
+            // the mask is never read back from the picture: it gets the
+            // same circles carved with plain arithmetic.
+            this.carveMaskCircle(cx, cy, holeR);
+            for (const l of lobes) this.carveMaskCircle(l.x, l.y, l.r);
+            this.noteMaskOp(1, cx, cy, radius);
         }
     }
 
@@ -1325,8 +1471,12 @@ export class Terrain {
     addGirder(cx, cy, width = 90, height = 12) {
         this.onModify?.({ type: 'girder', x: cx, y: cy, w: width, h: height });
 
-        const x = cx - width / 2;
-        const y = cy - height / 2;
+        // Whole-pixel beam, so the picture and the collision mask (filled
+        // with the same integers below) agree on every client
+        const x = Math.round(cx - width / 2);
+        const y = Math.round(cy - height / 2);
+        width = Math.round(width);
+        height = Math.round(height);
 
         this.ctx.save();
         this.ctx.globalCompositeOperation = 'source-over';
@@ -1354,14 +1504,12 @@ export class Terrain {
 
         this.ctx.restore();
 
-        // Refresh collision data for the new beam
-        const padding = 4;
-        this.updateCollisionMask({
-            x: x - padding,
-            y: y - padding,
-            width: width + padding * 2,
-            height: height + padding * 2
-        });
+        // The beam is solid ground now. (The instant-replay ghost terrain
+        // has a picture but no mask.)
+        if (this.imageData) {
+            this.fillMaskRect(x, y, width, height);
+            this.noteMaskOp(2, x, y, width, height);
+        }
     }
 
     /**

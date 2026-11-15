@@ -3,8 +3,7 @@
  *
  * These do the checks every weapon shares (ammo, scheme unlock delay,
  * homing target), then hand over to the weapon type's behaviour in
- * weapons/WeaponBehaviors.js, and finally spend ammo and replay the shot on
- * remote clients.
+ * weapons/WeaponBehaviors.js, and finally spend ammo.
  *
  * Installed onto Game.prototype (see the bottom of Game.js), so every
  * method runs with `this` bound to the Game instance.
@@ -33,19 +32,15 @@ export const Firing = {
             return;
         }
 
-        // Scheme unlock delay. Only enforced for the local player — a remote
-        // fire already happened on the acting client, and refusing the replay
-        // here would desync the match (mirrors the ammo-drift guard).
-        if (!this.isWeaponAvailable(weapon) && (this.isPractice || this.isMyTurn())) {
+        // Scheme unlock delay
+        if (!this.isWeaponAvailable(weapon)) {
             log.debug(`${weapon.name} locked for ${this.weaponDelayRemaining(weapon)} more round(s)`);
             this.audioManager.playClick();
             return;
         }
 
-        // Homing missile needs its target placed first. Local only — a remote
-        // replay always carries the target in the fire message (handleRemoteFire
-        // restores it into this.homingTarget before calling us).
-        if (weapon.requiresTarget && !this.homingTarget && (this.isPractice || this.isMyTurn())) {
+        // Homing missile needs its target placed first
+        if (weapon.requiresTarget && !this.homingTarget) {
             this.createFloatingText(koala.x, koala.y - 40, 'Click to mark a target first!', '#ff6b6b');
             this.audioManager.playClick();
             return;
@@ -70,15 +65,6 @@ export const Firing = {
 
         // UI listeners (tutorial, HUD hints) — never the simulation
         this.emit('weaponFired', { weapon, koala });
-
-        // Replay the shot on remote clients (only if this is our turn)
-        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.networkManager.sendFire(
-                weapon.id, angle, power, koala.x, koala.y,
-                this.currentTeamIndex, this.currentKoalaIndex,
-                result?.targetX, result?.targetY
-            );
-        }
     },
 
     /**
@@ -96,8 +82,8 @@ export const Firing = {
             return false;
         }
 
-        // Scheme unlock delay (local player only — see fireWeapon)
-        if (!this.isWeaponAvailable(weapon) && (this.isPractice || this.isMyTurn())) {
+        // Scheme unlock delay
+        if (!this.isWeaponAvailable(weapon)) {
             log.debug(`${weapon.name} locked for ${this.weaponDelayRemaining(weapon)} more round(s)`);
             this.audioManager.playClick();
             return false;
@@ -129,11 +115,6 @@ export const Firing = {
             this.updateWeaponUI();
         }
         this.emit('weaponFired', { weapon, koala });
-
-        // Send to network (only if this is our turn)
-        if (this.networkManager && !this.isPractice && this.isMyTurn()) {
-            this.networkManager.sendTargetWeapon(weapon.id, targetX, targetY, this.currentTeamIndex, this.currentKoalaIndex);
-        }
         return true;
     }
 };

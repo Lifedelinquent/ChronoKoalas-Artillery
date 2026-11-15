@@ -12,7 +12,7 @@ A Worms Armageddon-style artillery game in the browser: destructible terrain, 39
 | **Deathmatch** | A ranked ladder from *Absolute Beginner* to *Elite* against tougher and more numerous CPU squads. |
 | **Quick Game** | You against 1–3 CPU squads (CPU 1–5) on any map and scheme. |
 | **Hotseat** | Two players on one keyboard, each with their own saved team. |
-| **Multiplayer** | Up to 4 players over WebRTC (PeerJS), plus spectators. Same colour = allies. Lobby and in-game chat, rematch votes, back-to-lobby. |
+| **Multiplayer** | Up to 4 players over WebRTC (PeerJS), plus spectators. Same colour = allies. Lobby and in-game chat, rematch votes, back-to-lobby. Deterministic lockstep keeps every client identical; dropped players reconnect and spectators can join mid-match. |
 | **Map Editor** | Draw or import maps, place spawns, test-play them. |
 
 ## ✨ Highlights
@@ -86,8 +86,23 @@ Then open the address it prints (default `http://localhost:8080`).
 1. **Same seed → identical match** — a 3-minute CPU vs CPU vs CPU match with crates, mines, drums and wind, run twice and fingerprinted every 300 frames.
 2. **Different seed → different match**.
 3. **Replay round-trip** — a scripted player fights the CPU through the real input path; replaying the recording must reproduce every checkpoint.
+4. **Online lockstep** (`tests/lockstep.test.js`) — several complete clients in one tab, joined by a fake network with delay and jitter: a 3-player match with a spectator must stay identical turn after turn; a spectator joining mid-match must catch up from the command log; a deliberately corrupted client must be detected and repaired; a vanished player must be forfeited; and a client that falls out of step must be pulled back by the host.
 
-These guard the determinism that multiplayer, replays and the instant replay depend on: all simulation randomness comes from seeded streams (`seededRandom` shared, `hostRandom` for authority-only rolls such as crates, `aiRandom` for the CPU), the world steps at a fixed 1/60 s, and all human input enters through `InputManager.dispatch()`.
+Add `?only=lockstep` or `?only=determinism` to run one suite.
+
+These guard the determinism that multiplayer, replays and the instant replay depend on: all simulation randomness comes from seeded streams (`seededRandom` shared, `hostRandom` for crates and drum fuses, `aiRandom` for the CPU), the world steps at a fixed 1/60 s, terrain collision is edited with plain arithmetic (never read back from the canvas), and all human input enters through `InputManager.dispatch()`.
+
+## 🌐 How online play stays in sync
+
+Online matches use **deterministic lockstep**, the model Worms Armageddon and Hedgewars use:
+
+- Every client runs the whole simulation. Positions, damage, craters, crates and turn changes are **never sent** — only the input commands of whoever's turn it is, stamped with the simulation frame they happened on (`network/LockstepSession.js`).
+- The turn owner plays with zero input delay and streams its frames; everyone else steps only frames that have been confirmed, so they trail by the network latency and can never guess wrong.
+- At the start of every turn each client fingerprints its world and compares it with the host's. A client that disagrees adopts the host's snapshot on that exact frame (`network/StateSync.js`), so a drift is repaired within one turn. The HUD chip (`● 42 ms`) shows the round trip, and its tooltip counts repairs.
+- The host keeps the command log. A reconnecting player or a spectator arriving mid-match rebuilds the match from the seed by replaying the log at full speed.
+- Every connection has a heartbeat, so a dead link is noticed in seconds; a player who doesn't return within 45 s forfeits.
+
+Rule for new gameplay code: the simulation must not branch on who is watching (`isMyTurn()`, host/guest) or draw from `Math.random()` — anything that changes the world has to come from the command stream and the seeded RNGs.
 
 ## 🛠️ Project layout
 
@@ -106,14 +121,17 @@ js/
       DeathSystem.js        WA-style deaths and graves
       CameraSystem.js       follow / auto-framing camera
       Effects.js, HUD.js    particles and DOM HUD
-      NetSync.js            multiplayer turn adoption and state sync
+      Control.js            who is at the controls (local player / CPU / online stream)
     InputManager.js       keyboard/mouse → actions → commands (dispatch)
     TurnManager.js, Physics.js, Terrain.js, Renderer.js, MatchStats.js, Cosmetics.js, ...
   weapons/                WeaponManager (definitions), WeaponBehaviors (per-type hooks), Projectile
   ai/AIController.js      CPU brain
   replay/                 Replay (recorder/player/storage), InstantReplay
   singleplayer/           SinglePlayer (modes, missions, medals), Tutorial
-  network/NetworkManager.js
+  network/
+    NetworkManager.js     transport + lobby: PeerJS star topology, heartbeat, reconnect
+    LockstepSession.js    online sync: input stream, frame gating, turn checksums, late join
+    StateSync.js          turn snapshots (hash / apply) used to detect and repair drift
   ui/                     MenuManager, SettingsUI, TeamEditor, ReplayUI, ChatUI, TouchControls, SchemeEditor
   utils/                  Settings, TeamStyles, GameScheme, Logger, ...
 tests/                    simulation tests
